@@ -7,10 +7,8 @@ from __future__ import annotations
 
 import logging
 import math
-import queue
 import shutil
 import subprocess
-import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -26,9 +24,6 @@ from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH
 from .pathtracer_api import PathTracerAPI
 
 logger = logging.getLogger(__name__)
-
-_RECORDING_STOP = object()
-_NVENC_SUPPORT: dict[str, bool] = {}
 
 
 @wp.kernel(enable_backward=False)
@@ -52,51 +47,6 @@ def _pack_display_rgba8(
     )
 
 
-@wp.kernel(enable_backward=False)
-def _pack_recording_rgb8(
-    src: wp.array2d(dtype=wp.vec4),
-    dst: wp.array(dtype=wp.uint8),
-    width: int,
-    height: int,
-):
-    x, y = wp.tid()
-    if x >= width or y >= height:
-        return
-
-    c = src[y, x]
-    offset = (y * width + x) * 3
-    dst[offset] = wp.uint8(wp.clamp(c[0] * 255.0, 0.0, 255.0))
-    dst[offset + 1] = wp.uint8(wp.clamp(c[1] * 255.0, 0.0, 255.0))
-    dst[offset + 2] = wp.uint8(wp.clamp(c[2] * 255.0, 0.0, 255.0))
-
-
-@dataclass
-class _RecordingReadback:
-    device_pixels: wp.array
-    host_pixels: wp.array
-    ready: wp.Event
-
-
-def _system_videos_dir() -> Path:
-    """Return the desktop-configured Videos directory when available."""
-    executable = shutil.which("xdg-user-dir")
-    if executable is not None:
-        try:
-            result = subprocess.run(
-                [executable, "VIDEOS"],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=2.0,
-            )
-            path = result.stdout.strip()
-            if path:
-                return Path(path).expanduser()
-        except (OSError, subprocess.SubprocessError):
-            pass
-    return Path.home() / "Videos"
-
-
 def _system_pictures_dir() -> Path:
     executable = shutil.which("xdg-user-dir")
     if executable is not None:
@@ -113,130 +63,6 @@ def _system_pictures_dir() -> Path:
         except (OSError, subprocess.SubprocessError):
             pass
     return Path.home() / "Pictures"
-
-
-def _ffmpeg_executable() -> str:
-    """Use system FFmpeg for recording."""
-    executable = shutil.which("ffmpeg")
-    if executable is not None:
-        return executable
-    raise RuntimeError("Recording requires FFmpeg; install it and add it to PATH")
-
-
-def _supports_h264_nvenc(executable: str) -> bool:
-    """Probe the driver and encoder with a real one-frame encode."""
-    cached = _NVENC_SUPPORT.get(executable)
-    if cached is not None:
-        return cached
-    try:
-        result = subprocess.run(
-            [
-                executable,
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-f",
-                "lavfi",
-                "-i",
-                "color=size=256x256:rate=1",
-                "-frames:v",
-                "1",
-                "-c:v",
-                "h264_nvenc",
-                "-f",
-                "null",
-                "-",
-            ],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=5.0,
-        )
-        supported = result.returncode == 0
-    except (OSError, subprocess.SubprocessError):
-        supported = False
-    _NVENC_SUPPORT[executable] = supported
-    return supported
-
-
-class _FFmpegVideoWriter:
-    """Minimal raw-video pipe with hardware encoding when available."""
-
-    def __init__(
-        self,
-        path: Path,
-        width: int,
-        height: int,
-        fps: int,
-        bitrate_mbps: int,
-        encoder: str,
-    ):
-        executable = _ffmpeg_executable()
-        if encoder == "auto":
-            encoder = "h264_nvenc" if _supports_h264_nvenc(executable) else "libx264"
-        if encoder not in {"h264_nvenc", "libx264"}:
-            raise ValueError(f"Unsupported recording encoder: {encoder!r}")
-
-        encoder_args = (
-            ["-c:v", "h264_nvenc", "-preset", "p1", "-tune", "ll"]
-            if encoder == "h264_nvenc"
-            else ["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency"]
-        )
-        command = [
-            executable,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "rgb24",
-            "-video_size",
-            f"{width}x{height}",
-            "-framerate",
-            str(fps),
-            "-i",
-            "pipe:0",
-            "-vf",
-            "vflip",
-            "-an",
-            *encoder_args,
-            "-b:v",
-            f"{bitrate_mbps}M",
-            "-pix_fmt",
-            "yuv420p",
-            str(path),
-        ]
-        self.encoder = encoder
-        self._process = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-        )
-
-    def append_data(self, frame: np.ndarray) -> None:
-        if self._process.stdin is None:
-            raise RuntimeError("FFmpeg recording pipe is closed")
-        try:
-            self._process.stdin.write(memoryview(frame).cast("B"))
-        except (BrokenPipeError, OSError) as error:
-            details = self._read_error()
-            raise RuntimeError(f"FFmpeg recording failed: {details}") from error
-
-    def _read_error(self) -> str:
-        if self._process.stderr is None:
-            return "unknown error"
-        return self._process.stderr.read().decode("utf-8", errors="replace").strip()
-
-    def close(self) -> None:
-        if self._process.stdin is not None:
-            self._process.stdin.close()
-            self._process.stdin = None
-        returncode = self._process.wait()
-        if returncode != 0:
-            raise RuntimeError(f"FFmpeg recording failed: {self._read_error()}")
 
 
 @dataclass
@@ -306,7 +132,6 @@ class PathTracingViewerBackend:
         enable_picking: bool = True,
         picking_factory: Callable | None = None,
         fallback_to_copy: bool = True,
-        recording_writer_factory: Callable | None = None,
         default_ior: float = 1.5,
         default_specular: float = 1.0,
         default_clearcoat: float = 0.0,
@@ -360,28 +185,8 @@ class PathTracingViewerBackend:
         self._fps_frame_count = 0
         self._fps_window_start = time.perf_counter()
 
-        self.recording_fps = 60
-        self.recording_bitrate_mbps = 20
-        self.recording_frame_skip = 1
-        self.recording_encoder = "auto"
-        self.recording_buffer_count = 8
-        self.recording_dropped_frames = 0
-        self.recording_output_path: str | None = None
         self.screenshot_output_path: str | None = None
         self._last_screenshot_path: Path | None = None
-        self._recording_writer = None
-        self._recording_writer_factory = recording_writer_factory
-        self._recording_frame_index = 0
-        self._recording_path: Path | None = None
-        self._recording_thread: threading.Thread | None = None
-        self._recording_queue: queue.Queue | None = None
-        self._recording_free_slots: queue.SimpleQueue | None = None
-        self._recording_stream: wp.Stream | None = None
-        self._recording_slots: list[_RecordingReadback] = []
-        self._recording_error: BaseException | None = None
-        self._recording_submitted_frames = 0
-        self._recording_width = 0
-        self._recording_height = 0
 
         self._api = api or PathTracerAPI(
             width=self.width,
@@ -1197,7 +1002,6 @@ class PathTracingViewerBackend:
             self._presenter.render_once(self._render_to_mapped_buffer)
         self.frame_index += 1
         self._update_fps()
-        self._record_frame()
         if self.num_frames is not None and self.frame_index >= self.num_frames:
             self.close()
 
@@ -1224,7 +1028,6 @@ class PathTracingViewerBackend:
 
     def close(self):
         self._closed = True
-        self.stop_recording()
         if self._imgui_impl is not None:
             try:
                 self._imgui_impl.shutdown()
@@ -1459,11 +1262,6 @@ class PathTracingViewerBackend:
         elif symbol == key.ESCAPE:
             self.close()
             return
-        elif symbol == key.R:
-            if not self.is_recording():
-                self.start_recording()
-        elif symbol == key.T:
-            self.stop_recording()
         elif symbol == key.P:
             self.save_screenshot()
         else:
@@ -1730,14 +1528,6 @@ class PathTracingViewerBackend:
                     f"Yaw {self._camera_yaw:.1f}  Pitch {self._camera_pitch:.1f}"
                 )
 
-                if self.is_recording():
-                    imgui.text(f"Recording: {self._recording_path}")
-                    imgui.text(f"Dropped frames: {self.recording_dropped_frames}")
-                    if imgui.button("Stop Recording"):
-                        self.stop_recording()
-                elif imgui.button("Start Recording"):
-                    self.start_recording()
-
                 if imgui.button("Save Screenshot"):
                     self.save_screenshot()
                 if self._last_screenshot_path is not None:
@@ -1752,112 +1542,6 @@ class PathTracingViewerBackend:
             logger.warning("Disabling ImGui overlay after rendering error: %s", error)
             self._imgui_enabled = False
 
-    def start_recording(
-        self,
-        output_path: str | None = None,
-        fps: int | None = None,
-        bitrate_mbps: int | None = None,
-        frame_skip: int | None = None,
-        encoder: str | None = None,
-    ) -> str:
-        """Start buffered MP4 recording using the current tonemapped output."""
-        if self._recording_writer is not None:
-            return str(self._recording_path)
-
-        actual_fps = max(1, int(fps or self.recording_fps))
-        actual_bitrate = max(1, int(bitrate_mbps or self.recording_bitrate_mbps))
-        self.recording_frame_skip = max(1, int(frame_skip or self.recording_frame_skip))
-        path = Path(
-            output_path
-            or self.recording_output_path
-            or (
-                _system_videos_dir()
-                / "WarpOptixRecordings"
-                / time.strftime("pathtracing_recording_%Y%m%d_%H%M%S.mp4")
-            )
-        ).expanduser()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            if self._recording_writer_factory is None:
-                self._recording_writer = _FFmpegVideoWriter(
-                    path,
-                    self.width,
-                    self.height,
-                    actual_fps,
-                    actual_bitrate,
-                    encoder or self.recording_encoder,
-                )
-            else:
-                self._recording_writer = self._recording_writer_factory(
-                    str(path),
-                    fps=actual_fps,
-                    codec="libx264",
-                    bitrate=f"{actual_bitrate}M",
-                    macro_block_size=1,
-                    output_params=["-vf", "vflip", "-preset", "ultrafast"],
-                )
-        except (ImportError, OSError, RuntimeError, ValueError) as error:
-            raise RuntimeError(
-                "Unable to start video recording; install warp_optix[recording]"
-            ) from error
-
-        self._recording_path = path.resolve()
-        self._recording_frame_index = 0
-        self._recording_submitted_frames = 0
-        self.recording_dropped_frames = 0
-        self._recording_error = None
-        self._recording_width = self.width
-        self._recording_height = self.height
-        buffer_count = max(2, int(self.recording_buffer_count))
-        self._recording_queue = queue.Queue(maxsize=buffer_count)
-        self._recording_free_slots = queue.SimpleQueue()
-        self._recording_slots = []
-        self._recording_stream = None
-        source = getattr(self._api.viewer, "tonemapped_output", None)
-        if self.device.is_cuda and isinstance(source, wp.array):
-            self._recording_stream = wp.Stream(self.device)
-            pixel_count = self.width * self.height * 3
-            for _ in range(buffer_count):
-                slot = _RecordingReadback(
-                    device_pixels=wp.empty(
-                        pixel_count, dtype=wp.uint8, device=self.device
-                    ),
-                    host_pixels=wp.empty(
-                        pixel_count, dtype=wp.uint8, device="cpu", pinned=True
-                    ),
-                    ready=wp.Event(self.device),
-                )
-                self._recording_slots.append(slot)
-                self._recording_free_slots.put(slot)
-            # Compile the packing kernel before recording enters the frame loop.
-            wp.launch(
-                _pack_recording_rgb8,
-                dim=(self.width, self.height),
-                inputs=[
-                    source,
-                    self._recording_slots[0].device_pixels,
-                    self.width,
-                    self.height,
-                ],
-                device=self.device,
-                stream=self._recording_stream,
-            )
-            wp.synchronize_stream(self._recording_stream)
-
-        self._recording_thread = threading.Thread(
-            target=self._recording_worker,
-            name="warp-optix-video-encoder",
-            daemon=True,
-        )
-        self._recording_thread.start()
-        selected_encoder = getattr(self._recording_writer, "encoder", "custom")
-        logger.info(
-            "Recording started: %s (encoder=%s, buffers=%d)",
-            self._recording_path,
-            selected_encoder,
-            buffer_count,
-        )
-        return str(self._recording_path)
 
     def save_screenshot(self, output_path: str | Path | None = None) -> str:
         from PIL import Image
@@ -1878,119 +1562,6 @@ class PathTracingViewerBackend:
         logger.info("Saved screenshot to %s", self._last_screenshot_path)
         return str(self._last_screenshot_path)
 
-    def _recording_worker(self) -> None:
-        """Wait for readbacks and feed FFmpeg without blocking rendering."""
-        recording_queue = self._recording_queue
-        writer = self._recording_writer
-        if recording_queue is None or writer is None:
-            return
-        try:
-            while True:
-                item = recording_queue.get()
-                if item is _RECORDING_STOP:
-                    break
-                try:
-                    if isinstance(item, _RecordingReadback):
-                        wp.synchronize_event(item.ready)
-                        frame = item.host_pixels.numpy().reshape(
-                            self._recording_height, self._recording_width, 3
-                        )
-                    else:
-                        frame = item
-                    if self._recording_error is None:
-                        writer.append_data(frame)
-                except BaseException as error:
-                    if self._recording_error is None:
-                        self._recording_error = error
-                finally:
-                    if isinstance(item, _RecordingReadback):
-                        self._recording_free_slots.put(item)
-        finally:
-            try:
-                writer.close()
-            except BaseException as error:
-                if self._recording_error is None:
-                    self._recording_error = error
-
-    def _record_frame(self) -> None:
-        if self._recording_writer is None:
-            return
-        if self._recording_error is not None:
-            error = self._recording_error
-            self.stop_recording()
-            raise RuntimeError("Video recording worker failed") from error
-        frame_number = self._recording_frame_index
-        self._recording_frame_index += 1
-        if frame_number % self.recording_frame_skip != 0:
-            return
-        if self.width != self._recording_width or self.height != self._recording_height:
-            self.recording_dropped_frames += 1
-            return
-
-        if self._recording_stream is not None:
-            try:
-                slot = self._recording_free_slots.get_nowait()
-            except queue.Empty:
-                self.recording_dropped_frames += 1
-                return
-            render_stream = getattr(self._api.viewer, "_render_stream", None)
-            if render_stream is None:
-                render_stream = wp.get_stream(self.device)
-            render_done = render_stream.record_event()
-            self._recording_stream.wait_event(render_done)
-            wp.launch(
-                _pack_recording_rgb8,
-                dim=(self.width, self.height),
-                inputs=[
-                    self._api.viewer.tonemapped_output,
-                    slot.device_pixels,
-                    self.width,
-                    self.height,
-                ],
-                device=self.device,
-                stream=self._recording_stream,
-            )
-            wp.copy(slot.host_pixels, slot.device_pixels, stream=self._recording_stream)
-            self._recording_stream.record_event(slot.ready)
-            self._recording_queue.put_nowait(slot)
-        else:
-            frame = self._api.get_frame_uint8()
-            if frame.shape[-1] == 4:
-                frame = frame[..., :3]
-            try:
-                self._recording_queue.put_nowait(np.ascontiguousarray(frame))
-            except queue.Full:
-                self.recording_dropped_frames += 1
-                return
-        self._recording_submitted_frames += 1
-
-    def stop_recording(self) -> None:
-        if self._recording_writer is None:
-            return
-        recording_queue = self._recording_queue
-        recording_thread = self._recording_thread
-        if recording_queue is not None:
-            recording_queue.put(_RECORDING_STOP)
-        if recording_thread is not None:
-            recording_thread.join()
-        error = self._recording_error
-        self._recording_writer = None
-        self._recording_thread = None
-        self._recording_queue = None
-        self._recording_free_slots = None
-        self._recording_stream = None
-        self._recording_slots = []
-        logger.info(
-            "Recording stopped: %s (frames=%d, dropped=%d)",
-            self._recording_path,
-            self._recording_submitted_frames,
-            self.recording_dropped_frames,
-        )
-        if error is not None:
-            raise RuntimeError("Video recording failed") from error
-
-    def is_recording(self) -> bool:
-        return self._recording_writer is not None
 
     def get_instance_transform_gl_buffer(self) -> int:
         """Compatibility API; OptiX uses CUDA arrays instead of a transform VBO."""

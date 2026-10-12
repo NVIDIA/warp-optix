@@ -27,7 +27,7 @@ pip install -e ".[pathtracing,ui,usd]"
 
 This builds a platform wheel containing the Python package and supplemental
 extension. PyOptiX is a separate dependency, installed automatically. Extras
-are `pathtracing`, `ui`, `usd`, `recording`, and `training`.
+are `pathtracing`, `ui`, `usd`, and `training`.
 
 For a repository-local uv environment:
 
@@ -138,9 +138,6 @@ Apache-2.0. The aggregate package metadata also identifies the OptiX and DLSS SD
 This project is currently not accepting contributions.
 We plan to accept outside contributions in the future. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for updates.
-
-Viewer recording invokes a user-installed FFmpeg executable. FFmpeg is not
-bundled; its applicable license depends on the user's FFmpeg build.
 
 ## CUDA graph limitation
 

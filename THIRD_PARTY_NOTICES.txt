@@ -99,9 +99,3 @@ warp_optix/warp_optix/pathtracing:
     Highlight compression uses RGB / (1 + max(RGB)), followed by sRGB encoding.
 Modifications translate C++/GLSL operations to Python/Warp and adapt buffer
 layouts, GPU access, and scene/material handling.
-
-FFmpeg
-------
-https://ffmpeg.org/legal.html
-Viewer recording invokes a separately installed executable. No FFmpeg binary
-is bundled. The selected FFmpeg build determines its LGPL/GPL and other terms.

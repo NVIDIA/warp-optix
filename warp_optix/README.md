@@ -310,7 +310,7 @@ The denoiser takes an owned `warp_optix.Context`.
 The optional interactive features are installed separately:
 
 ```bash
-pip install -e ".[pathtracing,ui,recording]"
+pip install -e ".[pathtracing,ui]"
 ```
 
 The viewer follows the earlier hybrid viewer controls:
@@ -319,20 +319,11 @@ The viewer follows the earlier hybrid viewer controls:
 - Left drag looks around and the scroll wheel changes field of view.
 - Right click and drag picks bodies when a `picking_factory` is supplied.
 - Space pauses, Escape closes, and 0-8 select path-tracing debug buffers.
-- R starts MP4 recording and T stops it. Recordings default to the system
-  Videos directory under `WarpOptixRecordings/pathtracing_recording_*.mp4`.
-
-Recording requires FFmpeg installed on `PATH`. It packs RGB8 on the GPU,
-reads back asynchronously through pinned buffers, and encodes on a worker
-thread. The automatic encoder probes the
-system FFmpeg with a real frame and prefers `h264_nvenc`; it falls back to
-`libx264` with its ultrafast low-latency preset. Set `recording_encoder` to
-`"h264_nvenc"` or `"libx264"` to override selection. FFmpeg vertically flips
-the raw OptiX image into display orientation while encoding.
+- P saves a screenshot.
 
 `register_ui_callback()` adds application controls to the optional ImGui panel.
 The panel also exposes rendering statistics, DLSS state, visualization flags,
-camera state, debug buffers, picking, pause, and recording controls. Picking
+camera state, debug buffers, picking, pause, and screenshot controls. Picking
 uses an optional `picking_factory` supplied by the application when constructing
 the viewer.
 
