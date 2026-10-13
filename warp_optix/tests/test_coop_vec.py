@@ -273,3 +273,50 @@ def test_coop_vec_fp8_matmul_executes_in_optix(tmp_path, monkeypatch):
         wp.synchronize_device(device_name)
         np.testing.assert_array_equal(output.numpy(), np.ones(n, dtype=np.float32))
         assert resources and packed
+
+
+def test_coop_vec_matrix_convert_checks_allocation_bounds():
+    optix, context = _require_coop_vec()
+    device_name = "cuda:0"
+    n = k = 16
+
+    def description(layout, size, offset=0):
+        desc = optix.CoopVecMatrixDescription()
+        desc.N = n
+        desc.K = k
+        desc.offsetInBytes = offset
+        desc.elementType = optix.COOP_VEC_ELEM_TYPE_FLOAT16
+        desc.layout = layout
+        desc.rowColumnStrideInBytes = 0
+        desc.sizeInBytes = size
+        return desc
+
+    row_layout = optix.COOP_VEC_MATRIX_LAYOUT_ROW_MAJOR
+    packed_layout = optix.COOP_VEC_MATRIX_LAYOUT_INFERENCING_OPTIMAL
+    row_size = context.coopVecMatrixComputeSize(
+        n, k, optix.COOP_VEC_ELEM_TYPE_FLOAT16, row_layout
+    )
+    packed_size = context.coopVecMatrixComputeSize(
+        n, k, optix.COOP_VEC_ELEM_TYPE_FLOAT16, packed_layout
+    )
+    with wp.ScopedDevice(device_name):
+        source = wp.zeros(n * k, dtype=wp.float16, device=device_name)
+        packed = wp.empty(packed_size, dtype=wp.uint8, device=device_name)
+        host = np.zeros(packed_size + 64, dtype=np.uint8)
+        host_ptr = host.ctypes.data + (-host.ctypes.data % 64)
+        past_end = (packed_size + 63) // 64 * 64
+
+        cases = [
+            # Output layer placed past the end of the destination allocation.
+            ([description(row_layout, row_size)], source.ptr,
+             [description(packed_layout, packed_size, offset=past_end)], packed.ptr),
+            # Input layer larger than the source allocation.
+            ([description(row_layout, 4 * row_size)], source.ptr,
+             [description(packed_layout, packed_size)], packed.ptr),
+            # Host memory instead of a CUDA allocation.
+            ([description(row_layout, row_size)], source.ptr,
+             [description(packed_layout, packed_size)], host_ptr),
+        ]
+        for inputs, input_ptr, outputs, output_ptr in cases:
+            with pytest.raises(ValueError, match="Networks"):
+                context.coopVecMatrixConvert(0, inputs, input_ptr, outputs, output_ptr)

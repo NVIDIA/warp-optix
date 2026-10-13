@@ -24,3 +24,23 @@ function(warp_optix_check_optix_version header expected_version)
       "Header: ${header}")
   endif()
 endfunction()
+
+# Verifies the OptiX header tree against a digest of every file's SHA256, so
+# headers supplied through FETCHCONTENT_SOURCE_DIR_OPTIX_HEADERS (which bypasses
+# the archive URL_HASH) are held to the same content as the pinned download.
+function(warp_optix_check_optix_headers include_dir expected_digest)
+  file(GLOB_RECURSE _files RELATIVE "${include_dir}" "${include_dir}/*")
+  list(SORT _files)
+  set(_manifest "")
+  foreach(_file IN LISTS _files)
+    file(SHA256 "${include_dir}/${_file}" _hash)
+    string(APPEND _manifest "${_file} ${_hash}\n")
+  endforeach()
+  string(SHA256 _digest "${_manifest}")
+  if(NOT _digest STREQUAL expected_digest)
+    message(FATAL_ERROR
+      "OptiX headers in ${include_dir} do not match the pinned OptiX "
+      "${WARP_OPTIX_OPTIX_VERSION} headers (digest ${_digest}). Use the pinned "
+      "download or an unmodified copy of NVIDIA/optix-dev@${_optix_headers_commit}.")
+  endif()
+endfunction()

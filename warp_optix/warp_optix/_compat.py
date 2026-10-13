@@ -16,6 +16,17 @@ from typing import Any, Callable
 
 _CODEGEN_LOCK = threading.RLock()
 _CPP_IDENTIFIER_RE = re.compile(r"^[A-Za-z_]\w*$")
+_MODULE_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
+
+
+def validate_module_tag(module_tag: str) -> str:
+    """Reject module tags that could escape the OptiX kernel cache directory."""
+    if not isinstance(module_tag, str) or not _MODULE_TAG_RE.match(module_tag):
+        raise ValueError(
+            "module_tag must be 1-128 characters of letters, digits, '_', '.' "
+            f"or '-' and must not start with '.' or '-', got {module_tag!r}"
+        )
+    return module_tag
 
 
 def _find_cuda_include_dir() -> Path | None:
@@ -328,6 +339,7 @@ def compile_module_to_ptx(
     wp, module, launch_preamble: str, module_tag: str, device: str
 ) -> bytes:
     """Compile an OptiX module through vanilla Warp's private codegen/compiler APIs."""
+    validate_module_tag(module_tag)
     with _CODEGEN_LOCK:
         cuda_device = wp.get_device(device)
         if not cuda_device.is_cuda:

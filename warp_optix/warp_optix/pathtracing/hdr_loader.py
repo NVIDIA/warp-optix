@@ -140,6 +140,13 @@ def _decrunch(reader: _Reader, width: int, scanline: bytearray) -> bool:
     return True
 
 
+# Upper bounds applied before allocating decode buffers, so a crafted header
+# cannot request an arbitrarily large allocation. They still admit 16K x 16K
+# environment maps.
+MAX_HDR_DIMENSION = 32768
+MAX_HDR_PIXELS = 1 << 28
+
+
 def load_hdr(path: str | Path) -> tuple[np.ndarray, int, int]:
     """
     Load Radiance RGBE HDR file with reference-compatible row ordering.
@@ -172,6 +179,15 @@ def load_hdr(path: str | Path) -> tuple[np.ndarray, int, int]:
     width = int(m.group(2))
     if width <= 0 or height <= 0:
         raise ValueError("Invalid HDR: dimensions must be positive")
+    if width > MAX_HDR_DIMENSION or height > MAX_HDR_DIMENSION:
+        raise ValueError(
+            f"Invalid HDR: {width}x{height} exceeds the {MAX_HDR_DIMENSION} pixel "
+            "dimension limit"
+        )
+    if width * height > MAX_HDR_PIXELS:
+        raise ValueError(
+            f"Invalid HDR: {width}x{height} exceeds the {MAX_HDR_PIXELS} pixel limit"
+        )
 
     # Pixel data starts after the resolution line
     data = raw[m.end() :]

@@ -25,7 +25,11 @@ import numpy as np
 import warp as wp
 
 from warp_optix._addon import get_module_build_options
-from warp_optix._compat import compile_module_to_ptx, has_public_addon_hooks
+from warp_optix._compat import (
+    compile_module_to_ptx,
+    has_public_addon_hooks,
+    validate_module_tag,
+)
 
 
 def require_optix():
@@ -222,6 +226,7 @@ def compile_warp_module_to_ptx(
     device: str = "cuda",
 ) -> bytes:
     del script_dir  # Preserved for backward-compatible call sites.
+    validate_module_tag(module_tag)
     # Device-only cooperative-vector wrappers deliberately fail when compiled
     # as an ordinary Warp CUDA kernel. Mark both OptiX compilation paths before
     # the addon header is included so those wrappers can be instantiated.
@@ -417,6 +422,41 @@ def _motion_options_for_keys(optix, num_keys: int, motion_time_range):
     )
 
 
+def _checked_indices(indices, limit: int, name: str) -> np.ndarray:
+    """Convert indices to uint32 after checking that every entry is in ``[0, limit)``.
+
+    OptiX dereferences these indices on the device without bounds checks, so an
+    out-of-range value would read past the end of the vertex buffers.
+    """
+    host_indices = np.asarray(indices)
+    if host_indices.size == 0:
+        return host_indices.astype(np.uint32)
+    if not np.issubdtype(host_indices.dtype, np.integer):
+        raise TypeError(f"{name} must be an integer array, got {host_indices.dtype}")
+    lowest = int(host_indices.min())
+    highest = int(host_indices.max())
+    if lowest < 0 or highest >= limit:
+        raise ValueError(
+            f"{name} must lie in [0, {limit}), got values in [{lowest}, {highest}]"
+        )
+    return host_indices.astype(np.uint32, copy=False)
+
+
+def _curve_degree(optix, curve_type) -> int:
+    """Number of control points following a curve segment's start index."""
+    degrees = {
+        "ROUND_LINEAR": 1,
+        "ROUND_QUADRATIC_BSPLINE": 2,
+        "ROUND_QUADRATIC_BSPLINE_ROCAPS": 2,
+        "FLAT_QUADRATIC_BSPLINE": 2,
+    }
+    for name, degree in degrees.items():
+        value = getattr(optix, f"PRIMITIVE_TYPE_{name}", None)
+        if value is not None and int(value) == int(curve_type):
+            return degree
+    return 3  # Cubic B-spline, Catmull-Rom, and Bezier segments.
+
+
 def create_triangle_gas(
     optix,
     ctx,
@@ -439,7 +479,7 @@ def create_triangle_gas(
         wp.array(key, dtype=wp.float32, device=device) for key in host_vertex_keys
     ]
 
-    host_indices = np.asarray(indices, dtype=np.uint32)
+    host_indices = _checked_indices(indices, host_vertex_keys[0].shape[0], "indices")
     if host_indices.ndim != 2 or host_indices.shape[1] != 3:
         raise ValueError("indices must have shape (M, 3)")
     d_indices = wp.array(
@@ -610,7 +650,14 @@ def create_curve_gas(
     else:
         raise ValueError("widths must have shape (N,) or (K, N), matching vertices")
 
-    host_indices = np.asarray(segment_indices, dtype=np.uint32)
+    # Segment i reads control points i..i+degree, so the last valid start index
+    # leaves room for the remaining control points of the segment.
+    num_vertices = host_vertex_keys[0].shape[0]
+    host_indices = _checked_indices(
+        segment_indices,
+        num_vertices - _curve_degree(optix, curve_type),
+        "segment_indices",
+    )
     if host_indices.ndim != 1 or host_indices.size == 0:
         raise ValueError("segment_indices must be a non-empty one-dimensional array")
     host_indices = np.ascontiguousarray(host_indices)

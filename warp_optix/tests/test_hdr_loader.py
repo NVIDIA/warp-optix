@@ -13,3 +13,12 @@ def test_hdr_loader_rejects_malformed_rle(tmp_path, pixel_data):
 
     with pytest.raises(ValueError, match="pixel data"):
         load_hdr(path)
+
+
+@pytest.mark.parametrize("resolution", [b"-Y 1 +X 40000", b"-Y 20000 +X 20000"])
+def test_hdr_loader_rejects_oversized_dimensions(tmp_path, resolution):
+    path = tmp_path / "huge.hdr"
+    path.write_bytes(b"#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n" + resolution + b"\n")
+
+    with pytest.raises(ValueError, match="exceeds"):
+        load_hdr(path)
