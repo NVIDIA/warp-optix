@@ -39,6 +39,116 @@ version-checked private compatibility adapter remains only for older development
 environments; it does not patch or overwrite the installed Warp package.
 
 
+## Shader binding tables
+
+For a single ray type, keep using `context.create_pipeline(ptx, raygen, miss,
+closest_hit, ...)`. It creates and owns the shader binding table (SBT) for you.
+You do not need to pack records, allocate GPU storage, or calculate offsets.
+
+For multiple materials or ray types, use a named builder:
+
+```python
+sbt = context.create_sbt_builder(ray_types=["radiance", "shadow"])
+sbt.set_miss("radiance", background)
+sbt.set_miss("shadow", shadow_miss)
+glass = sbt.add_hit_group(
+    "glass",
+    radiance=wo.HitKernel(closest_hit=glass_hit),
+    shadow=wo.HitKernel(any_hit=glass_shadow),
+)
+metal = sbt.add_hit_group(
+    "metal",
+    radiance=wo.HitKernel(closest_hit=metal_hit),
+    shadow=wo.HitKernel(any_hit=metal_shadow),
+)
+
+# Compile the module containing these kernels before creating the pipeline.
+pipeline = context.create_pipeline(
+    ptx, raygen, sbt=sbt,
+    num_payload_values=3, num_attribute_values=2,
+    traversable_graph_flags=wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
+)
+scene = context.create_instance_acceleration_structure([
+    wo.Instance(glass_geometry, hit_group=glass),
+    wo.Instance(metal_geometry, hit_group=metal),
+])
+print(pipeline.sbt.describe())
+```
+
+`HitKernel` accepts decorated Warp kernels or explicit PTX entry names. Supply
+one miss program for each ray type and one `HitKernel` per ray type in every
+group. The builder reports missing or unknown ray types and incompatible
+geometry kinds before native allocation. For custom primitives, include the
+intersection program for every ray type; for curves, include the same
+`builtin_intersection_type` for every ray type in the group.
+
+Each group returns a `HitGroupHandle`. Pass it to `Instance(hit_group=...)`
+instead of calculating an instance offset. Handles and geometry must belong
+to the same context, and handles within one IAS must come from the same
+builder. Use that builder's pipeline when tracing the scene: a raw traversable
+in launch parameters does not carry enough information to check this at launch.
+Handles select the first group for an instance; the common triangle/curve GAS
+has one geometry record. For a custom GAS with multiple `num_sbt_records`,
+register consecutive groups for those records and use the first group's handle.
+
+### Selecting ray types inside shaders
+
+The builder controls record layout. Your shader still selects which ray type
+to trace. Pass these values through launch parameters (or compile them as
+constants):
+
+```python
+params.radiance_ray = pipeline.sbt.ray_type_index("radiance")
+params.shadow_ray = pipeline.sbt.ray_type_index("shadow")
+params.ray_stride = pipeline.sbt.trace_stride
+```
+
+In `wp.optix_trace`, use the selected ray index for **both** the SBT offset and
+miss index, and `ray_stride` for the SBT stride:
+
+```python
+wp.optix_trace(
+    params.traversable, origin, direction, tmin, tmax, time,
+    visibility_mask, ray_flags,
+    params.shadow_ray, params.ray_stride, params.shadow_ray, payload,
+)
+```
+
+These three arguments count records, not bytes. In the example above, the hit
+records are `glass/radiance`, `glass/shadow`, `metal/radiance`, `metal/shadow`;
+the instance handles select offsets 0 and 2. The trace chooses the ray within
+that group. With multiple geometry records in a GAS, OptiX additionally advances
+by `geometry_record_index * ray_stride`. Custom GAS `sbt_index_offsets` are
+geometry record indices, not the handles' already scaled instance offsets.
+The trace stride supports up to 15 named ray types.
+
+### Inspection and advanced use
+
+`pipeline.sbt` is an immutable `SbtLayout`, available for both pipeline creation
+styles. `describe()` returns a printable table of miss/hit record indices, group
+names, ray types, and shaders. `sbt.describe()` previews a builder before compiling
+PTX. Groups retain insertion order; ray types retain their declared order.
+`pipeline.sbt.get_sbt_offset(handle)` validates membership and returns the raw
+record offset. `pipeline.hit_group_offsets` remains available for existing code.
+
+Pipeline creation snapshots the builder. Appending groups or replacing miss
+programs affects only future pipelines; existing handles retain their offsets.
+A handle added later is not valid for an earlier pipeline's layout. All native
+program groups, record alignment, uploads, and device-buffer lifetimes remain
+managed by the context.
+
+Exception and callable programs still use `exception_entry`,
+`direct_callable_entries`, and `continuation_callable_entries` on
+`create_pipeline()`, including when `sbt=` is provided. Callable indices remain
+available on the pipeline. Do not combine `sbt=` with `miss_entry`, `hit_groups`,
+or individual hit entry arguments. Explicit `Instance.sbt_offset` remains
+available, but cannot be combined with a nonzero offset and `hit_group`.
+
+This builder currently creates header-only records. Custom record payloads and
+externally managed SBT buffers use the advanced `warp_optix.native` API.
+See the runnable [mixed geometry example](../examples_warp/example_warp_optix_mixed_geometry.py)
+for builder and handle usage with triangles, curves, and custom intersections.
+
 ## OptiX cooperative vectors
 
 OptiX 9 cooperative vectors are native SDK facilities, not Warp operations.

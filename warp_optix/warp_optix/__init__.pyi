@@ -6,6 +6,9 @@ from ._api import AccelerationStructure as AccelerationStructure
 from ._api import Pipeline as Pipeline
 from ._api import Instance as Instance
 from ._api import HitKernel as HitKernel
+from ._sbt import SbtBuilder as SbtBuilder
+from ._sbt import SbtLayout as SbtLayout
+from ._sbt import HitGroupHandle as HitGroupHandle
 from ._enums import GeometryFlags as GeometryFlags
 from ._enums import PrimitiveType as PrimitiveType
 from ._enums import PrimitiveTypeFlags as PrimitiveTypeFlags

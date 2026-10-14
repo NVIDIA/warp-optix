@@ -436,29 +436,34 @@ def main() -> None:
         )
         curve_buffers = curve_gas_resource.buffers
 
+        sbt = context.create_sbt_builder()
+        sbt.set_miss("radiance", miss)
+        triangle_hit_group = sbt.add_hit_group(
+            "triangle", radiance=woptix.HitKernel(closest_hit=triangle_closest_hit)
+        )
+        shape_hit_group = sbt.add_hit_group(
+            "analytical",
+            radiance=woptix.HitKernel(
+                closest_hit=analytical_closest_hit,
+                intersection=analytical_intersection,
+            ),
+        )
+        curve_hit_group = sbt.add_hit_group(
+            "curve",
+            radiance=woptix.HitKernel(
+                closest_hit=curve_closest_hit,
+                builtin_intersection_type=curve_type,
+            ),
+        )
         pipeline = context.create_pipeline(
             ptx,
             raygen,
-            miss,
-            None,
+            sbt=sbt,
             num_payload_values=3,
             num_attribute_values=3,
-            hit_groups=[
-                woptix.HitKernel(closest_hit=triangle_closest_hit),
-                woptix.HitKernel(
-                    closest_hit=analytical_closest_hit,
-                    intersection=analytical_intersection,
-                ),
-                woptix.HitKernel(
-                    closest_hit=curve_closest_hit,
-                    builtin_intersection_type=curve_type,
-                ),
-            ],
             traversable_graph_flags=woptix.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
         )
-        triangle_hit_group, shape_hit_group, curve_hit_group = (
-            pipeline.hit_group_offsets
-        )
+        print(pipeline.sbt.describe())
 
         identity = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]
         instances = [
@@ -466,7 +471,7 @@ def main() -> None:
                 triangle_gas_resource,
                 transform=identity,
                 instance_id=0,
-                sbt_offset=triangle_hit_group,
+                hit_group=triangle_hit_group,
                 visibility_mask=255,
                 flags=woptix.InstanceFlags.NONE,
             ),
@@ -486,7 +491,7 @@ def main() -> None:
                     shape_gas_resource,
                     transform=transform,
                     instance_id=shape_id,
-                    sbt_offset=shape_hit_group,
+                    hit_group=shape_hit_group,
                     visibility_mask=255,
                     flags=woptix.InstanceFlags.NONE,
                 )
@@ -496,7 +501,7 @@ def main() -> None:
                 curve_gas_resource,
                 transform=identity,
                 instance_id=7,
-                sbt_offset=curve_hit_group,
+                hit_group=curve_hit_group,
                 visibility_mask=255,
                 flags=woptix.InstanceFlags.NONE,
             )

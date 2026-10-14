@@ -35,6 +35,7 @@ from warp_optix._compat import (
 def require_optix():
     try:
         from warp_optix._backend import get_backend
+
         optix = get_backend()
     except ImportError as e:
         raise RuntimeError(
@@ -799,6 +800,8 @@ def create_pipeline_and_sbt(
     direct_callable_entries=None,
     continuation_callable_entries=None,
     exception_flags: int | None = None,
+    miss_entries=None,
+    num_ray_types: int = 1,
 ):
     from warp_optix._codegen import OptixKernelType  # noqa: PLC0415
     from warp_optix._runtime.hit_kernels import HitKernel  # noqa: PLC0415
@@ -807,9 +810,16 @@ def create_pipeline_and_sbt(
     raygen_name = get_optix_entry_name(
         raygen_entry, expected_kernel_type=OptixKernelType.RAYGEN
     )
-    miss_name = get_optix_entry_name(
-        miss_entry, expected_kernel_type=OptixKernelType.MISS
-    )
+    if not isinstance(num_ray_types, int) or not 1 <= num_ray_types <= 15:
+        raise ValueError("num_ray_types must be between 1 and 15")
+    if miss_entries is not None and miss_entry is not None:
+        raise ValueError("miss_entries cannot be combined with miss_entry")
+    miss_names = [
+        get_optix_entry_name(entry, expected_kernel_type=OptixKernelType.MISS)
+        for entry in (miss_entries if miss_entries is not None else [miss_entry])
+    ]
+    if len(miss_names) != num_ray_types:
+        raise ValueError("Exactly one miss program is required per ray type")
 
     if hit_groups is not None:
         if any(
@@ -832,6 +842,8 @@ def create_pipeline_and_sbt(
                 HitKernel(closest_hit_entry, any_hit_entry, intersection_entry)
             )
 
+    if len(requested_hit_groups) % num_ray_types:
+        raise ValueError("Each hit group must contain one program per ray type")
     resolved_hit_groups = []
     for group in requested_hit_groups:
         closest_hit_name = (
@@ -928,13 +940,14 @@ def create_pipeline_and_sbt(
     if log:
         print(f"Module create log:\n{log}")
 
-    sbt_manager = SbtKernelManager(optix, ctx, module)
+    sbt_manager = SbtKernelManager(optix, ctx, module, num_ray_subtypes=num_ray_types)
     sbt_manager.set_raygen_kernel(raygen_name)
     if exception_entry is not None:
         sbt_manager.set_exception_kernel(exception_entry)
-    sbt_manager.add_miss_kernels([miss_name])
+    sbt_manager.add_miss_kernels(miss_names)
     hit_group_handles = []
     builtin_modules = []
+    pending_kernels = []
     for group in resolved_hit_groups:
         intersection_module = None
         if group.builtin_intersection_type is not None:
@@ -946,17 +959,20 @@ def create_pipeline_and_sbt(
                 module_options, pipeline_options, builtin_options
             )
             builtin_modules.append(intersection_module)
-        hit_group_handles.append(
-            sbt_manager.register_hit_shader_type(
-                HitKernel(
-                    group.closest_hit,
-                    group.any_hit,
-                    group.intersection,
-                    builtin_intersection_type=group.builtin_intersection_type,
-                    intersection_module=intersection_module,
-                )
+        pending_kernels.append(
+            HitKernel(
+                group.closest_hit,
+                group.any_hit,
+                group.intersection,
+                builtin_intersection_type=group.builtin_intersection_type,
+                intersection_module=intersection_module,
             )
         )
+        if len(pending_kernels) == num_ray_types:
+            hit_group_handles.append(
+                sbt_manager.register_hit_shader_type(*pending_kernels)
+            )
+            pending_kernels.clear()
 
     direct_callable_handles = [
         sbt_manager.add_callable_kernel(entry)

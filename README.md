@@ -63,6 +63,11 @@ by launch parameters alive until GPU work completes. Launches are asynchronous
 on Warp's current stream, or on an explicitly supplied `wp.Stream`; geometry
 builds and refits are synchronous.
 
+For multiple materials or ray types, use `context.create_sbt_builder()` and pass
+its hit-group handles to `Instance(hit_group=...)`. The builder manages record
+offsets; `pipeline.sbt.describe()` shows which shaders each ray type selects.
+See the [SBT guide](warp_optix/README.md#shader-binding-tables).
+
 See the [API guide](warp_optix/README.md), [migration notes](docs/migration-0.2.md),
 and runnable [examples](examples_warp/README.md).
 

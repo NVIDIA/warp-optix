@@ -133,6 +133,11 @@ def test_launch_nondefault_stream_and_reject_unsafe_capture(context, ptx):
     pipeline = context.create_pipeline(
         ptx, raygen, miss, num_payload_values=0, num_attribute_values=0
     )
+    assert isinstance(pipeline.sbt, wo.SbtLayout)
+    assert pipeline.sbt.ray_types == ("radiance",)
+    assert pipeline.sbt.trace_stride == 1
+    assert pipeline.sbt.hit_groups == ()
+    assert "miss" in pipeline.sbt.describe()
     params = Params()
     params.output = wp.zeros(8, dtype=wp.uint32, device=context.device)
     buffer = wo.create_launch_params_buffer(Params, context.device)

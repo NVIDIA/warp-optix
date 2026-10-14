@@ -16,6 +16,7 @@ import warp as wp
 from ._backend import get_backend
 from ._enums import InstanceFlags, PrimitiveType
 from ._runtime import runtime
+from ._sbt import HitGroupHandle, SbtBuilder, SbtLayout
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class Instance:
     sbt_offset: int = 0
     visibility_mask: int = 255
     flags: InstanceFlags = InstanceFlags.NONE
+    hit_group: HitGroupHandle | None = None
 
 
 class _TrackedContext:
@@ -257,6 +259,7 @@ class Context:
     ) -> AccelerationStructure:
         self._check_open()
         native_instances, dependencies = [], []
+        layout_owner = None
         for instance in instances:
             if not isinstance(instance, Instance):
                 raise TypeError(
@@ -273,11 +276,30 @@ class Context:
                 raise ValueError(
                     "Instance transform must contain 12 finite values (row-major 3x4)"
                 )
+            sbt_offset = instance.sbt_offset
+            if instance.hit_group is not None:
+                if sbt_offset != 0:
+                    raise ValueError(
+                        "Instance hit_group cannot be combined with a nonzero sbt_offset"
+                    )
+                if not isinstance(instance.hit_group, HitGroupHandle):
+                    raise TypeError("Instance hit_group must be a HitGroupHandle")
+                if instance.hit_group._context is not self:
+                    raise ValueError("Instance hit group must belong to this context")
+                if (
+                    layout_owner is not None
+                    and layout_owner is not instance.hit_group._owner
+                ):
+                    raise ValueError(
+                        "Instance hit groups must come from the same SBT builder"
+                    )
+                layout_owner = instance.hit_group._owner
+                sbt_offset = instance.hit_group.sbt_offset
             native_instances.append(
                 self._backend.Instance(
                     transform.reshape(-1).tolist(),
                     instance.instance_id,
-                    instance.sbt_offset,
+                    sbt_offset,
                     instance.visibility_mask,
                     int(instance.flags),
                     geometry.handle,
@@ -292,11 +314,17 @@ class Context:
             compact=compact,
         )
 
+    def create_sbt_builder(
+        self, ray_types: Sequence[str] = ("radiance",)
+    ) -> SbtBuilder:
+        """Describe named ray types and hit groups; native resources are built with the pipeline."""
+        return SbtBuilder(self, ray_types)
+
     def create_pipeline(
         self,
         ptx: bytes,
         raygen_entry: wp.Kernel | str,
-        miss_entry: wp.Kernel | str,
+        miss_entry: wp.Kernel | str | None = None,
         closest_hit_entry: wp.Kernel | str | None = None,
         *,
         num_payload_values: int,
@@ -305,6 +333,7 @@ class Context:
         any_hit_entry=None,
         primitive_type_flags=None,
         hit_groups: Sequence[HitKernel] | None = None,
+        sbt: SbtBuilder | None = None,
         traversable_graph_flags=None,
         max_traversable_depth=None,
         uses_motion_blur=False,
@@ -315,39 +344,82 @@ class Context:
     ) -> Pipeline:
         from ._runtime.hit_kernels import HitKernel as NativeHitKernel
 
-        native_groups = None
-        if hit_groups is not None:
-            native_groups = []
-            for group in hit_groups:
-                if not isinstance(group, HitKernel):
-                    raise TypeError(
-                        "hit_groups must contain warp_optix.HitKernel descriptors"
-                    )
-                native_groups.append(
-                    NativeHitKernel(
-                        group.closest_hit,
-                        group.any_hit,
-                        group.intersection,
-                        builtin_intersection_type=None
-                        if group.builtin_intersection_type is None
-                        else self._backend.PrimitiveType(
-                            int(group.builtin_intersection_type)
-                        ),
-                    )
+        self._check_open()
+        if sbt is not None:
+            if not isinstance(sbt, SbtBuilder):
+                raise TypeError("sbt must be a SbtBuilder")
+            if sbt._context is not self:
+                raise ValueError("SBT builder must belong to this context")
+            if any(
+                value is not None
+                for value in (
+                    miss_entry,
+                    closest_hit_entry,
+                    intersection_entry,
+                    any_hit_entry,
+                    hit_groups,
                 )
+            ):
+                raise ValueError(
+                    "sbt cannot be combined with miss_entry, hit_groups, or individual hit entry arguments"
+                )
+            layout = sbt._snapshot(resolve=True)
+        else:
+            # The convenience API and explicit builder share validation and layout inspection.
+            builder = self.create_sbt_builder()
+            if miss_entry is None:
+                raise ValueError("Provide miss_entry or an sbt builder")
+            builder.set_miss("radiance", miss_entry)
+            if hit_groups is not None:
+                if any(
+                    entry is not None
+                    for entry in (closest_hit_entry, intersection_entry, any_hit_entry)
+                ):
+                    raise ValueError(
+                        "hit_groups cannot be combined with the individual hit entry arguments"
+                    )
+                requested_groups = hit_groups
+            else:
+                requested_groups = (
+                    [HitKernel(closest_hit_entry, any_hit_entry, intersection_entry)]
+                    if any(
+                        entry is not None
+                        for entry in (
+                            closest_hit_entry,
+                            intersection_entry,
+                            any_hit_entry,
+                        )
+                    )
+                    else []
+                )
+            for index, group in enumerate(requested_groups):
+                builder.add_hit_group(f"group_{index}", radiance=group)
+            layout = builder._snapshot(resolve=True)
+        native_groups = [
+            NativeHitKernel(
+                kernel.closest_hit,
+                kernel.any_hit,
+                kernel.intersection,
+                builtin_intersection_type=None
+                if kernel.builtin_intersection_type is None
+                else self._backend.PrimitiveType(int(kernel.builtin_intersection_type)),
+            )
+            for group in layout._hit_kernels
+            for kernel in group
+        ]
         with self._transaction():
-            handle, sbt, resources = runtime.create_pipeline_and_sbt(
+            handle, native_sbt, resources = runtime.create_pipeline_and_sbt(
                 self._backend,
                 self._native_context,
                 ptx,
                 raygen_entry,
-                miss_entry,
-                closest_hit_entry,
+                None,
+                None,
                 num_payload_values,
                 num_attribute_values,
                 self.device,
-                intersection_entry=intersection_entry,
-                any_hit_entry=any_hit_entry,
+                miss_entries=layout._miss_entries,
+                num_ray_types=layout.trace_stride,
                 primitive_type_flags=primitive_type_flags,
                 hit_groups=native_groups,
                 traversable_graph_flags=traversable_graph_flags,
@@ -358,7 +430,7 @@ class Context:
                 continuation_callable_entries=continuation_callable_entries,
                 exception_flags=exception_flags,
             )
-            result = Pipeline(self, handle, sbt, resources)
+            result = Pipeline(self, handle, native_sbt, resources, layout)
             self._resources.append(result)
             return result
 
@@ -461,12 +533,13 @@ class AccelerationStructure:
 class Pipeline:
     """Pipeline, SBT, and program modules retained by their Context."""
 
-    def __init__(self, context, handle, sbt, resources):
+    def __init__(self, context, handle, sbt, resources, layout: SbtLayout):
         self._context = context
         self._handle = handle
         self._sbt = sbt
         self._resources = resources
         self._params = {}
+        self._sbt_layout = layout
         manager = resources["sbt_manager"]
         self.hit_group_offsets = tuple(
             manager.get_sbt_offset(h) for h in resources["hit_group_handles"]
@@ -478,6 +551,11 @@ class Pipeline:
             manager.get_callable_index(h)
             for h in resources["continuation_callable_handles"]
         )
+
+    @property
+    def sbt(self) -> SbtLayout:
+        """Immutable named layout; native buffers remain owned by this pipeline."""
+        return self._sbt_layout
 
     @property
     def native_handle(self):
