@@ -13,8 +13,8 @@ Unmodified headers are fetched for building and bundled under warp_optix/include
 in all wheels for runtime kernel compilation.
 Original header notices are preserved, with the upstream SDK license included
 alongside the headers. The headers remain under NVIDIA SDK terms, not Apache-2.0.
-Public source-header redistribution approval from the OptiX owner and legal
-team is pending.
+Redistribution of these unmodified headers in the public warp-optix pip package
+has been approved.
 
 DLSS
 ----
