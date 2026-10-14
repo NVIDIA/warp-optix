@@ -15,9 +15,8 @@ DLSS SDK 310.9.1 are fetched automatically.
 The wheel includes unmodified OptiX SDK 9.1.0 headers under `warp_optix/include`
 for runtime kernel compilation, so a separate OptiX SDK installation is not
 required. The headers retain their NVIDIA SDK terms in `OptiX_LICENSE.txt`,
-identified in package metadata as `LicenseRef-NVIDIA-OptiX`. Public header
-redistribution remains subject to written confirmation from the OptiX owner
-and legal review.
+identified in package metadata as `LicenseRef-NVIDIA-OptiX`. Redistribution of
+these unmodified headers in the public warp-optix pip package has been approved.
 
 ```powershell
 pip install .
