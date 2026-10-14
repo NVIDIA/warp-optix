@@ -231,3 +231,35 @@ def test_public_enums_match_bundled_sdk():
     assert int(flags) == int(native.BUILD_FLAG_PREFER_FAST_TRACE) | int(
         native.BUILD_FLAG_ALLOW_UPDATE
     )
+
+
+@pytest.mark.parametrize("indices", [[[0, 1, 3]], [[0, 1, -1]], [[0.0, 1.0, 2.0]]])
+def test_triangle_indices_must_reference_existing_vertices(context, indices):
+    vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
+    with pytest.raises((ValueError, TypeError), match="indices"):
+        context.create_triangle_gas(vertices, np.asarray(indices))
+
+
+@pytest.mark.parametrize(
+    ("curve_type", "segment_indices"),
+    [
+        (wo.PrimitiveType.ROUND_LINEAR, [3]),
+        (wo.PrimitiveType.ROUND_CUBIC_BSPLINE, [1]),
+        (wo.PrimitiveType.ROUND_QUADRATIC_BSPLINE, [-1]),
+    ],
+)
+def test_curve_segments_must_fit_in_vertex_buffer(context, curve_type, segment_indices):
+    vertices = np.zeros((4, 3), dtype=np.float32)
+    widths = np.full(4, 0.1, dtype=np.float32)
+    with pytest.raises(ValueError, match="segment_indices"):
+        context.create_curve_gas(
+            vertices, widths, np.asarray(segment_indices), curve_type=curve_type
+        )
+
+
+@pytest.mark.parametrize("module_tag", ["", "../escape", "a/b", ".hidden", "-opt"])
+def test_compile_rejects_module_tags_outside_kernel_cache(module_tag):
+    with pytest.raises(ValueError, match="module_tag"):
+        wo.compile_warp_module_to_ptx(
+            wp.get_module(__name__), "", module_tag, __file__
+        )

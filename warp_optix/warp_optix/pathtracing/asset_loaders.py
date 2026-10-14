@@ -57,6 +57,21 @@ def _decode_data_uri(uri: str) -> bytes:
     return base64.b64decode(uri[at + len(marker) :])
 
 
+def _read_external_uri(path: Path, uri: str) -> bytes:
+    """Read a glTF external resource, confined to the directory of the glTF file.
+
+    glTF files are untrusted input, so a ``uri`` must not reach files elsewhere
+    on disk through absolute paths, ``..`` components, or filesystem links.
+    """
+    base = path.parent.resolve()
+    target = (base / uri).resolve()
+    if not target.is_relative_to(base):
+        raise ValueError(
+            f"glTF resource {uri!r} resolves outside the asset directory {base}"
+        )
+    return target.read_bytes()
+
+
 def _load_gltf_json_and_buffers(path: Path) -> tuple[dict, list[bytes]]:
     if path.suffix.lower() == ".glb":
         return _load_glb(path)
@@ -68,7 +83,7 @@ def _load_gltf_json_and_buffers(path: Path) -> tuple[dict, list[bytes]]:
         if uri.startswith("data:"):
             raw = _decode_data_uri(uri)
         else:
-            raw = (path.parent / uri).read_bytes()
+            raw = _read_external_uri(path, uri)
         buffers.append(raw)
     return root, buffers
 
@@ -166,7 +181,7 @@ def _load_gltf_images(
             if uri.startswith("data:"):
                 raw = _decode_data_uri(uri)
             else:
-                raw = (path.parent / uri).read_bytes()
+                raw = _read_external_uri(path, uri)
         elif "bufferView" in img:
             view = buffer_views[int(img["bufferView"])]
             bo = int(view.get("byteOffset", 0))

@@ -15,6 +15,8 @@ static_assert(OPTIX_VERSION == 90100,
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <array>
+#include <climits>
+#include <cstdlib>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -25,6 +27,13 @@ static_assert(OPTIX_VERSION == 90100,
 #include <string>
 #include <utility>
 #include <vector>
+
+#ifndef _WIN32
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #ifdef PYOPTIX_ENABLE_DLSS
 #include <nvsdk_ngx.h>
@@ -56,6 +65,43 @@ py::tuple optix_version() {
 void ensure_optix_initialized() {
     static std::once_flag initialized;
     std::call_once(initialized, [] { PYOPTIX_CHECK(optixInit()); });
+}
+
+size_t checked_add(size_t a, size_t b, const char* what) {
+    if (a > SIZE_MAX - b)
+        throw py::value_error(std::string(what) + " overflows the address space");
+    return a + b;
+}
+
+size_t checked_mul(size_t a, size_t b, const char* what) {
+    if (a != 0 && b > SIZE_MAX / a)
+        throw py::value_error(std::string(what) + " overflows the address space");
+    return a * b;
+}
+
+// Bytes touched from `base` by `numNetworks` networks of `layers`, spaced `stride` apart.
+size_t network_extent(const std::vector<OptixCoopVecMatrixDescription>& layers,
+                      size_t stride, unsigned int numNetworks, const char* what) {
+    size_t layerEnd = 0;
+    for (const OptixCoopVecMatrixDescription& layer : layers)
+        layerEnd = std::max(layerEnd, checked_add(layer.offsetInBytes, layer.sizeInBytes, what));
+    return checked_add(checked_mul(numNetworks - 1, stride, what), layerEnd, what);
+}
+
+// Raw device pointers arrive from Python as integers, so verify that they lie in a
+// live CUDA allocation that covers `requiredBytes` before OptiX reads or writes them.
+void require_device_range(uintptr_t ptr, size_t requiredBytes, const char* name) {
+    CUdeviceptr rangeStart = 0;
+    size_t rangeSize = 0;
+    const CUdeviceptr devicePtr = static_cast<CUdeviceptr>(ptr);
+    if (cuPointerGetAttribute(&rangeStart, CU_POINTER_ATTRIBUTE_RANGE_START_ADDR, devicePtr) != CUDA_SUCCESS ||
+        cuPointerGetAttribute(&rangeSize, CU_POINTER_ATTRIBUTE_RANGE_SIZE, devicePtr) != CUDA_SUCCESS)
+        throw py::value_error(std::string(name) + " is not a CUDA device allocation");
+    const size_t available = static_cast<size_t>(rangeStart + rangeSize - devicePtr);
+    if (requiredBytes > available)
+        throw py::value_error(std::string(name) + " requires " + std::to_string(requiredBytes) +
+                              " bytes but its allocation has " + std::to_string(available) +
+                              " bytes after the pointer");
 }
 }
 
@@ -222,6 +268,8 @@ void coopVecMatrixConvert(
         throw py::value_error( "network strides must be non-zero when numNetworks is greater than one" );
     if( inputNetworkStrideInBytes % 64 != 0 || outputNetworkStrideInBytes % 64 != 0 )
         throw py::value_error( "cooperative-vector network strides must be multiples of 64 bytes" );
+    if( inputLayers.size() > UINT_MAX )
+        throw py::value_error( "too many cooperative-vector matrix descriptions" );
 
     for( size_t i = 0; i < inputLayers.size(); ++i )
     {
@@ -238,6 +286,13 @@ void coopVecMatrixConvert(
         if( ( outputNetworks % 64 + output.offsetInBytes % 64 ) % 64 != 0 )
             throw py::value_error( "each output matrix address must be 64-byte aligned" );
     }
+
+    require_device_range( inputNetworks,
+        network_extent( inputLayers, inputNetworkStrideInBytes, numNetworks, "input network extent" ),
+        "inputNetworks" );
+    require_device_range( outputNetworks,
+        network_extent( outputLayers, outputNetworkStrideInBytes, numNetworks, "output network extent" ),
+        "outputNetworks" );
 
     OptixNetworkDescription inputDescription{
         const_cast<OptixCoopVecMatrixDescription*>( inputLayers.data() ),
@@ -273,6 +328,58 @@ static std::wstring toWideString( const std::string& value )
     return std::filesystem::u8path( value ).wstring();
 }
 
+// NGX writes logs and other runtime files to the application data path. Default
+// to a per-user cache directory rather than the current working directory,
+// which may be shared or attacker-writable.
+static std::filesystem::path defaultNgxDataPath()
+{
+    std::filesystem::path root;
+#ifdef _WIN32
+    if( const wchar_t* localAppData = _wgetenv( L"LOCALAPPDATA" ); localAppData && *localAppData )
+        root = localAppData;
+#else
+    if( const char* cache = std::getenv( "XDG_CACHE_HOME" ); cache && *cache )
+        root = cache;
+    else if( const char* home = std::getenv( "HOME" ); home && *home )
+        root = std::filesystem::path( home ) / ".cache";
+#endif
+    if( root.empty() || !root.is_absolute() )
+        throw std::runtime_error( "Cannot determine a per-user cache directory for DLSS; pass applicationDataPath" );
+    const std::filesystem::path path = root / "warp_optix" / "ngx";
+#ifdef _WIN32
+    std::filesystem::create_directories( path );
+#else
+    std::filesystem::create_directories( path.parent_path() );
+    if( mkdir( path.c_str(), 0700 ) != 0 && errno != EEXIST )
+        throw std::runtime_error( "Cannot create DLSS data directory " + path.string() );
+    // Check and restrict the directory through one descriptor opened without following
+    // symlinks, so it cannot be swapped between the ownership check and chmod.
+    const int fd = open( path.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC );
+    struct stat info {};
+    const bool owned = fd >= 0 && fstat( fd, &info ) == 0 && S_ISDIR( info.st_mode ) && info.st_uid == geteuid();
+    const bool restricted = owned && fchmod( fd, 0700 ) == 0;
+    if( fd >= 0 )
+        close( fd );
+    if( !restricted )
+        throw std::runtime_error( "DLSS data directory " + path.string() +
+                                  " must be a real directory owned by the current user" );
+#endif
+    return path;
+}
+
+// NGX loads the DLSS feature library from this path, so only accept an absolute
+// location and default to the directory of this extension, where the wheel
+// installs the DLSS runtime.
+static std::filesystem::path dlssFeatureSearchPath( const std::string& featureSearchPath )
+{
+    std::filesystem::path path = featureSearchPath.empty()
+        ? std::filesystem::u8path( py::module_::import( "warp_optix._ext" ).attr( "__file__" ).cast<std::string>() ).parent_path()
+        : std::filesystem::u8path( featureSearchPath );
+    if( !path.is_absolute() )
+        throw py::value_error( "featureSearchPath must be an absolute path" );
+    return std::filesystem::weakly_canonical( path );
+}
+
 static void NVSDK_CONV dlssLogCallback( const char* message, NVSDK_NGX_Logging_Level, NVSDK_NGX_Feature )
 {
     if( message )
@@ -291,15 +398,12 @@ void dlssRRContextInit(
     if( context.initialized )
         return;
 
-    const std::wstring appPath = applicationDataPath.empty() ? std::filesystem::current_path().wstring() : toWideString( applicationDataPath );
-    const std::wstring featurePath = toWideString( featureSearchPath );
+    const std::wstring appPath = applicationDataPath.empty() ? defaultNgxDataPath().wstring() : toWideString( applicationDataPath );
+    const std::wstring featurePath = dlssFeatureSearchPath( featureSearchPath ).wstring();
     const wchar_t* featurePathValue = featurePath.c_str();
     NVSDK_NGX_FeatureCommonInfo featureInfo = {};
-    if( !featurePath.empty() )
-    {
-        featureInfo.PathListInfo.Path = &featurePathValue;
-        featureInfo.PathListInfo.Length = 1;
-    }
+    featureInfo.PathListInfo.Path = &featurePathValue;
+    featureInfo.PathListInfo.Length = 1;
     if( enableLogging )
     {
         featureInfo.LoggingInfo.LoggingCallback = dlssLogCallback;
@@ -643,6 +747,12 @@ void install_pyoptix_extensions(py::module_ upstream) {
     require_upstream_type<OptixDenoiserSizes>(upstream.attr("DenoiserSizes"));
 
     auto context = upstream.attr("DeviceContext");
+    // Supplemental bindings only add missing API; never replace PyOptiX methods.
+    for (const char* name : {"coopVecMatrixComputeSize", "coopVecMatrixConvert"}) {
+        if (py::hasattr(context, name) && !py::hasattr(upstream, "_warp_optix_native_extensions_installed"))
+            throw py::import_error(std::string("pyoptix already defines DeviceContext.") + name +
+                                   "; refusing to replace it");
+    }
     context.attr("coopVecMatrixComputeSize") = py::cpp_function(
         &warp_optix_ext::coopVecMatrixComputeSize, py::is_method(context),
         py::arg("N"), py::arg("K"), py::arg("elementType"), py::arg("layout"),
@@ -662,6 +772,7 @@ void install_pyoptix_extensions(py::module_ upstream) {
     add_field(sizes, "computeIntensitySizeInBytes", &OptixDenoiserSizes::computeIntensitySizeInBytes);
     add_field(sizes, "computeAverageColorSizeInBytes", &OptixDenoiserSizes::computeAverageColorSizeInBytes);
     add_field(sizes, "internalGuideLayerPixelSizeInBytes", &OptixDenoiserSizes::internalGuideLayerPixelSizeInBytes);
+    upstream.attr("_warp_optix_native_extensions_installed") = true;
 }
 
 } // namespace

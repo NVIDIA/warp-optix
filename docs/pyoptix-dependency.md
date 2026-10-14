@@ -4,9 +4,13 @@
 contexts, geometry, pipelines, launches, and denoisers. The warp-optix
 extension supplies supplemental bindings.
 
-CMake reads that exact pin to select the OptiX header tag and checks the actual
-`OPTIX_VERSION` in `optix.h` before compiling, including when a local SDK is
-supplied through `FETCHCONTENT_SOURCE_DIR_OPTIX_HEADERS`. A compiler assertion
+CMake downloads the OptiX headers as an archive of the immutable
+`NVIDIA/optix-dev` commit behind the `v9.1.0` tag and verifies its SHA512. It then
+checks the actual `OPTIX_VERSION` in `optix.h` and a digest of every header file
+before compiling, including when a local copy is supplied through
+`FETCHCONTENT_SOURCE_DIR_OPTIX_HEADERS`, which must therefore be unmodified. A
+pin change must update the commit, archive hash, and header digest in
+`CMakeLists.txt` together. A compiler assertion
 also protects the 9.1.0 wrapper bridge against unexpected include paths or a
 pin change without updating the bridge. At import, the versions compiled into
 PyOptiX (`optix.version()`) and our extension (`_ext.optix_version()`) must both
