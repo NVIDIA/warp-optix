@@ -35,7 +35,8 @@ def test_dlss_rejects_relative_feature_search_path():
 
 
 def test_dlss_data_directory_is_private(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    cache_variable = "LOCALAPPDATA" if os.name == "nt" else "XDG_CACHE_HOME"
+    monkeypatch.setenv(cache_variable, str(tmp_path))
     monkeypatch.chdir(tmp_path)
     context = optix.DlssRRContext()
     try:

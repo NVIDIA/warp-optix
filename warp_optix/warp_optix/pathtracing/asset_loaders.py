@@ -15,7 +15,6 @@ import base64
 import io
 import json
 import logging
-import os
 import struct
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -62,19 +61,15 @@ def _read_external_uri(path: Path, uri: str) -> bytes:
     """Read a glTF external resource, confined to the directory of the glTF file.
 
     glTF files are untrusted input, so a ``uri`` must not reach files elsewhere
-    on disk through absolute paths or ``..`` components.
+    on disk through absolute paths, ``..`` components, or filesystem links.
     """
-    base = os.path.normpath(os.path.abspath(path.parent))
-    target = os.path.normpath(os.path.join(base, uri))
-    try:
-        confined = os.path.commonpath([base, target]) == base
-    except ValueError:  # Different drives on Windows.
-        confined = False
-    if not confined:
+    base = path.parent.resolve()
+    target = (base / uri).resolve()
+    if not target.is_relative_to(base):
         raise ValueError(
             f"glTF resource {uri!r} resolves outside the asset directory {base}"
         )
-    return Path(target).read_bytes()
+    return target.read_bytes()
 
 
 def _load_gltf_json_and_buffers(path: Path) -> tuple[dict, list[bytes]]:

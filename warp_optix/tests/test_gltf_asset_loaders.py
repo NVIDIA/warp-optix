@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import os
+import subprocess
 
 import numpy as np
 import pytest
@@ -76,3 +78,50 @@ def test_gltf_image_uri_cannot_escape_asset_directory(tmp_path):
 
     with pytest.raises(ValueError, match="outside the asset directory"):
         _load_gltf_images(asset_dir / "scene.gltf", {"images": [{"uri": "../secret.png"}]}, [])
+
+
+def _link_directory(link, target):
+    if os.name == "nt":
+        # Junctions do not require Windows developer mode or symlink privileges.
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "New-Item -ItemType Junction -Path $env:WARP_OPTIX_TEST_LINK "
+             "-Target $env:WARP_OPTIX_TEST_TARGET | Out-Null"],
+            env={**os.environ, "WARP_OPTIX_TEST_LINK": str(link),
+                 "WARP_OPTIX_TEST_TARGET": str(target)},
+            check=True, capture_output=True,
+        )
+    else:
+        link.symlink_to(target, target_is_directory=True)
+
+
+@pytest.mark.parametrize("resource_kind", ["buffer", "image"])
+def test_gltf_resource_link_cannot_escape_asset_directory(tmp_path, resource_kind):
+    asset_dir = tmp_path / "asset"
+    asset_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.bin").write_bytes(b"secret")
+    _link_directory(asset_dir / "linked", outside)
+    scene = asset_dir / "scene.gltf"
+    uri = "linked/secret.bin"
+
+    with pytest.raises(ValueError, match="outside the asset directory"):
+        if resource_kind == "buffer":
+            _write_gltf(scene, uri)
+            _load_gltf_json_and_buffers(scene)
+        else:
+            _load_gltf_images(scene, {"images": [{"uri": uri}]}, [])
+
+
+def test_gltf_resource_links_inside_asset_directory_are_allowed(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "mesh.bin").write_bytes(b"mesh")
+    _link_directory(tmp_path / "linked", data)
+    scene = tmp_path / "scene.gltf"
+    _write_gltf(scene, "linked/mesh.bin")
+
+    _, buffers = _load_gltf_json_and_buffers(scene)
+
+    assert buffers == [b"mesh"]
