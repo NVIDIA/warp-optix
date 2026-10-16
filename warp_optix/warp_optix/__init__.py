@@ -45,6 +45,9 @@ from warp_optix.pipeline import create_pipeline as create_pipeline
 from warp_optix.pipeline import destroy_context as destroy_context
 from warp_optix.pipeline import launch as launch
 from warp_optix.program import ProgramKind as ProgramKind
+from warp_optix.sbt import HitGroupHandle as HitGroupHandle
+from warp_optix.sbt import SbtBuilder as SbtBuilder
+from warp_optix.sbt import SbtLayout as SbtLayout
 from warp_optix.rays import MISS as MISS
 from warp_optix.rays import Hit as Hit
 from warp_optix.rays import any_hit as any_hit
@@ -57,11 +60,14 @@ __all__ = [
     "GeometryFlags",
     "Hit",
     "HitGroup",
+    "HitGroupHandle",
     "Instance",
     "InstanceFlags",
     "Pipeline",
     "PrimitiveType",
     "ProgramKind",
+    "SbtBuilder",
+    "SbtLayout",
     "TraversableGraphFlags",
     "aabbs",
     "any_hit",

@@ -377,16 +377,18 @@ def main() -> None:
             ctx, [wo.curves(curve_vertices, curve_widths, curve_indices, curve_type=curve_type)], compact=True
         )
 
-        # Hit group i serves instances with SBT offset i: 0 triangles, 1 analytical shapes, 2 curves.
+        sbt = wo.SbtBuilder()
+        sbt.set_miss("radiance", miss)
+        triangles = sbt.add_hit_group("triangles", radiance=wo.HitGroup(closest_hit=triangle_closest_hit))
+        shapes = sbt.add_hit_group(
+            "analytical shapes",
+            radiance=wo.HitGroup(closest_hit=analytical_closest_hit, intersection=analytical_intersection),
+        )
+        curves = sbt.add_hit_group("curves", radiance=wo.HitGroup(closest_hit=curve_closest_hit, builtin=curve_type))
         pipeline = wo.create_pipeline(
             ctx,
             raygen,
-            miss=[miss],
-            hit_groups=[
-                wo.HitGroup(closest_hit=triangle_closest_hit),
-                wo.HitGroup(closest_hit=analytical_closest_hit, intersection=analytical_intersection),
-                wo.HitGroup(closest_hit=curve_closest_hit, builtin=curve_type),
-            ],
+            sbt=sbt,
             payload_words=3,
             attribute_words=3,
             graph_flags=wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
@@ -396,7 +398,9 @@ def main() -> None:
         shape_positions = [(-1.15, 0.57), (0.0, 0.57), (1.15, 0.57), (-1.15, -0.57), (0.0, -0.57), (1.15, -0.57)]
         traversables = [triangle_gas.handle] + [shape_gas.handle] * 6 + [curve_gas.handle]
         translations = [(0.0, 0.0, 0.0)] + [(x, y, 0.0) for x, y in shape_positions] + [(0.0, 0.0, 0.0)]
-        sbt_offsets = [0] + [1] * 6 + [2]
+        layout = pipeline.sbt_layout
+        print(layout.describe())
+        sbt_offsets = [layout.get_sbt_offset(triangles)] + [layout.get_sbt_offset(shapes)] * 6 + [layout.get_sbt_offset(curves)]
         records = wp.empty(len(traversables), dtype=wo.Instance)
         wp.launch(
             write_instances,

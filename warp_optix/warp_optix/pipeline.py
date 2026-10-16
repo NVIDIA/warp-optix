@@ -20,6 +20,7 @@ from warp_optix.accel import CAPTURE_ERROR
 from warp_optix.addon import build_options
 from warp_optix.enums import TraversableGraphFlags
 from warp_optix.program import ProgramKind, as_program, params_struct
+from warp_optix.sbt import SbtBuilder, SbtLayout
 
 _log = logging.getLogger(__name__)
 _PIPELINE_IDS = itertools.count()
@@ -88,15 +89,17 @@ class Pipeline:
     records: wp.array
     groups: tuple
     modules: tuple
+    sbt_layout: SbtLayout | None = None
 
 
 def create_pipeline(
     ctx,
     raygen: wp.Kernel,
     *,
-    miss: Sequence[wp.Kernel | None] = (None,),
-    hit_groups: Sequence[HitGroup] = (HitGroup(),),
-    ray_types: int = 1,
+    miss: Sequence[wp.Kernel | None] | None = None,
+    hit_groups: Sequence[HitGroup] | None = None,
+    ray_types: int | None = None,
+    sbt: SbtBuilder | SbtLayout | None = None,
     callables: Sequence[wp.Kernel] = (),
     continuation_callables: Sequence[wp.Kernel] = (),
     exception: wp.Kernel | None = None,
@@ -119,12 +122,33 @@ def create_pipeline(
 
     The hit record of geometry ``g`` and ray type ``r`` is
     ``hit_groups[g * ray_types + r]``; trace with ``sbt_stride=ray_types``.
+
+    Pass ``sbt=SbtBuilder(...)`` or a snapshot for named ray types and hit
+    groups. This cannot be combined with ``miss``, ``hit_groups``, or
+    ``ray_types``. The pipeline retains the immutable snapshot as ``sbt_layout``;
+    ``sbt`` on the returned pipeline remains the native shader binding table.
     """
+    layout = None
+    if sbt is not None:
+        if any(value is not None for value in (miss, hit_groups, ray_types)):
+            raise ValueError("sbt cannot be combined with miss, hit_groups, or ray_types")
+        if not isinstance(sbt, (SbtBuilder, SbtLayout)):
+            raise TypeError("sbt must be an SbtBuilder or SbtLayout")
+        layout = sbt.snapshot() if isinstance(sbt, SbtBuilder) else sbt
+        miss = layout._miss_entries
+        hit_groups = tuple(group for row in layout._hit_kernels for group in row)
+        ray_types = layout.trace_stride
+    else:
+        miss = (None,) if miss is None else tuple(miss)
+        hit_groups = (HitGroup(),) if hit_groups is None else tuple(hit_groups)
+        ray_types = 1 if ray_types is None else ray_types
+    if not isinstance(ray_types, int) or isinstance(ray_types, bool) or not 1 <= ray_types <= 15:
+        raise ValueError("ray_types must be an integer between 1 and 15")
+    if len(hit_groups) % ray_types:
+        raise ValueError("hit_groups must contain one group per geometry type and ray type")
     device = wp.get_device(device)
     if wp.get_stream(device).is_capturing:
         raise RuntimeError(CAPTURE_ERROR)
-    if len(hit_groups) % ray_types:
-        raise ValueError("hit_groups must contain one group per geometry type and ray type")
 
     # All programs compile into one Warp module that inherits the raygen module's options.
     params = params_struct(raygen)
@@ -283,6 +307,7 @@ def create_pipeline(
         records=records,
         groups=tuple(groups),
         modules=(optix_module, *builtin_modules.values()),
+        sbt_layout=layout,
     )
 
 

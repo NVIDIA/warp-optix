@@ -37,8 +37,7 @@ Install from the repository root; PyOptiX is installed as a dependency:
 pip install -e .
 ```
 
-`warp_optix` requires `warp-lang>=1.17`. See the [migration notes](../docs/migration-0.2.md) for the
-changes from the earlier helper API.
+`warp_optix` requires `warp-lang>=1.17`.
 
 ## Programs and pipelines
 
@@ -87,7 +86,7 @@ pipeline = wo.create_pipeline(
 wo.launch(pipeline, dim=image.shape, inputs=[gas.handle, wp.vec3(1.0, 0.5, 0.2), image])
 ```
 
-`wo.create_pipeline(ctx, raygen, *, miss, hit_groups, ray_types, callables, exception,
+`wo.create_pipeline(ctx, raygen, *, miss, hit_groups, ray_types, sbt, callables, exception,
 payload_words, attribute_words, max_trace_depth, max_traversable_depth, graph_flags, motion_blur,
 max_registers, device)` compiles all programs into one module and builds the shader binding table:
 
@@ -110,6 +109,57 @@ on `stream` and then launches OptiX on the same stream. Neither step synchronize
 OptiX does not record its work into CUDA graphs, so `wo.launch`, `wo.build_accel`,
 `wo.update_accel`, and `wo.create_pipeline` raise `RuntimeError` during stream capture. Kernels written against a single launch-parameter struct
 (`def raygen(params: LaunchParams)`) work unchanged: launch them with `inputs=[params]`.
+
+### Explicit SBT layouts
+
+The default pipeline API packs SBT records automatically. For explicit control
+over ray names, group ordering, and instance offsets, use `wo.SbtBuilder`:
+
+```python
+sbt = wo.SbtBuilder(ray_types=("radiance", "shadow"))
+sbt.set_miss("radiance", radiance_miss)
+sbt.set_miss("shadow", shadow_miss)
+glass = sbt.add_hit_group(
+    "glass",
+    radiance=wo.HitGroup(closest_hit=glass_hit),
+    shadow=wo.HitGroup(any_hit=glass_shadow),
+)
+metal = sbt.add_hit_group(
+    "metal",
+    radiance=wo.HitGroup(closest_hit=metal_hit),
+    shadow=wo.HitGroup(any_hit=metal_shadow),
+)
+print(sbt.describe())
+pipeline = wo.create_pipeline(ctx, raygen, sbt=sbt, payload_words=1)
+layout = pipeline.sbt_layout
+metal_offset = layout.get_sbt_offset(metal)  # 2 records; use in wo.make_instance()
+shadow_index = layout.ray_type_index("shadow")  # trace SBT offset and miss index
+trace_stride = layout.trace_stride  # 2 records
+```
+
+Programs are ordinary Warp kernels, with their kind determined by the assigned
+slot. Each group specifies every ray type, using the same geometry kind across
+those rays. `set_miss(name, None)` explicitly creates an empty miss slot;
+`HitGroup()` creates an empty hit group for hit-object traversal. Ray names must
+be unique, and the trace stride supports at most 15 ray types.
+
+Layouts use group-major, ray-type-minor order. Append groups to control their
+order; previously returned `HitGroupHandle` offsets remain stable. Pass offsets
+obtained from `layout.get_sbt_offset(handle)` to the Warp kernel that writes
+instances with `wo.make_instance()`. This lookup rejects handles from another
+builder or groups added after the snapshot. Offsets and trace strides count
+records, not bytes.
+
+`create_pipeline(..., sbt=builder)` takes an immutable snapshot. Later builder
+edits do not change existing pipelines. You may also pass `sbt=builder.snapshot()`
+to reuse a frozen layout. Builders own no native resources and can be reused
+across contexts; each pipeline owns its compiled programs and packed buffers.
+`pipeline.sbt_layout` exposes the named snapshot, while `pipeline.sbt` remains
+the native table. Automatic pipelines have `sbt_layout=None`.
+
+An explicit `sbt` cannot be combined with `miss`, `hit_groups`, or `ray_types`.
+Callables and exception programs remain independent pipeline options. See
+`examples_warp/example_warp_optix_mixed_geometry.py` for a complete example.
 
 `wo.ProgramKind` names the program kinds and their OptiX entry-name prefixes;
 `wo.constants` provides OptiX ray, instance, geometry, and build flag values usable both in kernels

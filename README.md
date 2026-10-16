@@ -70,8 +70,10 @@ synchronizes. `destroy_context()` synchronizes the device and destroys every
 pipeline and module created from the context; keep acceleration structures and
 pipelines referenced until it returns.
 
-See the [API guide](warp_optix/README.md), [migration notes](docs/migration-0.2.md),
-and runnable [examples](examples_warp/README.md).
+SBT records are built automatically. For named ray types and explicit hit-group
+layouts, pass a `wo.SbtBuilder` to `create_pipeline(..., sbt=builder)`.
+
+See the [API guide](warp_optix/README.md) and runnable [examples](examples_warp/README.md).
 
 ## DLSS builds
 
