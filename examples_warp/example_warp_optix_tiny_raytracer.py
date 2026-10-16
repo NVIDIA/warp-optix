@@ -15,10 +15,8 @@
 
 """Tiny Warp OptiX ray tracer with optional zero-copy OpenGL live viewer.
 
-Kernels are defined with the new Warp OptiX kernel annotations:
-  - @woptix.optix_kernel(woptix.OptixKernelType.RAYGEN)
-  - @woptix.optix_kernel(woptix.OptixKernelType.MISS)
-  - @woptix.optix_kernel(woptix.OptixKernelType.CLOSEST_HIT)
+The raygen, miss, and closest-hit programs are ordinary Warp kernels; the
+raygen arguments are the launch parameters of :func:`warp_optix.launch`.
 """
 
 from __future__ import annotations
@@ -26,13 +24,13 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import struct
 
 import numpy as np
-
 import warp as wp
-import warp_optix as woptix
+from warp_optix.gl import GLInteropViewer
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+import warp_optix as wo
 
 
 @wp.func
@@ -45,18 +43,11 @@ def pack_rgba8(color: wp.vec3) -> wp.uint32:
 
 
 @wp.struct
-class TinyLaunchParams:
-    image: wp.array(dtype=wp.uint32)
-    accum: wp.array(dtype=wp.vec3)
-    width: wp.uint32
-    height: wp.uint32
-    trav_handle: wp.uint64
-    frame_index: wp.uint32
-    seed: wp.uint32
-    cam_pos: wp.vec3
-    cam_forward: wp.vec3
-    cam_right: wp.vec3
-    cam_up: wp.vec3
+class Camera:
+    position: wp.vec3
+    forward: wp.vec3
+    right: wp.vec3
+    up: wp.vec3
     tan_half_fov: float
     aspect: float
 
@@ -185,42 +176,35 @@ def _segment_hits_aabb(p0: wp.vec3, p1: wp.vec3, bmin: wp.vec3, bmax: wp.vec3) -
     return tmax > 0.0 and tmin < 1.0
 
 
-@woptix.optix_kernel(woptix.OptixKernelType.RAYGEN)
-def tiny_raygen(params: TinyLaunchParams):
-    launch_idx = wp.optix_get_launch_index()
-    ix = int(launch_idx[0])
-    iy = int(launch_idx[1])
-
-    width = int(params.width)
-    height = int(params.height)
-
-    if ix >= width or iy >= height:
-        return
+@wp.kernel(module="unique")
+def tiny_raygen(
+    scene: wp.uint64,
+    camera: Camera,
+    frame_index: wp.uint32,
+    seed: wp.uint32,
+    accum: wp.array2d[wp.vec3],
+    image: wp.array[wp.uint32],
+):
+    iy, ix = wp.tid()
+    height = accum.shape[0]
+    width = accum.shape[1]
 
     ndc_x = 2.0 * ((float(ix) + 0.5) / float(width)) - 1.0
     ndc_y = 2.0 * ((float(iy) + 0.5) / float(height)) - 1.0
-    px = ndc_x * float(params.aspect) * float(params.tan_half_fov)
-    py = ndc_y * float(params.tan_half_fov)
+    px = ndc_x * camera.aspect * camera.tan_half_fov
+    py = ndc_y * camera.tan_half_fov
 
-    ray_origin = params.cam_pos
-    ray_direction = wp.normalize(
-        params.cam_forward + px * params.cam_right + py * params.cam_up
-    )
+    ray_origin = camera.position
+    ray_direction = wp.normalize(camera.forward + px * camera.right + py * camera.up)
 
     payload = TracePayload()
-    payload.hit = wp.uint32(0)
-    payload.r_u8 = wp.uint32(0)
-    payload.g_u8 = wp.uint32(0)
-    payload.b_u8 = wp.uint32(0)
     pixel_idx = iy * width + ix
-    rng_base = (
-        wp.uint32(pixel_idx) ^ (params.frame_index * wp.uint32(747796405)) ^ params.seed
-    )
+    rng_base = wp.uint32(pixel_idx) ^ (frame_index * wp.uint32(747796405)) ^ seed
     payload.rand0 = _hash_u32(rng_base ^ wp.uint32(2891336453))
     payload.rand1 = _hash_u32(rng_base ^ wp.uint32(1181783497))
 
     wp.optix_trace(
-        params.trav_handle,
+        scene,
         ray_origin,
         ray_direction,
         0.001,
@@ -229,16 +213,12 @@ def tiny_raygen(params: TinyLaunchParams):
         wp.uint32(255),
         wp.uint32(0),
         wp.uint32(0),
-        wp.uint32(5),
+        wp.uint32(1),
         wp.uint32(0),
         payload,
     )
 
-    hit_color = wp.vec3(
-        float(payload.r_u8) / 255.0,
-        float(payload.g_u8) / 255.0,
-        float(payload.b_u8) / 255.0,
-    )
+    hit_color = wp.vec3(float(payload.r_u8) / 255.0, float(payload.g_u8) / 255.0, float(payload.b_u8) / 255.0)
     color = hit_color
     if payload.hit == wp.uint32(0):
         scale = 2.5 / wp.max(-ray_direction[2], 0.001)
@@ -259,28 +239,28 @@ def tiny_raygen(params: TinyLaunchParams):
             wp.pow(display_sky[2], 2.2),
         )
 
-    prev = params.accum[pixel_idx]
-    fi = float(params.frame_index)
-    accum = color if fi <= 0.0 else (prev * fi + color) / (fi + 1.0)
-    params.accum[pixel_idx] = accum
+    prev = accum[iy, ix]
+    fi = float(frame_index)
+    mean = color if fi <= 0.0 else (prev * fi + color) / (fi + 1.0)
+    accum[iy, ix] = mean
     display = wp.vec3(
-        wp.pow(wp.max(0.0, wp.min(1.0, accum[0])), 1.0 / 2.2),
-        wp.pow(wp.max(0.0, wp.min(1.0, accum[1])), 1.0 / 2.2),
-        wp.pow(wp.max(0.0, wp.min(1.0, accum[2])), 1.0 / 2.2),
+        wp.pow(wp.max(0.0, wp.min(1.0, mean[0])), 1.0 / 2.2),
+        wp.pow(wp.max(0.0, wp.min(1.0, mean[1])), 1.0 / 2.2),
+        wp.pow(wp.max(0.0, wp.min(1.0, mean[2])), 1.0 / 2.2),
     )
-    params.image[pixel_idx] = pack_rgba8(display)
+    image[pixel_idx] = pack_rgba8(display)
 
 
-@woptix.optix_kernel(woptix.OptixKernelType.MISS)
-def tiny_miss(params: TinyLaunchParams):
+@wp.kernel(module="unique")
+def tiny_miss():
     wp.optix_set_payload_0(wp.uint32(0))
     wp.optix_set_payload_1(wp.uint32(0))
     wp.optix_set_payload_2(wp.uint32(0))
     wp.optix_set_payload_3(wp.uint32(0))
 
 
-@woptix.optix_kernel(woptix.OptixKernelType.CLOSEST_HIT)
-def tiny_closest_hit(params: TinyLaunchParams):
+@wp.kernel(module="unique")
+def tiny_closest_hit():
     pid = int(wp.optix_get_primitive_index())
 
     n = wp.vec3(0.0, 0.0, 1.0)
@@ -350,12 +330,8 @@ def tiny_closest_hit(params: TinyLaunchParams):
     dist2 = wp.max(dist * dist, 1.0e-4)
     l = to_light / wp.max(dist, 1.0e-4)
 
-    occluded_short = _segment_hits_aabb(
-        p_shadow, light_pos, wp.vec3(-0.65, -1.0, -0.35), wp.vec3(-0.15, -0.25, 0.25)
-    )
-    occluded_tall = _segment_hits_aabb(
-        p_shadow, light_pos, wp.vec3(0.2, -1.0, -0.8), wp.vec3(0.65, 0.45, -0.25)
-    )
+    occluded_short = _segment_hits_aabb(p_shadow, light_pos, wp.vec3(-0.65, -1.0, -0.35), wp.vec3(-0.15, -0.25, 0.25))
+    occluded_tall = _segment_hits_aabb(p_shadow, light_pos, wp.vec3(0.2, -1.0, -0.8), wp.vec3(0.65, 0.45, -0.25))
     visibility = 0.0 if (occluded_short or occluded_tall) else 1.0
 
     ndotl = wp.max(wp.dot(n, l), 0.0)
@@ -381,31 +357,7 @@ def tiny_closest_hit(params: TinyLaunchParams):
     wp.optix_set_payload_3(_to_u8(color[2]))
 
 
-def _build_optix_ptx_from_warp(device: str = "cuda") -> tuple[bytes, str, str, str]:
-    module = wp.get_module(__name__)
-    ptx = woptix.compile_warp_module_to_ptx(
-        module=module,
-        launch_preamble="",
-        module_tag="tiny_rt",
-        script_dir=SCRIPT_DIR,
-        device=device,
-    )
-
-    raygen_name = woptix.get_entry_name(
-        tiny_raygen, expected_kernel_type=woptix.OptixKernelType.RAYGEN
-    )
-    miss_name = woptix.get_entry_name(
-        tiny_miss, expected_kernel_type=woptix.OptixKernelType.MISS
-    )
-    hit_name = woptix.get_entry_name(
-        tiny_closest_hit, expected_kernel_type=woptix.OptixKernelType.CLOSEST_HIT
-    )
-    return ptx, raygen_name, miss_name, hit_name
-
-
 def _save_bmp(path: str, pixels_rgba_u32: np.ndarray, width: int, height: int):
-    import struct  # noqa: PLC0415
-
     rgba = pixels_rgba_u32.reshape(height, width)
     bgr = np.empty((height, width, 3), dtype=np.uint8)
     bgr[..., 0] = ((rgba >> 16) & 0xFF).astype(np.uint8)
@@ -418,11 +370,7 @@ def _save_bmp(path: str, pixels_rgba_u32: np.ndarray, width: int, height: int):
     # kernel layout (iy=0 is the bottom of the image) -- no flip needed.
     with open(path, "wb") as f:
         f.write(struct.pack("<2sIHHI", b"BM", 54 + pixel_data_size, 0, 0, 54))
-        f.write(
-            struct.pack(
-                "<IiiHHIIiiII", 40, width, height, 1, 24, 0, pixel_data_size, 0, 0, 0, 0
-            )
-        )
+        f.write(struct.pack("<IiiHHIIiiII", 40, width, height, 1, 24, 0, pixel_data_size, 0, 0, 0, 0))
         pad = b"\x00" * (row_stride - width * 3)
         for y in range(height):
             f.write(bgr[y].tobytes())
@@ -430,14 +378,7 @@ def _save_bmp(path: str, pixels_rgba_u32: np.ndarray, width: int, height: int):
                 f.write(pad)
 
 
-def _add_quad(
-    vertices: list[tuple[float, float, float]],
-    indices: list[tuple[int, int, int]],
-    v0,
-    v1,
-    v2,
-    v3,
-):
+def _add_quad(vertices: list[tuple[float, float, float]], indices: list[tuple[int, int, int]], v0, v1, v2, v3):
     base = len(vertices)
     vertices.extend((v0, v1, v2, v3))
     indices.append((base, base + 1, base + 2))
@@ -477,56 +418,14 @@ def _build_cornell_box_mesh() -> tuple[np.ndarray, np.ndarray]:
     indices: list[tuple[int, int, int]] = []
 
     # Cornell-style room: floor, ceiling, back wall, left wall, right wall.
-    _add_quad(
-        vertices,
-        indices,
-        (-1.0, -1.0, -1.0),
-        (1.0, -1.0, -1.0),
-        (1.0, -1.0, 1.0),
-        (-1.0, -1.0, 1.0),
-    )
-    _add_quad(
-        vertices,
-        indices,
-        (-1.0, 1.0, 1.0),
-        (1.0, 1.0, 1.0),
-        (1.0, 1.0, -1.0),
-        (-1.0, 1.0, -1.0),
-    )
-    _add_quad(
-        vertices,
-        indices,
-        (-1.0, -1.0, -1.0),
-        (-1.0, 1.0, -1.0),
-        (1.0, 1.0, -1.0),
-        (1.0, -1.0, -1.0),
-    )
-    _add_quad(
-        vertices,
-        indices,
-        (-1.0, -1.0, 1.0),
-        (-1.0, 1.0, 1.0),
-        (-1.0, 1.0, -1.0),
-        (-1.0, -1.0, -1.0),
-    )
-    _add_quad(
-        vertices,
-        indices,
-        (1.0, -1.0, -1.0),
-        (1.0, 1.0, -1.0),
-        (1.0, 1.0, 1.0),
-        (1.0, -1.0, 1.0),
-    )
+    _add_quad(vertices, indices, (-1.0, -1.0, -1.0), (1.0, -1.0, -1.0), (1.0, -1.0, 1.0), (-1.0, -1.0, 1.0))
+    _add_quad(vertices, indices, (-1.0, 1.0, 1.0), (1.0, 1.0, 1.0), (1.0, 1.0, -1.0), (-1.0, 1.0, -1.0))
+    _add_quad(vertices, indices, (-1.0, -1.0, -1.0), (-1.0, 1.0, -1.0), (1.0, 1.0, -1.0), (1.0, -1.0, -1.0))
+    _add_quad(vertices, indices, (-1.0, -1.0, 1.0), (-1.0, 1.0, 1.0), (-1.0, 1.0, -1.0), (-1.0, -1.0, -1.0))
+    _add_quad(vertices, indices, (1.0, -1.0, -1.0), (1.0, 1.0, -1.0), (1.0, 1.0, 1.0), (1.0, -1.0, 1.0))
 
     # Ceiling light panel.
-    _add_quad(
-        vertices,
-        indices,
-        (-0.25, 0.99, -0.65),
-        (0.25, 0.99, -0.65),
-        (0.25, 0.99, -0.2),
-        (-0.25, 0.99, -0.2),
-    )
+    _add_quad(vertices, indices, (-0.25, 0.99, -0.65), (0.25, 0.99, -0.65), (0.25, 0.99, -0.2), (-0.25, 0.99, -0.2))
 
     # Two interior blocks.
     _add_box(vertices, indices, -0.65, -1.0, -0.35, -0.15, -0.25, 0.25)
@@ -537,8 +436,7 @@ def _build_cornell_box_mesh() -> tuple[np.ndarray, np.ndarray]:
     return verts_np, inds_np
 
 
-def _set_camera_params(
-    params: TinyLaunchParams,
+def _make_camera(
     position: np.ndarray,
     yaw_deg: float,
     pitch_deg: float,
@@ -550,11 +448,7 @@ def _set_camera_params(
     pitch_rad = math.radians(pitch_deg)
     cos_pitch = math.cos(pitch_rad)
     forward = np.array(
-        [
-            math.sin(yaw_rad) * cos_pitch,
-            math.sin(pitch_rad),
-            math.cos(yaw_rad) * cos_pitch,
-        ],
+        [math.sin(yaw_rad) * cos_pitch, math.sin(pitch_rad), math.cos(yaw_rad) * cos_pitch],
         dtype=np.float32,
     )
     forward /= np.linalg.norm(forward) + 1.0e-8
@@ -564,27 +458,20 @@ def _set_camera_params(
     up = np.cross(right, forward)
     up /= np.linalg.norm(up) + 1.0e-8
 
-    params.cam_pos = wp.vec3(float(position[0]), float(position[1]), float(position[2]))
-    params.cam_forward = wp.vec3(
-        float(forward[0]), float(forward[1]), float(forward[2])
-    )
-    params.cam_right = wp.vec3(float(right[0]), float(right[1]), float(right[2]))
-    params.cam_up = wp.vec3(float(up[0]), float(up[1]), float(up[2]))
-    params.tan_half_fov = float(math.tan(math.radians(fov_deg) * 0.5))
-    params.aspect = float(width) / float(height)
+    camera = Camera()
+    camera.position = wp.vec3(position)
+    camera.forward = wp.vec3(forward)
+    camera.right = wp.vec3(right)
+    camera.up = wp.vec3(up)
+    camera.tan_half_fov = math.tan(math.radians(fov_deg) * 0.5)
+    camera.aspect = float(width) / float(height)
+    return camera
 
 
 class FreeCameraController:
-    def __init__(
-        self,
-        viewer: woptix.GLInteropViewer,
-        params: TinyLaunchParams,
-        width: int,
-        height: int,
-    ):
+    def __init__(self, viewer: GLInteropViewer, width: int, height: int):
         self.window = viewer.window
         self.pyglet = viewer.pyglet
-        self.params = params
         self.width = int(width)
         self.height = int(height)
         self.position = np.array([0.0, 0.05, 2.5], dtype=np.float32)
@@ -603,12 +490,7 @@ class FreeCameraController:
         pitch_rad = math.radians(self.pitch)
         cos_pitch = math.cos(pitch_rad)
         forward = np.array(
-            [
-                math.sin(yaw_rad) * cos_pitch,
-                math.sin(pitch_rad),
-                math.cos(yaw_rad) * cos_pitch,
-            ],
-            dtype=np.float32,
+            [math.sin(yaw_rad) * cos_pitch, math.sin(pitch_rad), math.cos(yaw_rad) * cos_pitch], dtype=np.float32
         )
         world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
         right = np.cross(forward, world_up)
@@ -616,15 +498,7 @@ class FreeCameraController:
         return forward, right
 
     def _write(self, mark_dirty: bool = True):
-        _set_camera_params(
-            self.params,
-            self.position,
-            self.yaw,
-            self.pitch,
-            self.fov,
-            self.width,
-            self.height,
-        )
+        self.camera = _make_camera(self.position, self.yaw, self.pitch, self.fov, self.width, self.height)
         if mark_dirty:
             self._dirty = True
 
@@ -634,10 +508,7 @@ class FreeCameraController:
         self._write()
 
     def update(self, dt: float):
-        try:
-            key = self.pyglet.window.key
-        except Exception:
-            return
+        key = self.pyglet.window.key
 
         forward, right = self._forward_right()
         world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
@@ -675,11 +546,7 @@ class FreeCameraController:
         self._keys_down.discard(symbol)
 
     def on_mouse_drag(self, _x, _y, dx, dy, buttons, _modifiers):
-        try:
-            mouse = self.pyglet.window.mouse
-        except Exception:
-            return
-        if buttons & mouse.LEFT:
+        if buttons & self.pyglet.window.mouse.LEFT:
             self.yaw -= float(dx) * self._look_sensitivity
             self.pitch += float(dy) * self._look_sensitivity
             self.pitch = max(-89.0, min(89.0, self.pitch))
@@ -691,90 +558,43 @@ class FreeCameraController:
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=360)
     parser.add_argument("--output", type=str, default="tiny_optix_raytracer.bmp")
-    parser.add_argument(
-        "--live",
-        action="store_true",
-        help="Run OpenGL interop viewer (zero-copy PBO path)",
-    )
+    parser.add_argument("--live", action="store_true", help="Run OpenGL interop viewer (zero-copy PBO path)")
     parser.add_argument("--fps", type=int, default=60)
-    parser.add_argument(
-        "--max-frames",
-        type=int,
-        default=0,
-        help="Auto-exit after N frames in live mode (0=forever)",
-    )
+    parser.add_argument("--max-frames", type=int, default=0, help="Auto-exit after N frames in live mode (0=forever)")
     args = parser.parse_args()
 
-    wp.init()
-
-    with wp.ScopedDevice(args.device), woptix.Context(args.device) as ctx:
-        if not wp.get_device().is_cuda:
-            raise RuntimeError("This sample requires a CUDA device.")
-
-        ptx, raygen_name, miss_name, hit_name = _build_optix_ptx_from_warp(
-            device=args.device
-        )
+    with wp.ScopedDevice(args.device):
+        ctx = wo.create_context()
         vertices, indices = _build_cornell_box_mesh()
-        gas_handle_resource = ctx.create_triangle_gas(vertices, indices)
-        gas_handle = gas_handle_resource.handle
-        pipeline = ctx.create_pipeline(
-            ptx=ptx,
-            raygen_entry=tiny_raygen,
-            miss_entry=tiny_miss,
-            closest_hit_entry=tiny_closest_hit,
-            num_payload_values=6,
-            num_attribute_values=2,
+        vertices = wp.array(vertices, dtype=wp.vec3)
+        indices = wp.array(indices, dtype=wp.uint32)
+        gas = wo.build_accel(ctx, [wo.triangles(vertices, indices)], compact=True)
+        pipeline = wo.create_pipeline(
+            ctx,
+            tiny_raygen,
+            miss=[tiny_miss],
+            hit_groups=[wo.HitGroup(closest_hit=tiny_closest_hit)],
+            payload_words=6,
         )
-
-        params = TinyLaunchParams()
-        params.width = wp.uint32(args.width)
-        params.height = wp.uint32(args.height)
-        params.trav_handle = wp.uint64(gas_handle)
-        params.frame_index = wp.uint32(0)
-        params.seed = wp.uint32(1337)
-        _set_camera_params(
-            params=params,
-            position=np.array([0.0, 0.05, 2.5], dtype=np.float32),
-            yaw_deg=180.0,
-            pitch_deg=-4.0,
-            fov_deg=50.0,
-            width=args.width,
-            height=args.height,
-        )
-        params_buffer = woptix.create_launch_params_buffer(
-            TinyLaunchParams, device=args.device
-        )
-        accum = wp.zeros(args.width * args.height, dtype=wp.vec3, device=args.device)
-        params.accum = accum
+        seed = wp.uint32(1337)
+        accum = wp.zeros((args.height, args.width), dtype=wp.vec3)
 
         if args.live:
-            render_width = int(args.width)
-            render_height = int(args.height)
             sample_count = 0
             controller: FreeCameraController | None = None
 
             def _on_resize(width: int, height: int):
-                nonlocal render_width, render_height, accum, sample_count, controller
-                render_width = int(width)
-                render_height = int(height)
-                params.width = wp.uint32(render_width)
-                params.height = wp.uint32(render_height)
-                accum = wp.zeros(
-                    render_width * render_height, dtype=wp.vec3, device=args.device
-                )
-                params.accum = accum
-                if controller is not None:
-                    controller.resize(render_width, render_height)
+                nonlocal accum, sample_count
+                accum = wp.zeros((int(height), int(width)), dtype=wp.vec3)
+                controller.resize(width, height)
                 sample_count = 0
 
-            viewer = woptix.GLInteropViewer(
+            viewer = GLInteropViewer(
                 width=args.width,
                 height=args.height,
                 device=args.device,
@@ -782,7 +602,7 @@ def main():
                 fps=args.fps,
                 on_resize=_on_resize,
             )
-            controller = FreeCameraController(viewer, params, args.width, args.height)
+            controller = FreeCameraController(viewer, args.width, args.height)
             last_elapsed = 0.0
 
             def _render(mapped_image: wp.array, _frame_idx: int, elapsed_sec: float):
@@ -792,38 +612,25 @@ def main():
                 controller.update(dt)
                 if controller.consume_changed():
                     sample_count = 0
-                params.frame_index = wp.uint32(sample_count)
-                params.image = mapped_image
-                woptix.write_launch_params(params_buffer, params)
-                pipeline.launch(params_buffer, width=render_width, height=render_height)
+                wo.launch(
+                    pipeline,
+                    dim=accum.shape,
+                    inputs=[gas.handle, controller.camera, wp.uint32(sample_count), seed, accum, mapped_image],
+                )
                 sample_count += 1
 
             viewer.run(_render, max_frames=args.max_frames)
-            checksum = 0
-            print(
-                "Controls: WASD move, Q/E down/up, Shift faster, Left-drag look, Mouse wheel zoom."
-            )
-        else:
-            image = wp.empty(
-                args.width * args.height, dtype=wp.uint32, device=args.device
-            )
-            params.image = image
-            params.frame_index = wp.uint32(0)
-            woptix.write_launch_params(params_buffer, params)
-            pipeline.launch(params_buffer, width=args.width, height=args.height)
-            wp.synchronize_device(args.device)
-            pixels = image.numpy()
-            checksum = int(np.bitwise_xor.reduce(pixels))
-            _save_bmp(args.output, pixels, args.width, args.height)
-
-        print(f"OptiX log messages: {ctx.log_message_count}")
-        print(f"Raygen entry: {raygen_name}")
-        print(f"Miss entry:   {miss_name}")
-        print(f"Hit entry:    {hit_name}")
-        if args.live:
+            print("Controls: WASD move, Q/E down/up, Shift faster, Left-drag look, Mouse wheel zoom.")
             print("Live viewer finished.")
         else:
-            print(f"Image checksum: {checksum}")
+            camera = _make_camera(
+                np.array([0.0, 0.05, 2.5], dtype=np.float32), 180.0, -4.0, 50.0, args.width, args.height
+            )
+            image = wp.empty(args.width * args.height, dtype=wp.uint32)
+            wo.launch(pipeline, dim=accum.shape, inputs=[gas.handle, camera, wp.uint32(0), seed, accum, image])
+            pixels = image.numpy()
+            _save_bmp(args.output, pixels, args.width, args.height)
+            print(f"Image checksum: {int(np.bitwise_xor.reduce(pixels))}")
             print(f"Wrote: {os.path.abspath(args.output)}")
 
 

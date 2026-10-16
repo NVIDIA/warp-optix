@@ -50,12 +50,12 @@ def _dlss_support_available():
     return hasattr(_extensions, "DlssRRContext")
 
 
-def _dlss_rr_available():
+def _dlss_rr_available(project_id):
     if not _dlss_support_available():
         return False
     context = _extensions.DlssRRContext()
     try:
-        context.init(featureSearchPath=str(_get_package_dir()))
+        context.init(project_id, featureSearchPath=str(_get_package_dir()))
         return context.isDlssRRAvailable()
     except RuntimeError:
         return False

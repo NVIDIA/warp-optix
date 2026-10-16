@@ -1,19 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from contextlib import nullcontext
 import time
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 import warp as wp
-from warp_optix._runtime.gl_interop import OptixGLInteropViewer
+from warp_optix.gl import GLInteropViewer
 
 
 def test_fps_caption_updates_at_requested_interval():
     captions = []
-    viewer = OptixGLInteropViewer.__new__(OptixGLInteropViewer)
+    viewer = GLInteropViewer.__new__(GLInteropViewer)
     viewer._base_title = "Example"
     viewer._show_fps = True
     viewer._fps_update_interval = 0.5
@@ -43,7 +43,7 @@ def test_render_stream_completes_before_gl_consumes_pbo():
         def unmap(self):
             events.append("unmap")
 
-    viewer = OptixGLInteropViewer.__new__(OptixGLInteropViewer)
+    viewer = GLInteropViewer.__new__(GLInteropViewer)
     viewer.device = "cuda:0"
     viewer.render_stream = object()
     viewer.cuda_gl = _CudaGL()
@@ -53,9 +53,7 @@ def test_render_stream_completes_before_gl_consumes_pbo():
     viewer.start_time = time.perf_counter()
     viewer._show_fps = False
     viewer.max_frames = 0
-    viewer._render_callback = lambda mapped, frame, elapsed: events.append(
-        ("render", mapped, frame, elapsed)
-    )
+    viewer._render_callback = lambda mapped, frame, elapsed: events.append(("render", mapped, frame, elapsed))
     viewer.window = SimpleNamespace(
         switch_to=lambda: events.append("switch"),
         flip=lambda: events.append("flip"),
@@ -63,17 +61,13 @@ def test_render_stream_completes_before_gl_consumes_pbo():
     viewer._on_draw = lambda: events.append("draw")
 
     with (
-        mock.patch.object(
-            wp, "ScopedDevice", side_effect=lambda _device: nullcontext()
-        ),
+        mock.patch.object(wp, "ScopedDevice", side_effect=lambda _device: nullcontext()),
         mock.patch.object(
             wp,
             "ScopedStream",
             side_effect=lambda _stream, **_kwargs: nullcontext(),
         ),
-        mock.patch.object(
-            wp, "synchronize_stream", side_effect=lambda _stream: events.append("sync")
-        ),
+        mock.patch.object(wp, "synchronize_stream", side_effect=lambda _stream: events.append("sync")),
     ):
         viewer._render_frame()
 
@@ -90,7 +84,7 @@ def test_render_stream_completes_before_gl_consumes_pbo():
 
 def test_render_callback_failure_unmaps_pbo():
     events = []
-    viewer = OptixGLInteropViewer.__new__(OptixGLInteropViewer)
+    viewer = GLInteropViewer.__new__(GLInteropViewer)
     viewer.device = "cuda:0"
     viewer.render_stream = object()
     viewer.cuda_gl = SimpleNamespace(

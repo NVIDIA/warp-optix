@@ -1,56 +1,80 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Warp ray tracing using PyOptiX and supplemental native bindings."""
+"""OptiX ray tracing for Warp.
 
-from ._addon import register_with_warp as _register_with_warp
+Acceleration structures are built from Warp device arrays, OptiX programs are
+ordinary Warp kernels, and launches mirror ``wp.launch``::
 
-_register_with_warp()
+    import warp_optix as wo
+
+    ctx = wo.create_context()
+    gas = wo.build_accel(ctx, [wo.triangles(vertices, indices)])
+    pipeline = wo.create_pipeline(ctx, raygen=render)
+    wo.launch(pipeline, dim=(height, width), inputs=[gas.handle, image])
+    wo.destroy_context(ctx)
+
+``warp_optix.native`` gives advanced access to PyOptiX and the supplemental bindings.
+"""
+
+from warp_optix.addon import register_with_warp
+
+register_with_warp()
 
 __version__ = "0.2.0"
 
-from ._api import Context as Context
-from ._api import AccelerationStructure as AccelerationStructure
-from ._api import Pipeline as Pipeline
-from ._api import Instance as Instance
-from ._api import HitKernel as HitKernel
-from ._enums import GeometryFlags as GeometryFlags
-from ._enums import PrimitiveType as PrimitiveType
-from ._enums import PrimitiveTypeFlags as PrimitiveTypeFlags
-from ._enums import InstanceFlags as InstanceFlags
-from ._enums import BuildFlags as BuildFlags
-from ._enums import TraversableGraphFlags as TraversableGraphFlags
-from ._enums import ExceptionFlags as ExceptionFlags
-from ._codegen import OptixKernelType as OptixKernelType
-from ._codegen import optix_kernel as optix_kernel
-from ._runtime.gl_interop import OptixGLInteropViewer as GLInteropViewer
-from ._runtime.gl_line_overlay import GLLineOverlay as GLLineOverlay
-from ._runtime.runtime import LaunchParamsBuffer as LaunchParamsBuffer
-from ._runtime.runtime import compile_warp_module_to_ptx as compile_warp_module_to_ptx
-from ._runtime.runtime import create_launch_params_buffer as create_launch_params_buffer
-from ._runtime.runtime import get_optix_entry_name as get_entry_name
-from ._runtime.runtime import write_launch_params as write_launch_params
+from warp_optix import constants as constants
+from warp_optix.accel import Accel as Accel
+from warp_optix.accel import Instance as Instance
+from warp_optix.accel import aabbs as aabbs
+from warp_optix.accel import build_accel as build_accel
+from warp_optix.accel import curves as curves
+from warp_optix.accel import instances as instances
+from warp_optix.accel import make_instance as make_instance
+from warp_optix.accel import triangles as triangles
+from warp_optix.accel import update_accel as update_accel
+from warp_optix.enums import BuildFlags as BuildFlags
+from warp_optix.enums import GeometryFlags as GeometryFlags
+from warp_optix.enums import InstanceFlags as InstanceFlags
+from warp_optix.enums import PrimitiveType as PrimitiveType
+from warp_optix.enums import TraversableGraphFlags as TraversableGraphFlags
+from warp_optix.pipeline import HitGroup as HitGroup
+from warp_optix.pipeline import Pipeline as Pipeline
+from warp_optix.pipeline import create_context as create_context
+from warp_optix.pipeline import create_pipeline as create_pipeline
+from warp_optix.pipeline import destroy_context as destroy_context
+from warp_optix.pipeline import launch as launch
+from warp_optix.program import ProgramKind as ProgramKind
+from warp_optix.rays import MISS as MISS
+from warp_optix.rays import Hit as Hit
+from warp_optix.rays import any_hit as any_hit
+from warp_optix.rays import closest_hit as closest_hit
 
 __all__ = [
-    "Context",
-    "AccelerationStructure",
-    "Pipeline",
-    "Instance",
-    "HitKernel",
-    "GeometryFlags",
-    "PrimitiveType",
-    "PrimitiveTypeFlags",
-    "InstanceFlags",
+    "MISS",
+    "Accel",
     "BuildFlags",
+    "GeometryFlags",
+    "Hit",
+    "HitGroup",
+    "Instance",
+    "InstanceFlags",
+    "Pipeline",
+    "PrimitiveType",
+    "ProgramKind",
     "TraversableGraphFlags",
-    "ExceptionFlags",
-    "OptixKernelType",
-    "optix_kernel",
-    "GLInteropViewer",
-    "GLLineOverlay",
-    "LaunchParamsBuffer",
-    "compile_warp_module_to_ptx",
-    "create_launch_params_buffer",
-    "get_entry_name",
-    "write_launch_params",
+    "aabbs",
+    "any_hit",
+    "build_accel",
+    "closest_hit",
+    "constants",
+    "create_context",
+    "create_pipeline",
+    "curves",
+    "destroy_context",
+    "instances",
+    "launch",
+    "make_instance",
+    "triangles",
+    "update_accel",
 ]

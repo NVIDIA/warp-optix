@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from warp_optix._runtime.gl_interop import OptixGLInteropViewer
+from warp_optix.gl import GLInteropViewer
 
 from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH
 from .pathtracer_api import PathTracerAPI
@@ -42,9 +42,7 @@ def _pack_display_rgba8(
     g = wp.uint32(wp.clamp(c[1] * 255.0, 0.0, 255.0))
     b = wp.uint32(wp.clamp(c[2] * 255.0, 0.0, 255.0))
     a = wp.uint32(255)
-    dst[y * width + x] = (
-        (a << wp.uint32(24)) | (b << wp.uint32(16)) | (g << wp.uint32(8)) | r
-    )
+    dst[y * width + x] = (a << wp.uint32(24)) | (b << wp.uint32(16)) | (g << wp.uint32(8)) | r
 
 
 def _system_pictures_dir() -> Path:
@@ -85,9 +83,7 @@ def _as_numpy(value: Any, dtype=None) -> np.ndarray | None:
     return np.asarray(value, dtype=dtype)
 
 
-def _broadcast_rows(
-    value: np.ndarray | None, count: int, width: int, default: tuple[float, ...]
-) -> np.ndarray:
+def _broadcast_rows(value: np.ndarray | None, count: int, width: int, default: tuple[float, ...]) -> np.ndarray:
     if value is None:
         return np.tile(np.asarray(default, dtype=np.float32), (count, 1))
     rows = np.asarray(value, dtype=np.float32).reshape(-1, width)
@@ -204,7 +200,7 @@ class PathTracingViewerBackend:
         )
         self._presenter = None
         if not self.headless:
-            self._presenter = OptixGLInteropViewer(
+            self._presenter = GLInteropViewer(
                 width=self.width,
                 height=self.height,
                 device=str(self.device),
@@ -224,21 +220,15 @@ class PathTracingViewerBackend:
         self._batches: dict[str, _InstanceBatch] = {}
         self._material_ids: dict[tuple[float, ...], int] = {}
         self._texture_ids: dict[tuple, int] = {}
-        self._device_transform_batches: dict[
-            str, tuple[wp.array, wp.array, wp.array]
-        ] = {}
-        self._device_material_batches: dict[
-            str, tuple[wp.array, wp.array, wp.array]
-        ] = {}
+        self._device_transform_batches: dict[str, tuple[wp.array, wp.array, wp.array]] = {}
+        self._device_material_batches: dict[str, tuple[wp.array, wp.array, wp.array]] = {}
         self._default_color = (0.8, 0.8, 0.8)
         self._default_material = (0.5, 0.0, 0.0, 0.0)
 
         self._default_ior = max(1.0, float(default_ior))
         self._default_specular = float(np.clip(default_specular, 0.0, 1.0))
         self._default_clearcoat = float(np.clip(default_clearcoat, 0.0, 1.0))
-        self._default_clearcoat_roughness = float(
-            np.clip(default_clearcoat_roughness, 0.001, 1.0)
-        )
+        self._default_clearcoat_roughness = float(np.clip(default_clearcoat_roughness, 0.001, 1.0))
         self._camera_position = np.array((0.0, 2.0, 8.0), dtype=np.float32)
         self._camera_yaw = 180.0
         self._camera_pitch = 0.0
@@ -389,9 +379,7 @@ class PathTracingViewerBackend:
                 logger.warning("Could not switch denoiser: %s", exc)
         if self.denoiser in ("dlss", "auto"):
             quality_modes = list(self._api.viewer.DLSS_QUALITY_MODES)
-            changed, selected = imgui.combo(
-                "DLSS Quality", quality_modes.index(self.dlss_quality), quality_modes
-            )
+            changed, selected = imgui.combo("DLSS Quality", quality_modes.index(self.dlss_quality), quality_modes)
             if changed:
                 self.dlss_quality = quality_modes[selected]
         if self.denoiser in ("optix", "auto"):
@@ -454,9 +442,7 @@ class PathTracingViewerBackend:
         return qualify(name) if callable(qualify) else str(name)
 
     def set_up_axis(self, up_axis: str | int):
-        axis = (
-            "XYZ".index(up_axis.upper()) if isinstance(up_axis, str) else int(up_axis)
-        )
+        axis = "XYZ".index(up_axis.upper()) if isinstance(up_axis, str) else int(up_axis)
         if axis not in (0, 1, 2):
             raise ValueError("up_axis must be X, Y, Z, 0, 1, or 2")
         self._up_axis = axis
@@ -503,9 +489,7 @@ class PathTracingViewerBackend:
             if hasattr(self._picking, "world_offsets"):
                 self._picking.world_offsets = getattr(self, "world_offsets", None)
             if hasattr(self._picking, "visible_worlds_mask"):
-                self._picking.visible_worlds_mask = getattr(
-                    self, "_visible_worlds_mask", None
-                )
+                self._picking.visible_worlds_mask = getattr(self, "_visible_worlds_mask", None)
         except (TypeError, ValueError) as error:
             logger.warning("Picking is unavailable: %s", error)
 
@@ -524,9 +508,7 @@ class PathTracingViewerBackend:
             raise TypeError("Visible worlds require a simulation viewer base")
         result = parent(worlds)
         if self._picking is not None and hasattr(self._picking, "visible_worlds_mask"):
-            self._picking.visible_worlds_mask = getattr(
-                self, "_visible_worlds_mask", None
-            )
+            self._picking.visible_worlds_mask = getattr(self, "_visible_worlds_mask", None)
         return result
 
     def log_state(self, state):
@@ -558,9 +540,7 @@ class PathTracingViewerBackend:
             if image.shape[2] == 1:
                 image = np.repeat(image, 3, axis=2)
             elif image.shape[2] == 2:
-                image = np.concatenate(
-                    (np.repeat(image[..., :1], 3, axis=2), image[..., 1:2]), axis=2
-                )
+                image = np.concatenate((np.repeat(image[..., :1], 3, axis=2), image[..., 1:2]), axis=2)
             if image.shape[2] == 3:
                 alpha_value = 255 if np.issubdtype(image.dtype, np.integer) else 1.0
                 alpha = np.full((*image.shape[:2], 1), alpha_value)
@@ -573,15 +553,11 @@ class PathTracingViewerBackend:
             return None
 
         texture_id = self._api.scene.texture_count
-        self._api.scene.set_gltf_textures(
-            [image], srgb_texture_indices={0}, append=texture_id > 0
-        )
+        self._api.scene.set_gltf_textures([image], srgb_texture_indices={0}, append=texture_id > 0)
         self._texture_ids[key] = texture_id
         return texture_id
 
-    def _create_material(
-        self, color, roughness, metallic, u_subdiv=0.0, v_subdiv=0.0, texture_id=None
-    ) -> int:
+    def _create_material(self, color, roughness, metallic, u_subdiv=0.0, v_subdiv=0.0, texture_id=None) -> int:
         linear_color = self.srgb_to_linear_rgb(color)
         if texture_id is None:
             return self._api.create_pbr_material(
@@ -627,9 +603,7 @@ class PathTracingViewerBackend:
         if key in self._material_ids:
             return self._material_ids[key]
 
-        material_id = self._create_material(
-            color_key, roughness, metallic, u_subdiv, v_subdiv, texture_id
-        )
+        material_id = self._create_material(color_key, roughness, metallic, u_subdiv, v_subdiv, texture_id)
         self._material_ids[key] = material_id
         self._scene_dirty = True
         return material_id
@@ -654,16 +628,8 @@ class PathTracingViewerBackend:
         name = self._qualify_name(name)
         points_np = np.ascontiguousarray(_as_numpy(points, np.float32).reshape(-1, 3))
         indices_np = np.ascontiguousarray(_as_numpy(indices, np.uint32).reshape(-1, 3))
-        normals_np = (
-            None
-            if normals is None
-            else np.ascontiguousarray(_as_numpy(normals, np.float32).reshape(-1, 3))
-        )
-        uvs_np = (
-            None
-            if uvs is None
-            else np.ascontiguousarray(_as_numpy(uvs, np.float32).reshape(-1, 2))
-        )
+        normals_np = None if normals is None else np.ascontiguousarray(_as_numpy(normals, np.float32).reshape(-1, 3))
+        uvs_np = None if uvs is None else np.ascontiguousarray(_as_numpy(uvs, np.float32).reshape(-1, 2))
         base_color = color or self._default_color
         pbr = (
             self._default_material[0] if roughness is None else roughness,
@@ -682,21 +648,15 @@ class PathTracingViewerBackend:
             mesh_id = self._mesh_ids[name]
             from .scene import Mesh
 
-            self._api.scene._meshes[mesh_id] = Mesh(
-                points_np, indices_np, normals_np, uvs_np, material_id=material_id
-            )
+            self._api.scene._meshes[mesh_id] = Mesh(points_np, indices_np, normals_np, uvs_np, material_id=material_id)
         else:
-            mesh_id = self._api.create_mesh(
-                points_np, indices_np, normals_np, uvs_np, material_id
-            )
+            mesh_id = self._api.create_mesh(points_np, indices_np, normals_np, uvs_np, material_id)
             self._mesh_ids[name] = mesh_id
         self._scene_dirty = True
 
     def _instance_matrices(self, xforms, scales) -> np.ndarray:
         xforms_np = _as_numpy(xforms, np.float32).reshape(-1, 7)
-        scales_np = _broadcast_rows(
-            _as_numpy(scales, np.float32), len(xforms_np), 3, (1.0, 1.0, 1.0)
-        )
+        scales_np = _broadcast_rows(_as_numpy(scales, np.float32), len(xforms_np), 3, (1.0, 1.0, 1.0))
         count = len(xforms_np)
         matrices = np.zeros((count, 4, 4), dtype=np.float32)
         matrices[:, 3, 3] = 1.0
@@ -753,9 +713,7 @@ class PathTracingViewerBackend:
         previous_count = len(batch.instance_ids)
         while len(batch.instance_ids) < count:
             if len(self._api.scene._instances) >= self._max_instances:
-                raise RuntimeError(
-                    f"Viewer instance capacity exceeded ({self._max_instances})"
-                )
+                raise RuntimeError(f"Viewer instance capacity exceeded ({self._max_instances})")
             batch.instance_ids.append(self._api.create_instance(batch.mesh_id))
             self._scene_dirty = True
         instances_added = len(batch.instance_ids) != previous_count
@@ -770,30 +728,21 @@ class PathTracingViewerBackend:
         texture_id = self._mesh_texture_ids.get(mesh)
         if not device_appearance:
             if colors is not None or len(batch.colors) != count:
-                updated_colors = _broadcast_rows(
-                    _as_numpy(colors, np.float32), count, 3, self._default_color
-                )
-                if updated_colors.shape != batch.colors.shape or not np.array_equal(
-                    updated_colors, batch.colors
-                ):
+                updated_colors = _broadcast_rows(_as_numpy(colors, np.float32), count, 3, self._default_color)
+                if updated_colors.shape != batch.colors.shape or not np.array_equal(updated_colors, batch.colors):
                     batch.colors = updated_colors
                     appearance_changed = True
             if materials is not None or len(batch.materials) != count:
-                updated_materials = _broadcast_rows(
-                    _as_numpy(materials, np.float32), count, 4, self._default_material
-                )
-                if (
-                    updated_materials.shape != batch.materials.shape
-                    or not np.array_equal(updated_materials, batch.materials)
+                updated_materials = _broadcast_rows(_as_numpy(materials, np.float32), count, 4, self._default_material)
+                if updated_materials.shape != batch.materials.shape or not np.array_equal(
+                    updated_materials, batch.materials
                 ):
                     batch.materials = updated_materials
                     appearance_changed = True
 
         active_ids = batch.instance_ids[:count]
         inactive_ids = batch.instance_ids[count:]
-        visibility_changed = (
-            instances_added or hidden != batch.hidden or count != batch.active_count
-        )
+        visibility_changed = instances_added or hidden != batch.hidden or count != batch.active_count
         if visibility_changed:
             self._api.set_instances_visible(active_ids, not hidden)
             self._api.set_instances_visible(inactive_ids, False)
@@ -812,17 +761,13 @@ class PathTracingViewerBackend:
                     raise ValueError("CUDA transforms require CUDA-resident scales")
                 cached = self._device_transform_batches.get(name)
                 if cached is None or len(cached[0]) != count:
-                    instance_ids = wp.array(
-                        active_ids, dtype=wp.int32, device=self.device
-                    )
+                    instance_ids = wp.array(active_ids, dtype=wp.int32, device=self.device)
                 else:
                     instance_ids = cached[0]
                 device_batch = (instance_ids, xforms, scales)
                 self._device_transform_batches[name] = device_batch
                 if not self._scene_dirty:
-                    self._api.set_instance_transform_arrays(
-                        instance_ids, xforms, scales, self._global_transform
-                    )
+                    self._api.set_instance_transform_arrays(instance_ids, xforms, scales, self._global_transform)
             else:
                 matrices = self._instance_matrices(xforms, scales)
                 self._api.set_instance_transform_matrices(active_ids, matrices)
@@ -831,12 +776,8 @@ class PathTracingViewerBackend:
         if device_appearance:
             cached_materials = self._device_material_batches.get(name)
             if cached_materials is None or len(cached_materials[0]) != count:
-                if not isinstance(colors, wp.array) or not isinstance(
-                    materials, wp.array
-                ):
-                    raise ValueError(
-                        "The first CUDA appearance update requires colors and materials"
-                    )
+                if not isinstance(colors, wp.array) or not isinstance(materials, wp.array):
+                    raise ValueError("The first CUDA appearance update requires colors and materials")
                 material_count = len(batch.device_material_ids)
                 for instance_id in active_ids[material_count:]:
                     material_id = self._create_material(
@@ -847,9 +788,7 @@ class PathTracingViewerBackend:
                     )
                     self._api.set_instance_material(instance_id, material_id)
                     batch.device_material_ids.append(material_id)
-                material_ids = wp.array(
-                    batch.device_material_ids[:count], dtype=wp.int32, device=self.device
-                )
+                material_ids = wp.array(batch.device_material_ids[:count], dtype=wp.int32, device=self.device)
                 if len(batch.device_material_ids) != material_count:
                     self._scene_dirty = True
             else:
@@ -857,9 +796,7 @@ class PathTracingViewerBackend:
                 colors = cached_materials[1] if colors is None else colors
                 materials = cached_materials[2] if materials is None else materials
             if not isinstance(colors, wp.array) or not isinstance(materials, wp.array):
-                raise ValueError(
-                    "CUDA appearance updates require CUDA colors and materials"
-                )
+                raise ValueError("CUDA appearance updates require CUDA colors and materials")
             device_material_batch = (material_ids, colors, materials)
             self._device_material_batches[name] = device_material_batch
             # New instances also create materials, while the compact CUDA table
@@ -872,18 +809,14 @@ class PathTracingViewerBackend:
             batch.device_material_ids.clear()
             self._device_material_batches.pop(name, None)
             for index, instance_id in enumerate(active_ids):
-                material_id = self._get_or_create_material(
-                    batch.colors[index], batch.materials[index], texture_id
-                )
+                material_id = self._get_or_create_material(batch.colors[index], batch.materials[index], texture_id)
                 self._api.set_instance_material(instance_id, material_id)
             self._materials_dirty = True
 
         if visibility_changed:
             self._transforms_dirty = True
 
-    def log_capsules(
-        self, name, mesh, xforms, scales, colors, materials, hidden: bool = False
-    ):
+    def log_capsules(self, name, mesh, xforms, scales, colors, materials, hidden: bool = False):
         self.log_instances(name, mesh, xforms, scales, colors, materials, hidden=hidden)
 
     def update_instance_transforms(self, name: str, xforms, scales=None):
@@ -902,22 +835,6 @@ class PathTracingViewerBackend:
             hidden=False,
         )
 
-    def log_lines(
-        self, name, starts, ends, colors, width: float = 0.01, hidden: bool = False
-    ):
-        """Accept debug lines; ray-traced line geometry is planned separately."""
-        del name, starts, ends, colors, width, hidden
-
-    def log_points(self, name, points, radii=None, colors=None, hidden: bool = False):
-        """Accept debug points; ray-traced point geometry is planned separately."""
-        del name, points, radii, colors, hidden
-
-    def log_array(self, name, array):
-        del name, array
-
-    def log_scalar(self, name, value, *, clear: bool = False, smoothing: int = 1):
-        del name, value, clear, smoothing
-
     def apply_forces(self, state):
         """Apply the optional picking force to a simulation state."""
         self._last_state = state
@@ -934,9 +851,7 @@ class PathTracingViewerBackend:
             ) in self._device_material_batches.values():
                 self._api.set_instance_material_arrays(material_ids, colors, properties)
             for instance_ids, xforms, scales in self._device_transform_batches.values():
-                self._api.set_instance_transform_arrays(
-                    instance_ids, xforms, scales, self._global_transform
-                )
+                self._api.set_instance_transform_arrays(instance_ids, xforms, scales, self._global_transform)
             if self._device_transform_batches:
                 self._api.rebuild_tlas()
         elif self._transforms_dirty:
@@ -945,9 +860,7 @@ class PathTracingViewerBackend:
         if self._materials_dirty and not self._scene_dirty:
             material_ids = np.array(
                 [
-                    instance.material_id
-                    if instance.material_id is not None
-                    else np.iinfo(np.uint32).max
+                    instance.material_id if instance.material_id is not None else np.iinfo(np.uint32).max
                     for instance in self._api.scene._instances
                 ],
                 dtype=np.uint32,
@@ -965,9 +878,7 @@ class PathTracingViewerBackend:
         self.time = float(time_sec)
         self._camera_override_this_frame = self._device_camera_bound
 
-    def _render_to_mapped_buffer(
-        self, mapped_image: wp.array, _frame_index: int, _elapsed: float
-    ):
+    def _render_to_mapped_buffer(self, mapped_image: wp.array, _frame_index: int, _elapsed: float):
         self._api.render_frame()
         wp.launch(
             _pack_display_rgba8,
@@ -992,9 +903,7 @@ class PathTracingViewerBackend:
         self._flush_scene()
         now = time.perf_counter()
         if not self._camera_override_this_frame:
-            self._update_camera_from_input(
-                max(0.0, min(now - self._last_wall_time, 0.1))
-            )
+            self._update_camera_from_input(max(0.0, min(now - self._last_wall_time, 0.1)))
         self._last_wall_time = now
         if self._presenter is None:
             self._api.render_frame()
@@ -1158,9 +1067,7 @@ class PathTracingViewerBackend:
         The first element of each array is consumed directly on the render
         stream, without a device-to-host camera update.
         """
-        camera_transform = (
-            np.eye(4, dtype=np.float32) if renderer_space else self._global_transform
-        )
+        camera_transform = np.eye(4, dtype=np.float32) if renderer_space else self._global_transform
         world_up = np.zeros(3, dtype=np.float32)
         world_up[self._up_axis] = 1.0
         self._api.bind_device_camera(
@@ -1183,9 +1090,7 @@ class PathTracingViewerBackend:
         """Set a framework-style camera unless interactive control has taken over."""
         if self._user_camera_control:
             return
-        self._camera_position = np.asarray(
-            [float(pos[0]), float(pos[1]), float(pos[2])], dtype=np.float32
-        )
+        self._camera_position = np.asarray([float(pos[0]), float(pos[1]), float(pos[2])], dtype=np.float32)
         self._camera_pitch = float(np.clip(pitch, -89.0, 89.0))
         self._camera_yaw = (float(yaw) + 180.0) % 360.0 - 180.0
         self._sync_camera()
@@ -1204,9 +1109,7 @@ class PathTracingViewerBackend:
                 (math.cos(yaw) * cp, math.sin(yaw) * cp, math.sin(pitch)),
                 dtype=np.float32,
             )
-        return np.array(
-            (math.cos(yaw) * cp, math.sin(pitch), math.sin(yaw) * cp), dtype=np.float32
-        )
+        return np.array((math.cos(yaw) * cp, math.sin(pitch), math.sin(yaw) * cp), dtype=np.float32)
 
     def _sync_camera(self):
         if not self._initialized:
@@ -1214,9 +1117,7 @@ class PathTracingViewerBackend:
         rotation = self._global_transform[:3, :3]
         position = rotation @ self._camera_position
         direction = rotation @ self._physics_camera_front()
-        self._api.set_camera_look_at(
-            position, position + direction, (0.0, 1.0, 0.0), self._camera_fov
-        )
+        self._api.set_camera_look_at(position, position + direction, (0.0, 1.0, 0.0), self._camera_fov)
 
     def _update_camera_from_input(self, dt: float):
         if self._presenter is None or not self._keys_down:
@@ -1277,9 +1178,7 @@ class PathTracingViewerBackend:
             }
             if symbol in debug_keys:
                 mode = debug_keys[symbol]
-                self.set_debug_buffer_mode(
-                    0 if self._debug_buffer_mode == mode else mode
-                )
+                self.set_debug_buffer_mode(0 if self._debug_buffer_mode == mode else mode)
             elif symbol in (key._0, key.BACKSPACE):
                 self.set_debug_buffer_mode(0)
         self._keys_down.add(symbol)
@@ -1297,19 +1196,10 @@ class PathTracingViewerBackend:
             return
         if buttons & mouse.LEFT:
             self._camera_yaw -= float(dx) * self._look_sensitivity
-            self._camera_pitch = float(
-                np.clip(
-                    self._camera_pitch + float(dy) * self._look_sensitivity, -89.0, 89.0
-                )
-            )
+            self._camera_pitch = float(np.clip(self._camera_pitch + float(dy) * self._look_sensitivity, -89.0, 89.0))
             self._user_camera_control = True
             self._sync_camera()
-        if (
-            buttons & mouse.RIGHT
-            and self.picking_enabled
-            and self._picking is not None
-            and self._picking.is_picking()
-        ):
+        if buttons & mouse.RIGHT and self.picking_enabled and self._picking is not None and self._picking.is_picking():
             origin, direction = self._get_ray_from_mouse(_x, _y)
             self._picking.update(wp.vec3(*origin), wp.vec3(*direction))
 
@@ -1331,10 +1221,7 @@ class PathTracingViewerBackend:
         self._mouse_buttons.discard(button)
         if self._presenter is None:
             return
-        if (
-            button == self._presenter.pyglet.window.mouse.RIGHT
-            and self._picking is not None
-        ):
+        if button == self._presenter.pyglet.window.mouse.RIGHT and self._picking is not None:
             self._picking.release()
 
     def on_mouse_motion(self, x, y, _dx, _dy):
@@ -1346,9 +1233,7 @@ class PathTracingViewerBackend:
             return
         if self._camera_override_this_frame:
             return
-        self._camera_fov = float(
-            np.clip(self._camera_fov - float(scroll_y) * 2.0, 10.0, 120.0)
-        )
+        self._camera_fov = float(np.clip(self._camera_fov - float(scroll_y) * 2.0, 10.0, 120.0))
         self._user_camera_control = True
         self._sync_camera()
 
@@ -1369,11 +1254,7 @@ class PathTracingViewerBackend:
         camera_up /= max(float(np.linalg.norm(camera_up)), 1.0e-8)
 
         half_height = math.tan(math.radians(self._camera_fov) * 0.5)
-        direction = (
-            front
-            + right * ndc_x * (width / height) * half_height
-            + camera_up * ndc_y * half_height
-        )
+        direction = front + right * ndc_x * (width / height) * half_height + camera_up * ndc_y * half_height
         direction /= max(float(np.linalg.norm(direction)), 1.0e-8)
         return self._camera_position.copy(), direction.astype(np.float32)
 
@@ -1410,9 +1291,7 @@ class PathTracingViewerBackend:
             from imgui_bundle import imgui
             from imgui_bundle.python_backends import pyglet_backend
         except ImportError:
-            logger.info(
-                "ImGui overlay unavailable; install warp_optix[ui] to enable it"
-            )
+            logger.info("ImGui overlay unavailable; install warp_optix[ui] to enable it")
             return
 
         try:
@@ -1456,9 +1335,7 @@ class PathTracingViewerBackend:
             if visible:
                 imgui.text(f"FPS: {self._current_fps:.1f}")
                 imgui.text(f"Meshes: {len(self._mesh_ids)}")
-                imgui.text(
-                    f"Instances: {sum(len(batch.instance_ids) for batch in self._batches.values())}"
-                )
+                imgui.text(f"Instances: {sum(len(batch.instance_ids) for batch in self._batches.values())}")
                 imgui.text(f"Materials: {len(self._material_ids)}")
                 self._ui_denoiser_controls(imgui)
 
@@ -1466,9 +1343,7 @@ class PathTracingViewerBackend:
                 if changed:
                     self.paused = paused
                 if hasattr(self, "picking_enabled"):
-                    changed, picking = imgui.checkbox(
-                        "Enable Picking", self.picking_enabled
-                    )
+                    changed, picking = imgui.checkbox("Enable Picking", self.picking_enabled)
                     if changed:
                         self.picking_enabled = picking
                         if not picking and self._picking is not None:
@@ -1485,9 +1360,7 @@ class PathTracingViewerBackend:
                 )
                 for attribute, label in visualization_flags:
                     if hasattr(self, attribute):
-                        changed, value = imgui.checkbox(
-                            label, bool(getattr(self, attribute))
-                        )
+                        changed, value = imgui.checkbox(label, bool(getattr(self, attribute)))
                         if changed:
                             setattr(self, attribute, value)
 
@@ -1508,9 +1381,7 @@ class PathTracingViewerBackend:
                     "Specular",
                     "Specular Hit Distance",
                 ]
-                changed, mode = imgui.combo(
-                    "Debug Buffer", self._debug_buffer_mode, mode_names
-                )
+                changed, mode = imgui.combo("Debug Buffer", self._debug_buffer_mode, mode_names)
                 if changed:
                     self.set_debug_buffer_mode(mode)
 
@@ -1524,9 +1395,7 @@ class PathTracingViewerBackend:
                     f"{self._camera_position[1]:.2f}, "
                     f"{self._camera_position[2]:.2f})"
                 )
-                imgui.text(
-                    f"Yaw {self._camera_yaw:.1f}  Pitch {self._camera_pitch:.1f}"
-                )
+                imgui.text(f"Yaw {self._camera_yaw:.1f}  Pitch {self._camera_pitch:.1f}")
 
                 if imgui.button("Save Screenshot"):
                     self.save_screenshot()
@@ -1549,11 +1418,7 @@ class PathTracingViewerBackend:
         path = Path(
             output_path
             or self.screenshot_output_path
-            or (
-                _system_pictures_dir()
-                / "WarpOptixScreenshots"
-                / time.strftime("pathtracing_%Y%m%d_%H%M%S.png")
-            )
+            or (_system_pictures_dir() / "WarpOptixScreenshots" / time.strftime("pathtracing_%Y%m%d_%H%M%S.png"))
         ).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
         frame = self._api.get_frame_uint8()
@@ -1574,9 +1439,7 @@ class PathTracingViewerBackend:
         """Compatibility hook for the old bridge-specific transform VBO API."""
         del count
         if not self._warned_transform_vbo:
-            logger.warning(
-                "No transform GL buffer is exposed; update Warp transforms with log_instances()"
-            )
+            logger.warning("No transform GL buffer is exposed; update Warp transforms with log_instances()")
             self._warned_transform_vbo = True
 
     def is_gpu_transform_available(self) -> bool:
@@ -1585,9 +1448,7 @@ class PathTracingViewerBackend:
 
     def set_sun_direction(self, x: float, y: float, z: float, intensity: float = 1.0):
         self._ensure_initialized()
-        direction = self._global_transform[:3, :3] @ np.asarray(
-            (x, y, z), dtype=np.float32
-        )
+        direction = self._global_transform[:3, :3] @ np.asarray((x, y, z), dtype=np.float32)
         self._api.set_sun_direction(*direction, intensity=float(intensity))
 
     def reset_temporal_history(self):
@@ -1607,9 +1468,7 @@ class PathTracingViewerBackend:
         self._api.set_sky_parameters(**kwargs)
 
     @staticmethod
-    def _sun_direction(
-        elevation_degrees: float, azimuth_degrees: float
-    ) -> tuple[float, float, float]:
+    def _sun_direction(elevation_degrees: float, azimuth_degrees: float) -> tuple[float, float, float]:
         elevation = math.radians(elevation_degrees)
         azimuth = math.radians(azimuth_degrees)
         cos_elevation = math.cos(elevation)
@@ -1739,9 +1598,7 @@ class PathTracingViewerBackend:
         if name == "midday":
             name = "noon"
         if name not in presets:
-            raise ValueError(
-                f"Unknown sky preset {preset!r}; expected one of {', '.join(presets)}"
-            )
+            raise ValueError(f"Unknown sky preset {preset!r}; expected one of {', '.join(presets)}")
         (
             elevation,
             azimuth,

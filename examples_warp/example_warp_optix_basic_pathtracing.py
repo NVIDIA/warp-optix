@@ -31,15 +31,13 @@ import urllib.request
 from pathlib import Path
 
 import numpy as np
-
 import warp as wp
-import warp_optix as woptix
+from warp_optix.gl import GLInteropViewer
 from warp_optix.pathtracing import (
     DEFAULT_VIEWER_HEIGHT,
     DEFAULT_VIEWER_WIDTH,
     PathTracerAPI,
 )
-
 
 _ABEAUTIFULGAME_URL = (
     "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/"
@@ -96,11 +94,12 @@ def _parse_args():
     parser.add_argument("--saturation", type=float, default=1.1, help="Display saturation multiplier.")
     parser.add_argument("--no-dlss-rr", action="store_true", help="Disable DLSS Ray Reconstruction.")
     parser.add_argument(
-        "--denoiser", choices=("auto", "dlss", "optix", "none"), default=None,
+        "--denoiser",
+        choices=("auto", "dlss", "optix", "none"),
+        default=None,
         help="Select the denoiser backend (overrides --no-dlss-rr).",
     )
     parser.add_argument("--optix-upscale", action="store_true", help="Enable OptiX temporal 2x upscaling.")
-    parser.add_argument("--no-cuda-graphs", action="store_true", help="Disable OptiX CUDA graph replay.")
     parser.add_argument("--no-set", action="store_true", help="Disable Shader Execution Reordering.")
     parser.add_argument(
         "--no-backface-culling",
@@ -333,7 +332,6 @@ def main():
         denoiser=args.denoiser,
         optix_upscale=args.optix_upscale,
         enable_set=not args.no_set,
-        enable_cuda_graphs=not args.no_cuda_graphs,
         backface_culling=not args.no_backface_culling,
     )
     if not api.initialize():
@@ -368,7 +366,7 @@ def main():
         api.resize(render_width, render_height)
         last_elapsed = 0.0
 
-    viewer = woptix.GLInteropViewer(
+    viewer = GLInteropViewer(
         width=args.width,
         height=args.height,
         device="cuda",
@@ -394,7 +392,6 @@ def main():
             device="cuda",
         )
 
-
     print(f"[optix] loaded glTF scene: {scene_gltf}")
     print(
         f"[optix] denoiser: {api.active_denoiser}, "
@@ -403,14 +400,12 @@ def main():
     )
     viewer.run(_render, max_frames=args.max_frames)
     if args.screenshot is not None:
-        from PIL import Image  # noqa: PLC0415
+        from PIL import Image
 
         screenshot = args.screenshot.expanduser().resolve()
         screenshot.parent.mkdir(parents=True, exist_ok=True)
         frame = np.clip(api.get_frame(), 0.0, 1.0)
-        Image.fromarray((frame[..., :3] * 255.0 + 0.5).astype(np.uint8), mode="RGB").save(
-            screenshot
-        )
+        Image.fromarray((frame[..., :3] * 255.0 + 0.5).astype(np.uint8), mode="RGB").save(screenshot)
         print(f"[optix] saved screenshot: {screenshot}")
 
 

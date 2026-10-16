@@ -59,14 +59,11 @@ replace Vulkan execution with OptiX/CUDA, and extend scene/material handling.
 The adaptation used AI assistance.
 
 File-level source mapping under warp_optix/warp_optix/pathtracing:
-  dlss_helper.py: dlss_rr/shaders/dlss_helper.glsl (EnvironmentTerm_Rtg).
-  ray_common.py: dlss_rr/shaders/ray_common.glsl (mirror matrix and reinhardMax).
   pathtracing_warp_kernels.py: dlss_rr/shaders/primary.rgen, primary.rchit,
     primary.rmiss, secondary.rahit, secondary.rchit, secondary.rmiss, and
-    get_hit.glsl (path tracing, hit processing, and DLSS guide buffers).
-  optix_programs.py: intermediate optix_programs.h; primary.rgen motion vectors.
-  viewer_rt_common.py: intermediate viewer_rt_common.h (matrix and environment
-    direction helpers).
+    get_hit.glsl (path tracing, hit processing, and DLSS guide buffers);
+    intermediate optix_programs.h (instance transforms) and primary.rgen
+    motion vectors.
   tonemap.py: intermediate debug_visualize.h (debug buffer visualization).
 Original upstream notice text is in licenses/vk_denoise_dlssrr-NOTICE.txt.
 Sample comparison reference: f8113a84fa952278bb1286e7899f81b7afe8f41e.

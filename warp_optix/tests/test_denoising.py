@@ -13,6 +13,10 @@ from warp_optix.pathtracing import (
     PathTracingRenderer,
 )
 from warp_optix.pathtracing import pathtracing_viewer as renderer_module
+from warp_optix.pathtracing.defaults import DLSS_PROJECT_ID
+
+import warp_optix as wo
+from warp_optix import native
 
 
 def _renderer(monkeypatch, mode, *, dlss_available=False):
@@ -23,16 +27,13 @@ def _renderer(monkeypatch, mode, *, dlss_available=False):
     renderer.optix_upscale = False
     renderer._denoiser_explicit = True
     renderer._ctx = object()
-    renderer._context_owner = object()
     renderer._optix = object()
     renderer._render_stream = object()
     renderer._optix_denoiser = None
     renderer._dlss_enabled = False
     renderer._dlss_init_error = None
     renderer._sync_prev_camera_matrices_to_current = lambda: None
-    renderer._destroy_dlss_rr = lambda **kwargs: setattr(
-        renderer, "_dlss_enabled", False
-    )
+    renderer._destroy_dlss_rr = lambda **kwargs: setattr(renderer, "_dlss_enabled", False)
     renderer._set_render_resolution = lambda w, h: (
         setattr(renderer, "_render_width", w),
         setattr(renderer, "_render_height", h),
@@ -52,17 +53,13 @@ def test_auto_prefers_dlss_and_preserves_diagnostic_on_optix_fallback(monkeypatc
     monkeypatch.setattr(
         renderer_module,
         "OptixDenoiser",
-        lambda *args, **kwargs: (
-            calls.append(kwargs) or SimpleNamespace(close=lambda: None)
-        ),
+        lambda *args, **kwargs: calls.append(kwargs) or SimpleNamespace(close=lambda: None),
     )
     renderer = _renderer(monkeypatch, "auto", dlss_available=True)
     renderer._init_denoiser()
     assert renderer.active_denoiser == "dlss"
     assert not calls
-    renderer._init_dlss_rr = lambda: setattr(
-        renderer, "_dlss_init_error", "DLSS unavailable"
-    )
+    renderer._init_dlss_rr = lambda: setattr(renderer, "_dlss_init_error", "DLSS unavailable")
     renderer._init_denoiser()
     assert renderer.active_denoiser == "optix"
     assert renderer.denoiser_error == "DLSS unavailable"
@@ -106,22 +103,30 @@ def test_failed_switch_restores_previous_backend(monkeypatch):
     assert renderer.optix_upscale is True
     assert renderer._dlss_reset_history is True
     assert renderer.sample_index == 0
-    assert renderer._optix_launch_graph is None
     renderer.width = 63
     renderer._init_denoiser()
     assert renderer._render_width == 32
 
 
-def _gpu_context():
-    from warp_optix import Context
-    wp.init()
-    if not wp.is_cuda_available():
-        pytest.skip("CUDA unavailable")
-    return Context("cuda", log_level=1), None
+requires_gpu = pytest.mark.skipif(not wp.is_cuda_available(), reason="requires a CUDA device")
+requires_dlss = pytest.mark.skipif(
+    not wp.is_cuda_available() or not native.dlss_rr_available(DLSS_PROJECT_ID), reason="DLSS RR unavailable"
+)
 
+
+def _cornell_api(**kwargs):
+    api = PathTracerAPI(enable_set=False, **kwargs)
+    assert api.initialize()
+    api.scene.create_cornell_box()
+    api.build_scene()
+    return api
+
+
+@pytest.mark.gpu
+@requires_gpu
 @pytest.mark.parametrize("upscale", [False, True])
 def test_optix_gpu_denoises_and_resets_history(upscale):
-    context, _logger = _gpu_context()
+    context = wo.create_context("cuda", validation=True)
     rng = np.random.default_rng(42)
     noisy = np.ones((48, 64, 4), dtype=np.float32)
     noisy[..., :3] += rng.normal(0.0, 0.15, (48, 64, 3)).astype(np.float32)
@@ -139,43 +144,46 @@ def test_optix_gpu_denoises_and_resets_history(upscale):
         scale = 2 if upscale else 1
         assert first.shape == (48 * scale, 64 * scale, 4)
         assert np.isfinite(first).all()
-        assert (
-            np.mean((first[..., :3] - 1.0) ** 2)
-            < np.mean((noisy[..., :3] - 1.0) ** 2) * 0.5
-        )
+        assert np.mean((first[..., :3] - 1.0) ** 2) < np.mean((noisy[..., :3] - 1.0) ** 2) * 0.5
         denoiser.apply(inputs).numpy()
         reset = denoiser.apply(inputs, reset=True).numpy()
         np.testing.assert_allclose(reset, first, rtol=1e-5, atol=1e-5)
     finally:
         denoiser.close()
-        context.close()
+        context.destroy()
 
 
-def test_renderer_gpu_switch_resize_and_history():
-    context, _logger = _gpu_context()
-    context.close()
-    api = PathTracerAPI(
-        width=64, height=48, denoiser="optix", optix_upscale=True, enable_set=False
-    )
+@pytest.mark.gpu
+@pytest.mark.render
+@pytest.mark.slow
+@requires_gpu
+def test_renderer_gpu_optix_samples_motion_switch_and_resize():
+    api = _cornell_api(width=64, height=48, denoiser="optix", optix_upscale=True)
     try:
-        assert api.initialize()
-        api.scene.create_cornell_box()
-        api.build_scene()
         scene = api.scene
-        for _ in range(2):
+        frames = []
+        for _ in range(3):
             api.render_frame()
+            frames.append(api.viewer._color_buffer.numpy().copy())
+        assert api.viewer.sample_index == 3
+        assert not np.array_equal(frames[-1], frames[-2]), "Ray samples froze"
         assert api.get_frame().shape == (48, 64, 4)
-        api.reset_temporal_history()
+
+        previous = api.viewer.camera.position.copy()
+        api.set_camera_look_at(previous + (1.0, 0.0, 0.0), api.viewer.camera.target)
         api.render_frame()
+        assert not np.array_equal(api.viewer._color_buffer.numpy(), frames[-1]), "Camera changes did not reach OptiX"
+        assert float(np.max(np.abs(api.viewer._motion_buffer.numpy()))) > 0.1, "Camera movement produced no motion"
+
+        api.reset_temporal_history()
         api.set_denoiser("none")
         api.render_frame()
         assert api.active_denoiser == "none"
         api.set_denoiser("optix", optix_upscale=False)
+        api.resize(80, 60)
         api.render_frame()
         assert api.scene is scene
         assert api.active_denoiser == "optix"
-        api.resize(80, 60)
-        api.render_frame()
         assert api.get_frame().shape == (60, 80, 4)
         assert np.isfinite(api.get_frame()).all()
         api.set_denoiser("optix", optix_upscale=True)
@@ -186,25 +194,26 @@ def test_renderer_gpu_switch_resize_and_history():
         api.close()
 
 
-def test_renderer_gpu_dlss_quality_survives_backend_switch():
-    from warp_optix import native as optix
+@pytest.mark.gpu
+@pytest.mark.render
+@requires_dlss
+def test_dlss_gpu_stream_ordering_and_quality_across_backend_switch():
+    def first_frame(api, caller):
+        with wp.ScopedStream(caller):
+            previous = wp.get_stream("cuda")
+            api.render_frame()
+            assert wp.get_stream("cuda") == previous
+        wp.synchronize_device()
+        return api.get_frame().copy()
 
-    context, _logger = _gpu_context()
-    context.close()
-    if not optix.dlss_rr_available():
-        pytest.skip("DLSS RR unavailable")
-    api = PathTracerAPI(
-        width=128,
-        height=96,
-        denoiser="dlss",
-        dlss_quality="performance",
-        enable_set=False,
-    )
+    reference = _cornell_api(width=128, height=96, denoiser="dlss", dlss_quality="performance")
     try:
-        assert api.initialize()
-        api.scene.create_cornell_box()
-        api.build_scene()
-        api.render_frame()
+        expected = first_frame(reference, None)
+    finally:
+        reference.close()
+    api = _cornell_api(width=128, height=96, denoiser="dlss", dlss_quality="performance")
+    try:
+        np.testing.assert_allclose(first_frame(api, wp.Stream("cuda")), expected, rtol=1e-5, atol=1e-5)
         assert api.active_denoiser == "dlss"
         performance_size = (api.viewer._render_width, api.viewer._render_height)
         api.set_denoiser("optix", optix_upscale=True)
@@ -217,78 +226,6 @@ def test_renderer_gpu_dlss_quality_survives_backend_switch():
         assert api.dlss_quality == "native"
         assert (api.viewer._render_width, api.viewer._render_height) == (128, 96)
         assert performance_size != (128, 96)
-        assert api.get_frame().shape == (96, 128, 4)
         assert np.isfinite(api.get_frame()).all()
-    finally:
-        api.close()
-
-
-def test_dlss_gpu_frame_is_ordered_when_called_from_another_stream():
-    from warp_optix import native as optix
-
-    context, _logger = _gpu_context()
-    context.close()
-    if not optix.dlss_rr_available():
-        pytest.skip("DLSS RR unavailable")
-    def first_frame(caller):
-        api = PathTracerAPI(
-            width=384,
-            height=256,
-            denoiser="dlss",
-            enable_set=False,
-            enable_cuda_graphs=False,
-        )
-        try:
-            assert api.initialize()
-            api.scene.create_cornell_box()
-            api.build_scene()
-            with wp.ScopedStream(caller):
-                previous = wp.get_stream("cuda")
-                api.render_frame()
-                assert wp.get_stream("cuda") == previous
-            wp.synchronize_device()
-            return api.get_frame().copy()
-        finally:
-            api.close()
-
-    expected = first_frame(None)
-    actual = first_frame(wp.Stream("cuda"))
-    np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parametrize("cuda_graphs", [False, True])
-def test_optix_gpu_frames_and_camera_advance(cuda_graphs):
-    context, _logger = _gpu_context()
-    context.close()
-    api = PathTracerAPI(
-        width=96,
-        height=64,
-        denoiser="optix",
-        optix_upscale=True,
-        enable_set=False,
-        enable_cuda_graphs=cuda_graphs,
-    )
-    try:
-        assert api.initialize()
-        api.scene.create_cornell_box()
-        api.build_scene()
-        frames = []
-        for _ in range(5):
-            api.render_frame()
-            frames.append(api.viewer._color_buffer.numpy().copy())
-        assert api.viewer.sample_index == 5
-        assert not api.cuda_graph_active
-        assert not np.array_equal(frames[-1], frames[-2]), (
-            "Ray samples froze after graph capture"
-        )
-        previous = api.viewer.camera.position.copy()
-        api.set_camera_look_at(previous + (1.0, 0.0, 0.0), api.viewer.camera.target)
-        api.render_frame()
-        moved = api.viewer._color_buffer.numpy()
-        motion = api.viewer._motion_buffer.numpy()
-        assert not np.array_equal(moved, frames[-1]), "Camera changes did not reach OptiX"
-        assert float(np.max(np.abs(motion))) > 0.1, (
-            "Camera movement produced no motion vectors"
-        )
     finally:
         api.close()

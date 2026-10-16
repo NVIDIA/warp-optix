@@ -53,8 +53,8 @@ def _import_usd():
     except ImportError as exc:
         raise ImportError(
             "USD loading requires the optional OpenUSD Python bindings. "
-            "Install warp_optix with the 'usd' extra (pip install "
-            '-e "warp_optix[pathtracing,usd]").'
+            "In this checkout, run with `uv run --group usd`; for standalone "
+            "installations, install warp_optix with the 'usd' extra."
         ) from exc
     return Sdf, Usd, UsdGeom, UsdLux, UsdShade
 

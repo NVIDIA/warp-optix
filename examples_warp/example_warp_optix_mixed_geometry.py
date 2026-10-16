@@ -6,22 +6,13 @@
 from __future__ import annotations
 
 import argparse
+import struct
 from pathlib import Path
 
 import numpy as np
 import warp as wp
 
-import warp_optix as woptix
-
-
-@wp.struct
-class LaunchParams:
-    image: wp.array(dtype=wp.uint32)
-    curve_vertices: wp.array2d(dtype=wp.float32)
-    curve_indices: wp.array(dtype=wp.uint32)
-    width: wp.uint32
-    height: wp.uint32
-    traversable: wp.uint64
+import warp_optix as wo
 
 
 @wp.struct
@@ -66,25 +57,24 @@ def _background(direction: wp.vec3) -> wp.vec3:
     )
 
 
-@woptix.optix_kernel(woptix.OptixKernelType.RAYGEN)
-def raygen(params: LaunchParams):
-    index = wp.optix_get_launch_index()
-    x = int(index[0])
-    y = int(index[1])
-    width = int(params.width)
-    height = int(params.height)
-
+@wp.kernel(module="unique")
+def raygen(
+    scene: wp.uint64,
+    curve_vertices: wp.array[wp.vec3],
+    curve_indices: wp.array[wp.uint32],
+    image: wp.array2d[wp.uint32],
+):
+    y, x = wp.tid()
+    height = image.shape[0]
+    width = image.shape[1]
     sx = (2.0 * (float(x) + 0.5) / float(width) - 1.0) * float(width) / float(height)
     sy = 2.0 * (float(y) + 0.5) / float(height) - 1.0
     origin = wp.vec3(0.0, 0.0, 4.5)
     direction = wp.normalize(wp.vec3(sx, sy, -3.2))
 
     payload = Payload()
-    payload.red = wp.uint32(0)
-    payload.green = wp.uint32(0)
-    payload.blue = wp.uint32(0)
     wp.optix_trace(
-        params.traversable,
+        scene,
         origin,
         direction,
         0.001,
@@ -97,37 +87,24 @@ def raygen(params: LaunchParams):
         wp.uint32(0),
         payload,
     )
-
-    rgba = (
-        wp.uint32(255) << wp.uint32(24)
-        | payload.blue << wp.uint32(16)
-        | payload.green << wp.uint32(8)
-        | payload.red
+    image[y, x] = (
+        wp.uint32(255) << wp.uint32(24) | payload.blue << wp.uint32(16) | payload.green << wp.uint32(8) | payload.red
     )
-    params.image[y * width + x] = rgba
 
 
-@woptix.optix_kernel(woptix.OptixKernelType.MISS)
-def miss(params: LaunchParams):
-    direction = wp.normalize(wp.optix_get_world_ray_direction())
-    _store_color(_background(direction))
+@wp.kernel(module="unique")
+def miss():
+    _store_color(_background(wp.normalize(wp.optix_get_world_ray_direction())))
 
 
-@woptix.optix_kernel(woptix.OptixKernelType.CLOSEST_HIT)
-def triangle_closest_hit(params: LaunchParams):
+@wp.kernel(module="unique")
+def triangle_closest_hit():
     barycentrics = wp.optix_get_triangle_barycentrics()
     vertices = wp.optix_get_triangle_vertex_data()
-    v0 = wp.vec3(vertices[0, 0], vertices[0, 1], vertices[0, 2])
-    v1 = wp.vec3(vertices[1, 0], vertices[1, 1], vertices[1, 2])
-    v2 = wp.vec3(vertices[2, 0], vertices[2, 1], vertices[2, 2])
-    object_normal = wp.normalize(wp.cross(v1 - v0, v2 - v0))
+    object_normal = wp.normalize(wp.cross(vertices[1] - vertices[0], vertices[2] - vertices[0]))
     normal = wp.optix_transform_normal_from_object_to_world_space(object_normal)
     light = wp.normalize(wp.vec3(-0.4, 0.8, 0.6))
-    panel = (
-        0.955
-        + 0.012 * barycentrics[0]
-        + 0.018 * wp.max(wp.dot(wp.normalize(normal), light), 0.0)
-    )
+    panel = 0.955 + 0.012 * barycentrics[0] + 0.018 * wp.max(wp.dot(wp.normalize(normal), light), 0.0)
     _store_color(_background(wp.normalize(wp.optix_get_world_ray_direction())) * panel)
 
 
@@ -144,9 +121,7 @@ def _report_hit(t: float, normal: wp.vec3):
 
 
 @wp.func
-def _intersect_sphere(
-    origin: wp.vec3, direction: wp.vec3, center: wp.vec3, radius: float
-):
+def _intersect_sphere(origin: wp.vec3, direction: wp.vec3, center: wp.vec3, radius: float):
     offset = origin - center
     a = wp.dot(direction, direction)
     half_b = wp.dot(offset, direction)
@@ -161,9 +136,7 @@ def _intersect_sphere(
 
 
 @wp.func
-def _intersect_cylinder_side(
-    origin: wp.vec3, direction: wp.vec3, radius: float, half_height: float
-):
+def _intersect_cylinder_side(origin: wp.vec3, direction: wp.vec3, radius: float, half_height: float):
     a = direction[0] * direction[0] + direction[2] * direction[2]
     half_b = origin[0] * direction[0] + origin[2] * direction[2]
     c = origin[0] * origin[0] + origin[2] * origin[2] - radius * radius
@@ -181,9 +154,7 @@ def _intersect_cylinder_side(
 
 
 @wp.func
-def _intersect_cylinder(
-    origin: wp.vec3, direction: wp.vec3, radius: float, half_height: float
-):
+def _intersect_cylinder(origin: wp.vec3, direction: wp.vec3, radius: float, half_height: float):
     _intersect_cylinder_side(origin, direction, radius, half_height)
     if wp.abs(direction[1]) > 1.0e-8:
         bottom_t = (-half_height - origin[1]) / direction[1]
@@ -197,20 +168,12 @@ def _intersect_cylinder(
 
 
 @wp.func
-def _intersect_cone(
-    origin: wp.vec3, direction: wp.vec3, radius: float, half_height: float
-):
+def _intersect_cone(origin: wp.vec3, direction: wp.vec3, radius: float, half_height: float):
     slope = radius / (2.0 * half_height)
     slope2 = slope * slope
     q = half_height - origin[1]
-    a = (
-        direction[0] * direction[0]
-        + direction[2] * direction[2]
-        - slope2 * direction[1] * direction[1]
-    )
-    half_b = (
-        origin[0] * direction[0] + origin[2] * direction[2] + slope2 * q * direction[1]
-    )
+    a = direction[0] * direction[0] + direction[2] * direction[2] - slope2 * direction[1] * direction[1]
+    half_b = origin[0] * direction[0] + origin[2] * direction[2] + slope2 * q * direction[1]
     c = origin[0] * origin[0] + origin[2] * origin[2] - slope2 * q * q
     discriminant = half_b * half_b - a * c
     if discriminant >= 0.0 and wp.abs(a) > 1.0e-8:
@@ -296,8 +259,8 @@ def _intersect_ellipsoid(origin: wp.vec3, direction: wp.vec3, radii: wp.vec3):
         _report_hit(t1, wp.normalize(wp.cw_div(p1, radii2)))
 
 
-@woptix.optix_kernel(woptix.OptixKernelType.INTERSECTION)
-def analytical_intersection(params: LaunchParams):
+@wp.kernel(module="unique")
+def analytical_intersection():
     origin = wp.optix_get_object_ray_origin()
     direction = wp.optix_get_object_ray_direction()
     shape = int(wp.optix_get_instance_id())
@@ -317,8 +280,8 @@ def analytical_intersection(params: LaunchParams):
         _intersect_ellipsoid(origin, direction, wp.vec3(0.43, 0.29, 0.32))
 
 
-@woptix.optix_kernel(woptix.OptixKernelType.CLOSEST_HIT)
-def analytical_closest_hit(params: LaunchParams):
+@wp.kernel(module="unique")
+def analytical_closest_hit():
     object_normal = wp.vec3(
         wp.uint32_to_float(wp.optix_get_attribute_0()),
         wp.uint32_to_float(wp.optix_get_attribute_1()),
@@ -340,192 +303,120 @@ def analytical_closest_hit(params: LaunchParams):
     _store_color(_shade(world_normal, albedo))
 
 
-@woptix.optix_kernel(woptix.OptixKernelType.CLOSEST_HIT)
-def curve_closest_hit(params: LaunchParams):
-    primitive = int(wp.optix_get_primitive_index())
-    vertex = int(params.curve_indices[primitive])
+@wp.kernel(module="unique")
+def curve_closest_hit(curve_vertices: wp.array[wp.vec3], curve_indices: wp.array[wp.uint32]):
+    vertex = int(curve_indices[int(wp.optix_get_primitive_index())])
     u = wp.optix_get_curve_parameter()
-    p0 = wp.vec3(
-        params.curve_vertices[vertex, 0],
-        params.curve_vertices[vertex, 1],
-        params.curve_vertices[vertex, 2],
-    )
-    p1 = wp.vec3(
-        params.curve_vertices[vertex + 1, 0],
-        params.curve_vertices[vertex + 1, 1],
-        params.curve_vertices[vertex + 1, 2],
-    )
-    center = p0 * (1.0 - u) + p1 * u
+    center = curve_vertices[vertex] * (1.0 - u) + curve_vertices[vertex + 1] * u
     world_center = wp.optix_transform_point_from_object_to_world_space(center)
-    hit = (
-        wp.optix_get_world_ray_origin()
-        + wp.optix_get_ray_tmax() * wp.optix_get_world_ray_direction()
+    hit = wp.optix_get_world_ray_origin() + wp.optix_get_ray_tmax() * wp.optix_get_world_ray_direction()
+    _store_color(_shade(wp.normalize(hit - world_center), wp.vec3(0.95, 0.72, 0.12)))
+
+
+@wp.kernel
+def write_instances(
+    traversables: wp.array[wp.uint64],
+    translations: wp.array[wp.vec3],
+    sbt_offsets: wp.array[wp.uint32],
+    records: wp.array[wo.Instance],
+):
+    i = wp.tid()
+    records[i] = wo.make_instance(
+        wp.identity(3, float),
+        translations[i],
+        traversables[i],
+        wp.uint32(i),
+        sbt_offsets[i],
+        wp.uint32(255),
+        wp.uint32(0),
     )
-    world_normal = wp.normalize(hit - world_center)
-    _store_color(_shade(world_normal, wp.vec3(0.95, 0.72, 0.12)))
 
 
-def _save_bmp(path: Path, pixels: np.ndarray, width: int, height: int) -> None:
-    import struct  # noqa: PLC0415
-
-    rgba = pixels.reshape(height, width)
-    bgr = np.stack(
-        ((rgba >> 16) & 0xFF, (rgba >> 8) & 0xFF, rgba & 0xFF), axis=-1
-    ).astype(np.uint8)
+def _save_bmp(path: Path, pixels: np.ndarray) -> None:
+    height, width = pixels.shape
+    bgr = np.stack(((pixels >> 16) & 0xFF, (pixels >> 8) & 0xFF, pixels & 0xFF), axis=-1).astype(np.uint8)
     row_stride = (width * 3 + 3) & ~3
     pixel_data_size = row_stride * height
     padding = b"\x00" * (row_stride - width * 3)
-
     with path.open("wb") as output:
         output.write(struct.pack("<2sIHHI", b"BM", 54 + pixel_data_size, 0, 0, 54))
-        output.write(
-            struct.pack(
-                "<IiiHHIIiiII", 40, width, height, 1, 24, 0, pixel_data_size, 0, 0, 0, 0
-            )
-        )
+        output.write(struct.pack("<IiiHHIIiiII", 40, width, height, 1, 24, 0, pixel_data_size, 0, 0, 0, 0))
         for row in bgr:
             output.write(row.tobytes())
             output.write(padding)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=360)
     parser.add_argument("--output", type=Path, default=Path("mixed_geometry.bmp"))
     args = parser.parse_args()
 
-    wp.init()
-    with wp.ScopedDevice(args.device), woptix.Context(args.device) as context:
-        device = wp.get_device(args.device)
-        if not device.is_cuda:
-            raise RuntimeError("This example requires a CUDA device")
+    with wp.ScopedDevice(args.device):
+        ctx = wo.create_context()
 
-        ptx = woptix.compile_warp_module_to_ptx(
-            wp.get_module(__name__), "", "mixed_geometry", __file__, device=args.device
+        panel_vertices = wp.array(
+            [[-2.1, -1.35, -0.7], [2.1, -1.35, -0.7], [2.1, 1.35, -0.7], [-2.1, 1.35, -0.7]], dtype=wp.vec3
         )
+        panel_indices = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.uint32)
+        triangle_gas = wo.build_accel(ctx, [wo.triangles(panel_vertices, panel_indices)], compact=True)
 
-        vertices = np.array(
-            [
-                [-2.1, -1.35, -0.7],
-                [2.1, -1.35, -0.7],
-                [2.1, 1.35, -0.7],
-                [-2.1, 1.35, -0.7],
-            ],
-            dtype=np.float32,
-        )
-        indices = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.uint32)
-        triangle_gas_resource = context.create_triangle_gas(vertices, indices)
-        shape_aabb = np.array(
-            [[-0.55, -0.55, -0.55, 0.55, 0.55, 0.55]], dtype=np.float32
-        )
-        shape_gas_resource = context.create_custom_primitive_gas(shape_aabb)
+        shape_bounds = wp.array([[-0.55, -0.55, -0.55, 0.55, 0.55, 0.55]], dtype=wp.float32)
+        shape_gas = wo.build_accel(ctx, [wo.aabbs(shape_bounds)], compact=True)
+
         curve_x = np.linspace(-1.85, 1.85, 17, dtype=np.float32)
-        curve_vertices = np.stack(
-            (curve_x, 0.18 * np.sin(2.7 * curve_x), np.full_like(curve_x, -0.35)),
-            axis=1,
+        curve_vertices = wp.array(
+            np.stack((curve_x, 0.18 * np.sin(2.7 * curve_x), np.full_like(curve_x, -0.35)), axis=1), dtype=wp.vec3
         )
-        curve_widths = np.full(curve_x.shape, 0.045, dtype=np.float32)
-        curve_indices = np.arange(curve_x.size - 1, dtype=np.uint32)
-        curve_type = woptix.PrimitiveType.ROUND_LINEAR
-        curve_gas_resource = context.create_curve_gas(
-            curve_vertices, curve_widths, curve_indices, curve_type=curve_type
+        curve_widths = wp.full(curve_x.size, 0.045, dtype=wp.float32)
+        curve_indices = wp.array(np.arange(curve_x.size - 1), dtype=wp.uint32)
+        curve_type = wo.PrimitiveType.ROUND_LINEAR
+        curve_gas = wo.build_accel(
+            ctx, [wo.curves(curve_vertices, curve_widths, curve_indices, curve_type=curve_type)], compact=True
         )
-        curve_buffers = curve_gas_resource.buffers
 
-        pipeline = context.create_pipeline(
-            ptx,
+        # Hit group i serves instances with SBT offset i: 0 triangles, 1 analytical shapes, 2 curves.
+        pipeline = wo.create_pipeline(
+            ctx,
             raygen,
-            miss,
-            None,
-            num_payload_values=3,
-            num_attribute_values=3,
+            miss=[miss],
             hit_groups=[
-                woptix.HitKernel(closest_hit=triangle_closest_hit),
-                woptix.HitKernel(
-                    closest_hit=analytical_closest_hit,
-                    intersection=analytical_intersection,
-                ),
-                woptix.HitKernel(
-                    closest_hit=curve_closest_hit,
-                    builtin_intersection_type=curve_type,
-                ),
+                wo.HitGroup(closest_hit=triangle_closest_hit),
+                wo.HitGroup(closest_hit=analytical_closest_hit, intersection=analytical_intersection),
+                wo.HitGroup(closest_hit=curve_closest_hit, builtin=curve_type),
             ],
-            traversable_graph_flags=woptix.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
-        )
-        triangle_hit_group, shape_hit_group, curve_hit_group = (
-            pipeline.hit_group_offsets
+            payload_words=3,
+            attribute_words=3,
+            graph_flags=wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
         )
 
-        identity = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]
-        instances = [
-            woptix.Instance(
-                triangle_gas_resource,
-                transform=identity,
-                instance_id=0,
-                sbt_offset=triangle_hit_group,
-                visibility_mask=255,
-                flags=woptix.InstanceFlags.NONE,
-            ),
-        ]
-        shape_positions = [
-            (-1.15, 0.57),
-            (0.0, 0.57),
-            (1.15, 0.57),
-            (-1.15, -0.57),
-            (0.0, -0.57),
-            (1.15, -0.57),
-        ]
-        for shape_id, (x, y) in enumerate(shape_positions, start=1):
-            transform = [1.0, 0.0, 0.0, x, 0.0, 1.0, 0.0, y, 0.0, 0.0, 1.0, 0.0]
-            instances.append(
-                woptix.Instance(
-                    shape_gas_resource,
-                    transform=transform,
-                    instance_id=shape_id,
-                    sbt_offset=shape_hit_group,
-                    visibility_mask=255,
-                    flags=woptix.InstanceFlags.NONE,
-                )
-            )
-        instances.append(
-            woptix.Instance(
-                curve_gas_resource,
-                transform=identity,
-                instance_id=7,
-                sbt_offset=curve_hit_group,
-                visibility_mask=255,
-                flags=woptix.InstanceFlags.NONE,
-            )
+        # Instance i has instance ID i; the analytical shapes (IDs 1-6) select their surface by ID.
+        shape_positions = [(-1.15, 0.57), (0.0, 0.57), (1.15, 0.57), (-1.15, -0.57), (0.0, -0.57), (1.15, -0.57)]
+        traversables = [triangle_gas.handle] + [shape_gas.handle] * 6 + [curve_gas.handle]
+        translations = [(0.0, 0.0, 0.0)] + [(x, y, 0.0) for x, y in shape_positions] + [(0.0, 0.0, 0.0)]
+        sbt_offsets = [0] + [1] * 6 + [2]
+        records = wp.empty(len(traversables), dtype=wo.Instance)
+        wp.launch(
+            write_instances,
+            dim=records.shape,
+            inputs=[
+                wp.array(traversables, dtype=wp.uint64),
+                wp.array(translations, dtype=wp.vec3),
+                wp.array(sbt_offsets, dtype=wp.uint32),
+                records,
+            ],
         )
-        ias_resource = context.create_instance_acceleration_structure(instances)
-        ias = ias_resource.handle
+        ias = wo.build_accel(ctx, [wo.instances(records)])
 
-        image = wp.empty(args.width * args.height, dtype=wp.uint32, device=args.device)
-        params = LaunchParams()
-        params.image = image
-        params.curve_vertices = curve_buffers["d_vertex_buffers"][0]
-        params.curve_indices = curve_buffers["d_indices"]
-        params.width = wp.uint32(args.width)
-        params.height = wp.uint32(args.height)
-        params.traversable = wp.uint64(ias)
-        params_buffer = woptix.create_launch_params_buffer(LaunchParams, args.device)
-        woptix.write_launch_params(params_buffer, params)
-        pipeline.launch(params_buffer, width=args.width, height=args.height)
-        wp.synchronize_device(args.device)
+        image = wp.empty((args.height, args.width), dtype=wp.uint32)
+        wo.launch(pipeline, dim=image.shape, inputs=[ias.handle, curve_vertices, curve_indices, image])
 
         pixels = image.numpy()
-        _save_bmp(args.output, pixels, args.width, args.height)
-        print(
-            f"Wrote {args.output} (checksum {int(np.bitwise_xor.reduce(pixels)):#010x})"
-        )
-        print(
-            "Top: sphere, cylinder, cone. Bottom: cube, capsule, ellipsoid. Gold: round curve."
-        )
-        print(f"OptiX log messages: {context.log_message_count}")
+        _save_bmp(args.output, pixels)
+        print(f"Wrote {args.output} (checksum {int(np.bitwise_xor.reduce(pixels, axis=None)):#010x})")
+        print("Top: sphere, cylinder, cone. Bottom: cube, capsule, ellipsoid. Gold: round curve.")
 
 
 if __name__ == "__main__":

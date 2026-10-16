@@ -4,43 +4,47 @@ This version makes a clean break from the backend-taking helper API. Install
 from the repository root. Use a fresh environment when moving from the old
 split pyoptix/warp_optix installation.
 
-| Earlier API | Owned API |
+OptiX programs are now ordinary Warp kernels. The raygen kernel's arguments
+are the launch parameters, every other program declares a subset of them by
+name, and `wo.launch()` mirrors `wp.launch()`. PTX compilation, entry names,
+launch-parameter buffers, and SBT packing are no longer user-facing.
+
+| Earlier API | 0.2 API |
 | --- | --- |
 | `require_optix()` | No setup needed; advanced access is `from warp_optix import native` |
-| `create_context(optix, cuda_context)` | `Context(device="cuda:0")` |
-| GAS/IAS helpers with backend, context, and device arguments | Same method names on `context`, without those arguments |
-| `(handle, buffers)` | `geometry.handle`, `geometry.buffers`, and build statistics |
-| `optix.Instance(...)` | `Instance(geometry, transform=..., instance_id=..., sbt_offset=...)` |
-| `create_pipeline_and_sbt(...)` | `context.create_pipeline(...)` returning `Pipeline` |
-| `launch(optix, pipeline, sbt, width, height, params)` | `pipeline.launch(params, width=width, height=height)` |
-| `refit_acceleration_structure(...)` | `geometry.refit(stream=warp_stream)` |
-| SBT manager handles | `pipeline.hit_group_offsets`, `direct_callable_indices`, `continuation_callable_indices` |
-| `upload_asset(asset, ctx, optix, device=...)` | `upload_asset(asset, context, stream=warp_stream)` |
+| `create_context(optix, cuda_context)` | `ctx = wo.create_context("cuda:0")`; `wo.destroy_context(ctx)` |
+| `@optix_kernel(OptixKernelType.RAYGEN)` | `@wp.kernel(module="unique")`; the kind is given by the pipeline slot |
+| `compile_warp_module_to_ptx(...)` | Done by `wo.create_pipeline()` |
+| `create_triangle_gas(...)`, `create_curve_gas(...)`, `create_custom_primitive_gas(...)` | `wo.build_accel(ctx, [wo.triangles(...)])`, `wo.curves(...)`, `wo.aabbs(...)` over Warp device arrays |
+| `optix.Instance(...)` and `create_instance_acceleration_structure(...)` | `wo.make_instance()` in a Warp kernel, then `wo.build_accel(ctx, [wo.instances(records)])` |
+| `(handle, buffers)` | `accel.handle`; inputs stay owned by the caller |
+| `refit_acceleration_structure(...)` | `wo.update_accel(ctx, accel, stream=...)` |
+| `create_pipeline_and_sbt(...)`, `HitKernel(...)` | `wo.create_pipeline(ctx, raygen, miss=..., hit_groups=[wo.HitGroup(...)])` |
+| `launch(optix, pipeline, sbt, width, height, params)` | `wo.launch(pipeline, dim=(height, width), inputs=[...], stream=...)` |
+| SBT manager handles and offsets | Hit record of geometry `g` and ray type `r` is `hit_groups[g * ray_types + r]`; callables are numbered in list order |
+| `upload_asset(asset, ctx, optix, device=...)` | Neural textures moved to `examples_warp/neural_texture` |
 
 Configuration enums are exported by warp_optix: `BuildFlags`, `GeometryFlags`,
-`InstanceFlags`, `PrimitiveType`, `PrimitiveTypeFlags`, `TraversableGraphFlags`,
-and `ExceptionFlags`. Members omit redundant SDK prefixes, for example
-`BuildFlags.ALLOW_UPDATE` and `PrimitiveType.ROUND_LINEAR`.
+`InstanceFlags`, `PrimitiveType`, and `TraversableGraphFlags`. Members omit
+redundant SDK prefixes, for example `BuildFlags.ALLOW_UPDATE` and
+`PrimitiveType.ROUND_LINEAR`. `wo.constants` holds the same values as plain
+integers for use inside kernels.
 
-`HitKernel` accepts decorated Warp kernels or entry names, and a public
-primitive type. Native-module injection and native SBT management belong to
-the advanced binding interface. Private runtime helpers are not public API.
+`wo.closest_hit()` and `wo.any_hit()` query the scene from a raygen kernel
+without hit programs, which is all a renderer that only casts rays needs.
 
-Use `with Context(...) as context:` for deterministic cleanup. The context
-retains geometry, pipelines, and owned OptiX denoisers until closure.
-`close()` is idempotent and synchronizes the device. Closed resources and
-cross-context instances are rejected; streams and arrays must match the device.
+Acceleration structures reference the caller's device arrays, which must
+outlive them. Builds, refits, and launches are asynchronous on Warp's current
+stream or an explicitly supplied `wp.Stream`; only compaction synchronizes.
+`destroy_context()` synchronizes the device and destroys every pipeline and
+module created from the context; keep acceleration structures and pipelines
+referenced until it returns.
 
-Builders accept NumPy inputs or Warp arrays on the context's device. They
-currently stage through host memory into retained geometry buffers. Update
-`geometry.buffers` before refitting: the mapping is read-only, but the arrays
-inside it are mutable. Pipeline launches retain their parameter buffers;
-callers retain arrays referenced by pointer inside those parameters until work
-completes.
-
-Path-tracing and viewer APIs are preserved. `OptixDenoiser` now accepts an
-owned Context. `native` is version-coupled advanced access; borrowed handles
-must not be destroyed, and native allocations require native lifetime management.
+`OptixDenoiser` takes the context returned by `wo.create_context()`.
+`DlssRRContext.init()` now requires the application's NGX project ID as its
+first argument, and `native.dlss_rr_available(project_id)` takes it too.
+`native` is version-coupled advanced access; native allocations require native
+lifetime management.
 Standard native objects now come from the `pyoptix==9.1.0` dependency. A separate
 `warp_optix._ext` extension supplies DLSS and missing binding operations, without
 registering duplicate standard OptiX types. Importing `optix` and `warp_optix`
@@ -52,10 +56,12 @@ PyOptiX's wrapper types are augmented when `warp_optix` is imported; use
 
 OptiX launch capture is currently unsupported. Tests on the RTX 3080 with
 driver 610.74 reproduced illegal memory access during graph replay and invalid
-resource events during context destruction. `Pipeline.launch` rejects an
-active capture before submitting native work. Capture ordinary Warp work in
-graphs and submit OptiX launches between those graphs on the same stream.
+resource events during context destruction; on Blackwell with driver 595.99,
+OptiX launches and acceleration-structure builds are not recorded into the
+captured graph at all. `launch()`, `build_accel()`, `update_accel()`, and
+`create_pipeline()` reject an active capture before submitting native work.
+Capture ordinary Warp work in graphs and submit OptiX work between those graphs
+on the same stream.
 
-The renderer retains its `enable_cuda_graphs` argument for caller compatibility,
-but requests for OptiX capture use direct asynchronous launches with a logged
-explanation. DLSS and ordinary stream ordering remain supported.
+The renderer's `enable_cuda_graphs` argument is removed; it always submits
+OptiX work directly. DLSS and ordinary stream ordering remain supported.

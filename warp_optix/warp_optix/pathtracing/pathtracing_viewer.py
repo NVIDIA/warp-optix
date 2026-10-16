@@ -25,20 +25,17 @@ from __future__ import annotations
 
 import logging
 import sys
-from pathlib import Path
-from typing import Callable, Optional
+from collections.abc import Callable
 
 import numpy as np
 import warp as wp
 
-import warp_optix as woptix
-from warp_optix._runtime.hit_kernels import HitKernel
-from warp_optix._runtime.runtime import _set_pipeline_stack_size, launch as _launch
-from warp_optix._runtime.sbt import SbtKernelManager
+import warp_optix as wo
+from warp_optix import native
 
 from . import pathtracing_warp_kernels as pwk
 from .camera import Camera
-from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH
+from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH, DLSS_PROJECT_ID
 from .denoising import DLSS_INPUTS, DenoiserInputs, OptixDenoiser
 from .environment_map import EnvironmentMap
 from .lighting import RENDERER_RADIANCE_PER_NIT
@@ -46,12 +43,6 @@ from .scene import Scene
 from .sky_lut import generate_physical_sky_lut
 from .tonemap import Tonemapper
 from .volume_composite import VolumeParams, composite_volume
-
-try:
-    from warp_optix._backend import get_backend
-    optix = get_backend()
-except ImportError:
-    optix = None
 
 try:
     from PIL import Image
@@ -94,15 +85,9 @@ def _prepare_device_camera(
     initialized: wp.array(dtype=wp.int32),
     states: wp.array(dtype=pwk.DeviceCameraState),
 ):
-    position4 = camera_transform * wp.vec4(
-        positions[0][0], positions[0][1], positions[0][2], 1.0
-    )
-    target4 = camera_transform * wp.vec4(
-        targets[0][0], targets[0][1], targets[0][2], 1.0
-    )
-    up4 = camera_transform * wp.vec4(
-        up_directions[0][0], up_directions[0][1], up_directions[0][2], 0.0
-    )
+    position4 = camera_transform * wp.vec4(positions[0][0], positions[0][1], positions[0][2], 1.0)
+    target4 = camera_transform * wp.vec4(targets[0][0], targets[0][1], targets[0][2], 1.0)
+    up4 = camera_transform * wp.vec4(up_directions[0][0], up_directions[0][1], up_directions[0][2], 0.0)
     position = wp.vec3(position4[0], position4[1], position4[2])
     forward = wp.vec3(target4[0], target4[1], target4[2]) - position
     if wp.length(forward) <= 1.0e-8:
@@ -173,8 +158,8 @@ class PathTracingViewer:
         self,
         width: int = DEFAULT_VIEWER_WIDTH,
         height: int = DEFAULT_VIEWER_HEIGHT,
-        scene_setup: Optional[Callable[[Scene], None]] = None,
-        camera: Optional[Camera] = None,
+        scene_setup: Callable[[Scene], None] | None = None,
+        camera: Camera | None = None,
         accumulate_samples: bool = False,
         samples_per_frame: int = 1,
         max_bounces: int = 4,
@@ -183,7 +168,6 @@ class PathTracingViewer:
         use_halton_jitter: bool = True,
         enable_dlss_rr: bool = True,
         enable_set: bool = True,
-        enable_cuda_graphs: bool = True,
         dlss_quality: str = "quality",
         enable_texture_mipmaps: bool = False,
         backface_culling: bool = True,
@@ -219,15 +203,11 @@ class PathTracingViewer:
         self._optix_denoiser = None
         self.denoiser_error: str | None = None
         self.enable_set = bool(enable_set)
-        self.enable_cuda_graphs = bool(enable_cuda_graphs)
         self.backface_culling = bool(backface_culling)
         self.enable_texture_mipmaps = bool(enable_texture_mipmaps)
         self.dlss_quality = self._normalize_dlss_quality(dlss_quality)
         self._set_active = False
         self._render_stream = wp.get_stream("cuda")
-        self._optix_launch_graph = None
-        self._optix_graph_warmed = False
-        self._cuda_graph_error: str | None = None
 
         # Camera
         if camera is None:
@@ -249,11 +229,8 @@ class PathTracingViewer:
 
         # OptiX state (initialized in build())
         self._optix = None
-        self._context_owner = None
         self._ctx = None
         self._pipeline = None
-        self._sbt = None
-        self._ptx = None
 
         # Scene
         self._scene = None
@@ -276,17 +253,13 @@ class PathTracingViewer:
         self._prev_instance_transforms_buffer = None
         self._prev_instance_transforms_valid = False
 
-        # Launch params buffer — cached to avoid per-frame allocation
-        self._launch_params_buffer = None
         self._launch_params = None
         self._instance_transform_count = 0
         self._device_camera_positions = None
         self._device_camera_targets = None
         self._device_camera_up = None
         self._device_camera_fovs = None
-        self._device_camera_transform = wp.mat44(
-            *np.eye(4, dtype=np.float32).reshape(-1)
-        )
+        self._device_camera_transform = wp.mat44(*np.eye(4, dtype=np.float32).reshape(-1))
         self._device_camera_initialized = None
         self._device_camera_state = None
         self._volume = None
@@ -412,11 +385,7 @@ class PathTracingViewer:
         """
         mode = self._normalize_denoiser(denoiser)
         upscale = self.optix_upscale if optix_upscale is None else bool(optix_upscale)
-        if (
-            mode == self.denoiser
-            and upscale == self.optix_upscale
-            and self._denoiser_explicit
-        ):
+        if mode == self.denoiser and upscale == self.optix_upscale and self._denoiser_explicit:
             return
         previous = self.denoiser, self.optix_upscale, self._denoiser_explicit
         self.denoiser, self.optix_upscale, self._denoiser_explicit = mode, upscale, True
@@ -444,8 +413,6 @@ class PathTracingViewer:
         self.sample_index = 0
         self.frame_index = 0
         self._dlss_reset_history = True
-        self._optix_launch_graph = None
-        self._optix_graph_warmed = False
         self._prev_instance_transforms_valid = False
         self._sync_prev_camera_matrices_to_current()
         if self._optix is None:
@@ -467,7 +434,7 @@ class PathTracingViewer:
                     (self.height + scale - 1) // scale,
                 )
                 self._optix_denoiser = OptixDenoiser(
-                    self._context_owner,
+                    self._ctx,
                     self._render_width,
                     self._render_height,
                     upscale=self.optix_upscale,
@@ -477,9 +444,7 @@ class PathTracingViewer:
             except Exception as exc:
                 if self.denoiser == "optix":
                     raise
-                self.denoiser_error = (
-                    f"{self.denoiser_error}; OptiX initialization failed: {exc}"
-                )
+                self.denoiser_error = f"{self.denoiser_error}; OptiX initialization failed: {exc}"
                 logger.warning("Denoiser fallback: %s", self.denoiser_error)
                 self._set_render_resolution(self.width, self.height)
         else:
@@ -538,8 +503,6 @@ class PathTracingViewer:
         self.backface_culling = value
         self.sample_index = 0
         self.frame_index = 0
-        self._optix_launch_graph = None
-        self._optix_graph_warmed = False
         self._dlss_reset_history = True
 
     def set_volume(
@@ -571,26 +534,16 @@ class PathTracingViewer:
         self._volume_max = tuple(float(v) for v in bounds_max)
         self._volume_density_scale = float(density_scale)
         self._volume_step_size = float(step_size)
-        self._volume_cool_colors = tuple(
-            tuple(float(v) for v in color) for color in cool_colors
-        )
-        self._volume_warm_colors = tuple(
-            tuple(float(v) for v in color) for color in warm_colors
-        )
+        self._volume_cool_colors = tuple(tuple(float(v) for v in color) for color in cool_colors)
+        self._volume_warm_colors = tuple(tuple(float(v) for v in color) for color in warm_colors)
         self._volume_emission = float(emission)
         self._volume_anisotropy = float(anisotropy)
         self._volume_density_feature = bool(density_feature)
         if transfer_table is None:
             self._volume_transfer_table = None
         elif isinstance(transfer_table, wp.array):
-            if (
-                transfer_table.ndim != 1
-                or transfer_table.dtype != wp.vec4
-                or len(transfer_table) < 2
-            ):
-                raise ValueError(
-                    "transfer_table must be a 1D Warp vec4 array with at least two entries"
-                )
+            if transfer_table.ndim != 1 or transfer_table.dtype != wp.vec4 or len(transfer_table) < 2:
+                raise ValueError("transfer_table must be a 1D Warp vec4 array with at least two entries")
             if not transfer_table.device.is_cuda:
                 raise ValueError("transfer_table must be CUDA-resident")
             self._volume_transfer_table = transfer_table
@@ -599,9 +552,7 @@ class PathTracingViewer:
             if table.ndim != 2 or table.shape[1] != 4 or len(table) < 2:
                 raise ValueError("transfer_table must have shape (N, 4) with N >= 2")
             if not np.all(np.isfinite(table)) or np.any(table < 0.0):
-                raise ValueError(
-                    "transfer_table entries must be finite and nonnegative"
-                )
+                raise ValueError("transfer_table entries must be finite and nonnegative")
             self._volume_transfer_table = wp.array(table, dtype=wp.vec4, device="cuda")
         self.sample_index = 0
         self.frame_index = 0
@@ -657,53 +608,27 @@ class PathTracingViewer:
         """Build the OptiX pipeline and scene."""
         logger.info("Initializing OptiX path tracing viewer.")
 
-        if optix is None:
-            logger.error(
-                "Could not load PyOptiX or the supplemental extension. Reinstall warp-optix."
-            )
-            return False
-
-        self._optix = optix
-
-        # The renderer's custom two-ray-type pipeline uses the private tracker.
-        if self._context_owner is not None:
+        if self._ctx is not None:
             self.close()
-        self._context_owner = woptix.Context("cuda", log_level=2)
-        self._ctx = self._context_owner._native_context
-        self._optix_logger = self._context_owner._logger
-
+        self._optix = native
+        self._ctx = wo.create_context("cuda")
         try:
-            # Build PTX directly from Warp OptiX kernels.
-            module = wp.get_module(pwk.__name__)
-            self._ptx = woptix.compile_warp_module_to_ptx(
-                module=module,
-                launch_preamble="",
-                module_tag="pathtracing_warp",
-                script_dir=str(Path(__file__).parent),
-                device="cuda",
-            )
             self._set_active = False
 
             # Create scene
-            self._scene = Scene(
-                self._ctx, enable_texture_mipmaps=self.enable_texture_mipmaps
-            )
+            self._scene = Scene(self._ctx, enable_texture_mipmaps=self.enable_texture_mipmaps)
             if self._scene_setup is not None:
                 self._scene_setup(self._scene)
             else:
                 self._scene.create_cornell_box()
-            self._scene.build(optix)
+            self._scene.build(native)
 
             # Create output buffers
             self._create_buffers()
             self._launch_params = pwk.PathtraceLaunchParams()
-            self._launch_params_buffer = woptix.create_launch_params_buffer(
-                pwk.PathtraceLaunchParams, device="cuda"
-            )
             self._init_denoiser()
 
             self._create_pipeline()
-            self._create_sbt()
 
             logger.info("OptiX path tracing viewer build complete.")
             return True
@@ -742,8 +667,6 @@ class PathTracingViewer:
             return
         self._render_width = rw
         self._render_height = rh
-        self._optix_launch_graph = None
-        self._optix_graph_warmed = False
         self._create_buffers()
         self.frame_index = 0
         self.sample_index = 0
@@ -804,17 +727,11 @@ class PathTracingViewer:
         try:
             context = self._optix.DlssRRContext()
             self._dlss_context = context
-            self._dlss_context = context
-            self._dlss_context = context
-            context.init(
-                featureSearchPath=str(Path(self._optix.__file__).resolve().parent),
-            )
+            context.init(DLSS_PROJECT_ID)
             if not context.isDlssRRAvailable():
                 self._dlss_init_error = "not available on this system"
                 logger.info("DLSS RR not available on this system.")
                 context.deinit()
-                self._dlss_context = None
-                self._dlss_context = None
                 self._dlss_context = None
                 self._set_render_resolution(self.width, self.height)
                 return
@@ -840,9 +757,7 @@ class PathTracingViewer:
             preset_enum = self._optix.RayReconstructionHintRenderPreset
             # Preset F selects the DLSS 4.5 Ray Reconstruction transformer
             # (RR2), introduced by SDK 310.9.1.
-            init_info.preset = getattr(
-                preset_enum, "F", getattr(preset_enum, "E", preset_enum.DEFAULT)
-            )
+            init_info.preset = getattr(preset_enum, "F", getattr(preset_enum, "E", preset_enum.DEFAULT))
             # Match reference behavior:
             # - MVJittered=false while still passing per-frame jitter to denoise()
             # - lowResolutionMotionVectors=true (motion vectors provided at render resolution)
@@ -857,9 +772,7 @@ class PathTracingViewer:
             # for the selected quality mode, and only fallback to half-res on failure.
             if hasattr(context, "querySupportedDlssInputSizes"):
                 try:
-                    sizes = context.querySupportedDlssInputSizes(
-                        int(self.width), int(self.height), init_info.quality
-                    )
+                    sizes = context.querySupportedDlssInputSizes(int(self.width), int(self.height), init_info.quality)
                     ow = int(getattr(sizes, "optimalWidth", 0))
                     oh = int(getattr(sizes, "optimalHeight", 0))
                     if ow > 0 and oh > 0:
@@ -873,9 +786,7 @@ class PathTracingViewer:
                         exc,
                     )
 
-            denoiser = context.initDlssRR(
-                init_info, int(self._render_stream.cuda_stream)
-            )
+            denoiser = context.initDlssRR(init_info, int(self._render_stream.cuda_stream))
             self._set_render_resolution(render_width, render_height)
 
             self._dlss_context = context
@@ -885,17 +796,11 @@ class PathTracingViewer:
                 buffer = getattr(inputs, name)
                 texture = self._create_cuda_texture_2d(*buffer.shape, channels)
                 setattr(self, attribute, texture)
-                denoiser.setResource(
-                    getattr(self._optix.DlssRRResource, resource), texture.cuda_texture
-                )
-            self._dlss_color_out_tex = self._create_cuda_texture_2d(
-                self.height, self.width, 4, surface_access=True
-            )
+                denoiser.setResource(getattr(self._optix.DlssRRResource, resource), texture.cuda_texture)
+            self._dlss_color_out_tex = self._create_cuda_texture_2d(self.height, self.width, 4, surface_access=True)
             self._dlss_output_surface = self._dlss_color_out_tex.cuda_surface
 
-            denoiser.setResource(
-                self._optix.DlssRRResource.RESOURCE_COLOR_OUT, self._dlss_output_surface
-            )
+            denoiser.setResource(self._optix.DlssRRResource.RESOURCE_COLOR_OUT, self._dlss_output_surface)
 
             self._dlss_context = context
             self._dlss_denoiser = denoiser
@@ -939,10 +844,10 @@ class PathTracingViewer:
                 view,
                 proj,
                 bool(reset or self._dlss_reset_history),
-                int(0),
-                int(0),
-                float(1.0),
-                float(1.0),
+                0,
+                0,
+                1.0,
+                1.0,
             )
             self._dlss_reset_history = False
             return True
@@ -954,31 +859,19 @@ class PathTracingViewer:
     def _create_buffers(self):
         """Create output buffers."""
         # HDR color buffer
-        self._color_buffer = wp.zeros(
-            (self._render_height, self._render_width), dtype=wp.vec4, device="cuda"
-        )
+        self._color_buffer = wp.zeros((self._render_height, self._render_width), dtype=wp.vec4, device="cuda")
         self._sky_lut_buffer = wp.empty((1024, 2048), dtype=wp.vec4, device="cuda")
         self._sky_lut_state = None
-        self._accum_buffer = wp.zeros(
-            (self._render_height, self._render_width), dtype=wp.vec4, device="cuda"
-        )
+        self._accum_buffer = wp.zeros((self._render_height, self._render_width), dtype=wp.vec4, device="cuda")
 
         # G-buffer outputs
         self._normal_roughness_buffer = wp.zeros(
             (self._render_height, self._render_width), dtype=wp.vec4, device="cuda"
         )
-        self._motion_buffer = wp.zeros(
-            (self._render_height, self._render_width), dtype=wp.vec2, device="cuda"
-        )
-        self._depth_buffer = wp.zeros(
-            (self._render_height, self._render_width), dtype=wp.float32, device="cuda"
-        )
-        self._diffuse_buffer = wp.zeros(
-            (self._render_height, self._render_width), dtype=wp.vec4, device="cuda"
-        )
-        self._specular_buffer = wp.zeros(
-            (self._render_height, self._render_width), dtype=wp.vec4, device="cuda"
-        )
+        self._motion_buffer = wp.zeros((self._render_height, self._render_width), dtype=wp.vec2, device="cuda")
+        self._depth_buffer = wp.zeros((self._render_height, self._render_width), dtype=wp.float32, device="cuda")
+        self._diffuse_buffer = wp.zeros((self._render_height, self._render_width), dtype=wp.vec4, device="cuda")
+        self._specular_buffer = wp.zeros((self._render_height, self._render_width), dtype=wp.vec4, device="cuda")
         self._spec_hit_dist_buffer = wp.zeros(
             (self._render_height, self._render_width), dtype=wp.float32, device="cuda"
         )
@@ -1006,9 +899,7 @@ class PathTracingViewer:
 
         # (Re)allocate GPU buffers when the instance count changes.
         if count != self._instance_transform_count:
-            self._prev_instance_transforms_buffer = wp.empty(
-                (count, 12), dtype=wp.float32, device="cuda"
-            )
+            self._prev_instance_transforms_buffer = wp.empty((count, 12), dtype=wp.float32, device="cuda")
             self._instance_transform_count = count
             self._prev_instance_transforms_valid = False
 
@@ -1031,8 +922,7 @@ class PathTracingViewer:
         if (
             self._instance_transforms_buffer is not None
             and self._prev_instance_transforms_buffer is not None
-            and self._instance_transforms_buffer.shape
-            == self._prev_instance_transforms_buffer.shape
+            and self._instance_transforms_buffer.shape == self._prev_instance_transforms_buffer.shape
         ):
             wp.copy(
                 self._prev_instance_transforms_buffer,
@@ -1041,152 +931,31 @@ class PathTracingViewer:
             )
 
     def _create_pipeline(self):
-        """Create the OptiX pipeline."""
-        optix = self._optix
-        pipeline_kwargs = {
-            "usesMotionBlur": False,
-            "traversableGraphFlags": int(
-                optix.TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_LEVEL_INSTANCING
-            ),
-            "numPayloadValues": 19,
-            "numAttributeValues": 2,
-            "exceptionFlags": int(optix.EXCEPTION_FLAG_NONE),
-            "pipelineLaunchParamsVariableName": "params",
-        }
-        if tuple(optix.version()) >= (7, 2):
-            primitive_flags = (
-                optix.PRIMITIVE_TYPE_FLAGS_TRIANGLE
-                | optix.PRIMITIVE_TYPE_FLAGS_ROUND_LINEAR
-            )
-            if hasattr(optix, "PRIMITIVE_TYPE_FLAGS_ROUND_CUBIC_BEZIER"):
-                primitive_flags |= optix.PRIMITIVE_TYPE_FLAGS_ROUND_CUBIC_BEZIER
-            pipeline_kwargs["usesPrimitiveTypeFlags"] = int(primitive_flags)
-        pco = optix.PipelineCompileOptions(**pipeline_kwargs)
+        """Create the OptiX pipeline with primary and shadow/visibility ray types.
 
-        mco = optix.ModuleCompileOptions(
-            maxRegisterCount=optix.COMPILE_DEFAULT_MAX_REGISTER_COUNT,
-            optLevel=optix.COMPILE_OPTIMIZATION_DEFAULT,
-            debugLevel=optix.COMPILE_DEBUG_LEVEL_DEFAULT,
+        Geometry SBT offsets select the hit groups: triangles 0, round linear
+        curves 2, and round cubic Bezier curves 4. Bounces iterate in raygen,
+        so hit and miss programs never trace recursively.
+        """
+        linear = native.PRIMITIVE_TYPE_ROUND_LINEAR
+        bezier = native.PRIMITIVE_TYPE_ROUND_CUBIC_BEZIER
+        self._pipeline = wo.create_pipeline(
+            self._ctx,
+            pwk.primary_raygen,
+            miss=[pwk.primary_miss, pwk.secondary_miss],
+            hit_groups=[
+                wo.HitGroup(pwk.primary_closest_hit, pwk.primary_any_hit),
+                wo.HitGroup(pwk.secondary_closest_hit, pwk.secondary_any_hit),
+                wo.HitGroup(pwk.curve_primary_closest_hit, pwk.primary_any_hit, builtin=linear),
+                wo.HitGroup(pwk.secondary_closest_hit, pwk.secondary_any_hit, builtin=linear),
+                wo.HitGroup(pwk.curve_primary_closest_hit, pwk.primary_any_hit, builtin=bezier),
+                wo.HitGroup(pwk.secondary_closest_hit, pwk.secondary_any_hit, builtin=bezier),
+            ],
+            ray_types=2,
+            payload_words=19,
+            graph_flags=native.TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_LEVEL_INSTANCING,
+            device="cuda",
         )
-        module_result = self._ctx.moduleCreate(mco, pco, self._ptx)
-        if isinstance(module_result, tuple):
-            self._module = module_result[0]
-        else:
-            self._module = module_result
-
-        # Match C++ SBT layout: 2 ray subtypes (primary + secondary/shadow).
-        # Primary (offset 0): shaded camera and bounce rays with alpha any-hit.
-        # Secondary (offset 1): shadow/visibility rays with alpha any-hit.
-        self._sbt_manager = SbtKernelManager(
-            optix, self._ctx, self._module, num_ray_subtypes=2
-        )
-        self._sbt_manager.set_raygen_kernel(
-            woptix.get_entry_name(pwk.primary_raygen, woptix.OptixKernelType.RAYGEN)
-        )
-        self._sbt_manager.add_miss_kernels(
-            [
-                woptix.get_entry_name(pwk.primary_miss, woptix.OptixKernelType.MISS),
-                woptix.get_entry_name(pwk.secondary_miss, woptix.OptixKernelType.MISS),
-            ]
-        )
-        triangle_hit_group = self._sbt_manager.register_hit_shader_type(
-            HitKernel(
-                woptix.get_entry_name(
-                    pwk.primary_closest_hit, woptix.OptixKernelType.CLOSEST_HIT
-                ),
-                any_hit=woptix.get_entry_name(
-                    pwk.primary_any_hit, woptix.OptixKernelType.ANY_HIT
-                ),
-            ),
-            HitKernel(
-                woptix.get_entry_name(
-                    pwk.secondary_closest_hit, woptix.OptixKernelType.CLOSEST_HIT
-                ),
-                any_hit=woptix.get_entry_name(
-                    pwk.secondary_any_hit, woptix.OptixKernelType.ANY_HIT
-                ),
-            ),
-        )
-
-        def register_curve_hit_group(primitive_type):
-            intersection_module = self._ctx.builtinISModuleGet(
-                mco,
-                pco,
-                optix.BuiltinISOptions(
-                    builtinISModuleType=primitive_type,
-                    usesMotionBlur=False,
-                ),
-            )
-            hit_group = self._sbt_manager.register_hit_shader_type(
-                HitKernel(
-                    woptix.get_entry_name(
-                        pwk.curve_primary_closest_hit,
-                        woptix.OptixKernelType.CLOSEST_HIT,
-                    ),
-                    any_hit=woptix.get_entry_name(
-                        pwk.primary_any_hit, woptix.OptixKernelType.ANY_HIT
-                    ),
-                    builtin_intersection_type=primitive_type,
-                    intersection_module=intersection_module,
-                ),
-                HitKernel(
-                    woptix.get_entry_name(
-                        pwk.secondary_closest_hit,
-                        woptix.OptixKernelType.CLOSEST_HIT,
-                    ),
-                    any_hit=woptix.get_entry_name(
-                        pwk.secondary_any_hit, woptix.OptixKernelType.ANY_HIT
-                    ),
-                    builtin_intersection_type=primitive_type,
-                    intersection_module=intersection_module,
-                ),
-            )
-            return intersection_module, hit_group
-
-        self._curve_intersection_module, curve_hit_group = register_curve_hit_group(
-            optix.PRIMITIVE_TYPE_ROUND_LINEAR
-        )
-        self._bezier_curve_intersection_module = None
-        bezier_curve_hit_group = None
-        if hasattr(optix, "PRIMITIVE_TYPE_ROUND_CUBIC_BEZIER"):
-            self._bezier_curve_intersection_module, bezier_curve_hit_group = (
-                register_curve_hit_group(optix.PRIMITIVE_TYPE_ROUND_CUBIC_BEZIER)
-            )
-        if self._sbt_manager.get_sbt_offset(triangle_hit_group) != 0:
-            raise RuntimeError("triangle hit group must occupy SBT offset 0")
-        if (
-            bezier_curve_hit_group is not None
-            and self._sbt_manager.get_sbt_offset(bezier_curve_hit_group) != 4
-        ):
-            raise RuntimeError("cubic Bézier curve hit group must occupy SBT offset 4")
-        if self._sbt_manager.get_sbt_offset(curve_hit_group) != 2:
-            raise RuntimeError("curve hit group must occupy SBT offset 2")
-
-        plo = optix.PipelineLinkOptions()
-        # Bounces are iterative in raygen; hit and miss programs never trace recursively.
-        trace_depth = 1
-        plo.maxTraceDepth = trace_depth
-        groups = self._sbt_manager.get_all_program_groups()
-        self._pipeline = self._ctx.pipelineCreate(
-            pco,
-            plo,
-            groups,
-            "",
-        )
-        # Single-level instancing => traversable graph depth must stay at 2 (TLAS -> GAS).
-        _set_pipeline_stack_size(
-            optix,
-            self._pipeline,
-            groups,
-            max_trace_depth=trace_depth,
-            max_traversable_depth=2,
-        )
-
-    def _create_sbt(self):
-        """Create the Shader Binding Table."""
-        sbt_resources = self._sbt_manager.build_sbt(device="cuda")
-        self._sbt = sbt_resources.sbt
-        self._sbt_keepalive = sbt_resources.keepalive
 
     @staticmethod
     def _halton(index: int, base: int) -> float:
@@ -1248,32 +1017,16 @@ class PathTracingViewer:
         self._device_camera_targets = targets
         self._device_camera_up = wp.array([up], dtype=wp.vec3, device=positions.device)
         if hasattr(fov, "dtype"):
-            if (
-                fov.dtype != wp.float32
-                or fov.shape[0] < 1
-                or fov.device != positions.device
-            ):
-                raise ValueError(
-                    "fov must be a non-empty wp.array[float] on the camera device"
-                )
+            if fov.dtype != wp.float32 or fov.shape[0] < 1 or fov.device != positions.device:
+                raise ValueError("fov must be a non-empty wp.array[float] on the camera device")
             self._device_camera_fovs = fov
         else:
-            self._device_camera_fovs = wp.array(
-                [float(fov)], dtype=float, device=positions.device
-            )
-        transform = (
-            np.eye(4, dtype=np.float32)
-            if camera_transform is None
-            else camera_transform
-        )
+            self._device_camera_fovs = wp.array([float(fov)], dtype=float, device=positions.device)
+        transform = np.eye(4, dtype=np.float32) if camera_transform is None else camera_transform
         transform = np.asarray(transform, dtype=np.float32).reshape(4, 4)
         self._device_camera_transform = wp.mat44(*transform.reshape(-1))
-        self._device_camera_initialized = wp.zeros(
-            1, dtype=wp.int32, device=positions.device
-        )
-        self._device_camera_state = wp.empty(
-            1, dtype=pwk.DeviceCameraState, device=positions.device
-        )
+        self._device_camera_initialized = wp.zeros(1, dtype=wp.int32, device=positions.device)
+        self._device_camera_state = wp.empty(1, dtype=pwk.DeviceCameraState, device=positions.device)
 
     def _update_device_camera(self) -> None:
         if self._device_camera_state is None:
@@ -1334,11 +1087,7 @@ class PathTracingViewer:
         p.tlas = wp.uint64(self._scene.tlas_handle)
         p.width = wp.uint32(self._render_width)
         p.height = wp.uint32(self._render_height)
-        frame_index_value = (
-            self.sample_index
-            if frame_index_override is None
-            else int(frame_index_override)
-        )
+        frame_index_value = self.sample_index if frame_index_override is None else int(frame_index_override)
         p.frame_index = wp.uint32(frame_index_value)
         p.max_bounces = wp.uint32(self.max_bounces)
         p.direct_light_samples = wp.uint32(self.direct_light_samples)
@@ -1373,9 +1122,7 @@ class PathTracingViewer:
             float(self.env_intensity[2]),
         )
         ambient = getattr(self._scene, "usd_ambient_light", (0.0, 0.0, 0.0))
-        p.ambient_light = wp.vec3(
-            float(ambient[0]), float(ambient[1]), float(ambient[2])
-        )
+        p.ambient_light = wp.vec3(float(ambient[0]), float(ambient[1]), float(ambient[2]))
         p.env_rotation = float(self.env_rotation)
         flags = 0
         if self._env_map is None:
@@ -1392,15 +1139,9 @@ class PathTracingViewer:
         p.bitangent_flip = float(self.bitangent_flip)
         p.use_procedural_sky = wp.uint32(1 if self._env_map is None else 0)
         p.env_map = None if self._env_map is None else self._env_map._env_map_buffer
-        p.env_map_length = wp.uint32(
-            0
-            if self._env_map is None
-            else self._env_map.width * self._env_map.height * 4
-        )
+        p.env_map_length = wp.uint32(0 if self._env_map is None else self._env_map.width * self._env_map.height * 4)
         p.env_map_width = wp.uint32(0 if self._env_map is None else self._env_map.width)
-        p.env_map_height = wp.uint32(
-            0 if self._env_map is None else self._env_map.height
-        )
+        p.env_map_height = wp.uint32(0 if self._env_map is None else self._env_map.height)
         p.env_accel = (
             None
             if self._env_map is None or self._env_map._env_accel_buffer is None
@@ -1410,9 +1151,7 @@ class PathTracingViewer:
                 dtype=pwk.EnvAccel,
             )
         )
-        p.env_accel_count = wp.uint32(
-            0 if self._env_map is None else self._env_map.accel_count
-        )
+        p.env_accel_count = wp.uint32(0 if self._env_map is None else self._env_map.accel_count)
 
         sky = pwk.PhysicalSkyParams()
         sky.rgb_unit_conversion = wp.vec3(*self.sky_rgb_unit_conversion)
@@ -1506,8 +1245,7 @@ class PathTracingViewer:
         )
         p.compact_materials = (
             None
-            if self._scene._compact_materials is None
-            or self._scene.materials.count == 0
+            if self._scene._compact_materials is None or self._scene.materials.count == 0
             else wp.array(
                 ptr=self._scene._compact_materials.ptr,
                 shape=(self._scene.materials.count,),
@@ -1534,10 +1272,6 @@ class PathTracingViewer:
         p.diffuse_output = self._diffuse_buffer
         p.specular_output = self._specular_buffer
         p.spec_hit_dist_output = self._spec_hit_dist_buffer
-
-        woptix.write_launch_params(
-            self._launch_params_buffer, p, stream=self._render_stream
-        )
 
     def _update_temporal_state(
         self,
@@ -1618,9 +1352,7 @@ class PathTracingViewer:
                 p.anisotropy = self._volume_anisotropy
                 p.transfer_table = self._volume_transfer_table
                 p.transfer_count = wp.uint32(
-                    0
-                    if self._volume_transfer_table is None
-                    else len(self._volume_transfer_table)
+                    0 if self._volume_transfer_table is None else len(self._volume_transfer_table)
                 )
                 p.density_feature = wp.uint32(self._volume_density_feature)
                 self._volume_params = p
@@ -1646,16 +1378,11 @@ class PathTracingViewer:
                     self.frame_index += 1
 
     def _launch_optix(self):
-        """Submit directly; OptiX graph replay and teardown are not reliable."""
-        if self.enable_cuda_graphs and self._cuda_graph_error is None:
-            self._cuda_graph_error = (
-                "OptiX graph capture is unsupported; using direct asynchronous launches"
-            )
-            logger.warning(self._cuda_graph_error)
-        _launch(
-            self._optix, self._pipeline, self._sbt,
-            self._render_width, self._render_height, self._launch_params_buffer,
-            stream=int(self._render_stream.cuda_stream),
+        wo.launch(
+            self._pipeline,
+            dim=(self._render_height, self._render_width),
+            inputs=[self._launch_params],
+            stream=self._render_stream,
         )
 
     def _process_debug_output(self):
@@ -1682,9 +1409,7 @@ class PathTracingViewer:
 
     def _process_output(self, source_buffer, *, resize_final_to_render: bool):
         if self.output_mode == self.OUTPUT_FINAL:
-            self._process_final_output(
-                source_buffer, resize_to_render=resize_final_to_render
-            )
+            self._process_final_output(source_buffer, resize_to_render=resize_final_to_render)
             return
         self._process_debug_output()
 
@@ -1722,9 +1447,7 @@ class PathTracingViewer:
             and self._device_camera_state is None
         )
         samples_this_frame = 1 if self._dlss_enabled else self.samples_per_frame
-        reset_temporal = self._update_temporal_state(
-            current_view, current_proj, use_external_accum
-        )
+        reset_temporal = self._update_temporal_state(current_view, current_proj, use_external_accum)
         self._update_instance_transform_buffers()
         self._launch_samples(
             samples_this_frame,
@@ -1751,9 +1474,7 @@ class PathTracingViewer:
             # stream ordering publishes every producer to its consumer.
             self._copy_linear_to_dlss_textures()
             if self._run_dlss_rr(reset_temporal):
-                self._process_output(
-                    self._dlss_color_out_tex, resize_final_to_render=False
-                )
+                self._process_output(self._dlss_color_out_tex, resize_final_to_render=False)
             else:
                 self._process_output(self._color_buffer, resize_final_to_render=True)
         elif self._optix_denoiser is not None:
@@ -1792,18 +1513,14 @@ class PathTracingViewer:
     def close(self):
         """Wait for rendering and release reconstruction resources."""
         wp.synchronize_stream(self._render_stream)
-        self._optix_graph_warmed = False
         self._destroy_dlss_rr(restore_resolution=False)
         self._destroy_optix_denoiser()
-        if self._context_owner is not None:
-            self._context_owner.close()
-            self._context_owner = None
-        self._optix_launch_graph = None
+        # Destroying the context releases its pipelines and modules. GPU buffers
+        # are dropped afterwards so OptiX never sees them freed while in use.
+        if self._ctx is not None:
+            wo.destroy_context(self._ctx)
         self._ctx = None
         self._pipeline = None
-        self._module = None
-        self._sbt = None
-        self._sbt_manager = None
         self._scene = None
 
     def __del__(self):

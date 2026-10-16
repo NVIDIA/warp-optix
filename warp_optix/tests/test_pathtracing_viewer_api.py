@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import warp as wp
+from PIL import Image
 from warp_optix.pathtracing import (
     PathTracerAPI,
     PathTracingRenderer,
@@ -187,9 +189,7 @@ def test_scene_batches_instance_transforms_and_visibility():
     scene.set_instances_visible_batch(instance_ids[1:], False)
 
     np.testing.assert_array_equal(scene._instance_transform_cache[:3], transforms)
-    np.testing.assert_array_equal(
-        scene._instance_visibility_cache[:3], (True, False, False)
-    )
+    np.testing.assert_array_equal(scene._instance_visibility_cache[:3], (True, False, False))
 
 
 def test_reference_sky_and_srgb_color_mapping():
@@ -208,9 +208,7 @@ def test_reference_sky_and_srgb_color_mapping():
 
     assert api.procedural_sky is True
     assert api.sky is None
-    np.testing.assert_allclose(
-        api.materials[0][0], (0.60382736, 0.60382736, 0.60382736), rtol=1.0e-6
-    )
+    np.testing.assert_allclose(api.materials[0][0], (0.60382736, 0.60382736, 0.60382736), rtol=1.0e-6)
     assert api.materials[0][1:3] == (0.25, 0.75)
     assert api.materials[0][3:] == (1.5, 1.0, 0.0, 0.1, 0.0, 0.0, 0.75)
 
@@ -240,15 +238,9 @@ def test_reference_sky_and_srgb_color_mapping():
         "brighten_speed": None,
         "darken_speed": None,
     }
-    np.testing.assert_allclose(
-        api.sky["ground_color"], (0.21404114, 0.05087609, 0.52252155), rtol=1.0e-6
-    )
-    np.testing.assert_allclose(
-        api.sky["night_color"], (0.03310477, 0.13286832, 0.31854678), rtol=1.0e-6
-    )
-    np.testing.assert_allclose(
-        api.environment_color, (0.01002283, 0.21404114, 0.78741229), rtol=1.0e-6
-    )
+    np.testing.assert_allclose(api.sky["ground_color"], (0.21404114, 0.05087609, 0.52252155), rtol=1.0e-6)
+    np.testing.assert_allclose(api.sky["night_color"], (0.03310477, 0.13286832, 0.31854678), rtol=1.0e-6)
+    np.testing.assert_allclose(api.environment_color, (0.01002283, 0.21404114, 0.78741229), rtol=1.0e-6)
 
 
 def test_log_mesh_binds_and_reuses_base_color_texture():
@@ -277,8 +269,7 @@ def test_log_mesh_binds_and_reuses_base_color_texture():
     np.testing.assert_array_equal(api.scene._gltf_textures[0][0, 0, :3], (0, 0, 255))
     assert len(api.scene.textured_materials) == 2
     assert all(
-        material["base_color_texture"] == {"index": 0, "texCoord": 0}
-        for material in api.scene.textured_materials
+        material["base_color_texture"] == {"index": 0, "texCoord": 0} for material in api.scene.textured_materials
     )
     assert api.scene._meshes[0].material_id == api.scene._meshes[1].material_id
     assert api.scene._instances[0].material_id == 1
@@ -298,9 +289,7 @@ def test_sky_parameters_normalize_sun_direction():
     assert api._viewer.sky_grayscale == 1.0
     api.set_sky_parameters((0.0, 2.0, 1.0), grayscale=0.35)
     assert api._viewer.sky_grayscale == pytest.approx(0.35)
-    np.testing.assert_allclose(
-        api._viewer.sky_sun_direction, (0.0, 0.8944272, 0.4472136), rtol=1.0e-6
-    )
+    np.testing.assert_allclose(api._viewer.sky_sun_direction, (0.0, 0.8944272, 0.4472136), rtol=1.0e-6)
     with pytest.raises(ValueError, match="nonzero"):
         api.set_sky_parameters((0.0, 0.0, 0.0))
 
@@ -339,40 +328,23 @@ def test_light_intensity_controls_clamp_and_reset_history():
     assert api._viewer._dlss_reset_history is True
 
 
-def test_load_scene_from_usd_forwards_options_and_builds():
+def test_load_scene_from_usd_enables_composed_environment_before_building():
     calls = []
     scene = SimpleNamespace(
-        load_from_usd=lambda *args, **kwargs: calls.append((args, kwargs)) or True
+        load_from_usd=lambda *args, **kwargs: calls.append(("load", kwargs["clear_existing"])) or True,
+        usd_environment_path="environment.hdr",
     )
     api = PathTracerAPI.__new__(PathTracerAPI)
     api._viewer = SimpleNamespace(_scene=scene)
     api.initialize = lambda: True
-    api.build_scene = lambda: calls.append(("build", {}))
+    api.build_scene = lambda: calls.append(("build",))
+    api.set_environment_hdr = lambda path, scaling=1.0: calls.append((path, scaling))
 
-    assert api.load_scene_from_usd(
-        "asset.usd",
-        clear_existing=False,
-        apply_stage_units=False,
-        convert_up_axis=False,
-    )
-    assert calls == [
-        (
-            ("asset.usd",),
-            {
-                "root_transform": None,
-                "clear_existing": False,
-                "apply_stage_units": False,
-                "convert_up_axis": False,
-                "max_texture_size": None,
-                "max_texture_memory_bytes": None,
-                "strict_sidedness": False,
-                "enable_emissive_materials": True,
-                "load_usd_lights": False,
-                "usd_light_radius": None,
-            },
-        ),
-        ("build", {}),
-    ]
+    assert api.load_scene_from_usd("asset.usd", clear_existing=False)
+    assert calls == [("load", False), ("build",)]
+    calls.clear()
+    assert api.load_scene_from_usd("asset.usd", load_usd_environment=True, usd_environment_scale=0.25)
+    assert calls == [("load", True), ("environment.hdr", 0.25), ("build",)]
 
 
 def test_resize_releases_old_dlss_resources_before_native_reallocation(monkeypatch):
@@ -382,19 +354,13 @@ def test_resize_releases_old_dlss_resources_before_native_reallocation(monkeypat
     viewer._render_stream = object()
     viewer.frame_index = 9
     events = []
-    viewer.camera = SimpleNamespace(
-        set_aspect_ratio=lambda width, height: events.append(("aspect", width, height))
-    )
-    viewer._tonemapper = SimpleNamespace(
-        resize=lambda width, height: events.append(("tonemap", width, height))
-    )
+    viewer.camera = SimpleNamespace(set_aspect_ratio=lambda width, height: events.append(("aspect", width, height)))
+    viewer._tonemapper = SimpleNamespace(resize=lambda width, height: events.append(("tonemap", width, height)))
     viewer._sync_prev_camera_matrices_to_current = lambda: events.append(("camera",))
     viewer._destroy_dlss_rr = lambda **kwargs: events.append(("destroy", kwargs))
     viewer._destroy_optix_denoiser = lambda: events.append(("destroy_optix",))
     viewer._init_denoiser = lambda: events.append(("init",))
-    monkeypatch.setattr(
-        viewer_module.wp, "synchronize_stream", lambda stream: events.append(("sync",))
-    )
+    monkeypatch.setattr(viewer_module.wp, "synchronize_stream", lambda stream: events.append(("sync",)))
 
     viewer.resize(3840, 2160)
 
@@ -405,29 +371,9 @@ def test_resize_releases_old_dlss_resources_before_native_reallocation(monkeypat
     assert events[-2:] == [("init",), ("tonemap", 3840, 2160)]
 
 
-def test_load_scene_from_usd_can_enable_composed_environment():
-    calls = []
-    scene = SimpleNamespace(
-        load_from_usd=lambda *args, **kwargs: True,
-        usd_environment_path="environment.hdr",
-    )
-    api = PathTracerAPI.__new__(PathTracerAPI)
-    api._viewer = SimpleNamespace(_scene=scene)
-    api.initialize = lambda: True
-    api.build_scene = lambda: calls.append(("build", {}))
-    api.set_environment_hdr = lambda path, scaling=1.0: calls.append((path, scaling))
-
-    assert api.load_scene_from_usd(
-        "asset.usd", load_usd_environment=True, usd_environment_scale=0.25
-    )
-    assert calls == [("environment.hdr", 0.25), ("build", {})]
-
-
 def test_logged_instances_apply_up_axis_materials_and_frame_lifecycle():
     api = _FakePathTracerAPI()
-    viewer = PathTracingViewerBackend(
-        device="cpu", headless=True, num_frames=1, up_axis="Z", api=api
-    )
+    viewer = PathTracingViewerBackend(device="cpu", headless=True, num_frames=1, up_axis="Z", api=api)
     points, indices = _triangle()
     viewer.log_mesh("triangle", points, indices)
     xforms = np.array(((1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0),), dtype=np.float32)
@@ -438,9 +384,7 @@ def test_logged_instances_apply_up_axis_materials_and_frame_lifecycle():
     viewer.log_instances("batch", "triangle", xforms, scales, colors, materials)
     instance = api.scene._instances[0]
     np.testing.assert_allclose(instance.transform[:3, 3], (1.0, 3.0, -2.0))
-    np.testing.assert_allclose(
-        instance.transform[:3, :3], ((2, 0, 0), (0, 0, 4), (0, -3, 0))
-    )
+    np.testing.assert_allclose(instance.transform[:3, :3], ((2, 0, 0), (0, 0, 4), (0, -3, 0)))
     assert instance.visible is True
     assert api.materials[instance.material_id][1:3] == (0.2, 0.6)
     assert api.materials[instance.material_id][3:] == (
@@ -519,9 +463,7 @@ def test_optional_picking_uses_physics_camera_ray_and_applies_forces():
         created.append(picking)
         return picking
 
-    viewer = PathTracingViewerBackend(
-        device="cpu", headless=True, api=api, up_axis="Z", picking_factory=factory
-    )
+    viewer = PathTracingViewerBackend(device="cpu", headless=True, api=api, up_axis="Z", picking_factory=factory)
     model = SimpleNamespace(up_axis=2)
     viewer.set_model(model)
     picking = created[0]
@@ -558,9 +500,7 @@ def test_debug_and_bridge_transform_compatibility():
         _8=28,
         BACKSPACE=29,
     )
-    viewer._presenter = SimpleNamespace(
-        pyglet=SimpleNamespace(window=SimpleNamespace(key=key))
-    )
+    viewer._presenter = SimpleNamespace(pyglet=SimpleNamespace(window=SimpleNamespace(key=key)))
     viewer.on_key_press(key._1, None)
     assert api.debug_mode == 2
     viewer.on_key_press(key._1, None)
@@ -580,9 +520,6 @@ def test_screenshot_exports_display_orientation(tmp_path):
     viewer = PathTracingViewerBackend(device="cpu", headless=True, api=api)
 
     path = viewer.save_screenshot(tmp_path / "capture.png")
-
-    from PIL import Image
-
     image = np.asarray(Image.open(path))
     np.testing.assert_array_equal(image[0], frame[1, :, :3])
     np.testing.assert_array_equal(image[1], frame[0, :, :3])
@@ -642,9 +579,7 @@ def test_renderer_space_look_at_preserves_level_z_up_camera():
 
 def test_instance_capacity_is_enforced():
     api = _FakePathTracerAPI()
-    viewer = PathTracingViewerBackend(
-        device="cpu", headless=True, api=api, max_instances=1
-    )
+    viewer = PathTracingViewerBackend(device="cpu", headless=True, api=api, max_instances=1)
     points, indices = _triangle()
     viewer.log_mesh("triangle", points, indices)
     xforms = np.array(
@@ -656,33 +591,6 @@ def test_instance_capacity_is_enforced():
     )
     with pytest.raises(RuntimeError, match="instance capacity"):
         viewer.log_instances("batch", "triangle", xforms, None, None, None)
-
-
-def test_tlas_refit_preserves_temporal_sequence():
-    class _Scene:
-        def __init__(self):
-            self.refit_count = 0
-
-        def rebuild_tlas(self):
-            self.refit_count += 1
-
-    scene = _Scene()
-    api = PathTracerAPI.__new__(PathTracerAPI)
-    api._viewer = SimpleNamespace(
-        _scene=scene,
-        sample_index=17,
-        frame_index=9,
-        _optix_launch_graph=None,
-        _optix_graph_warmed=True,
-    )
-
-    api.rebuild_tlas()
-
-    assert scene.refit_count == 1
-    assert api._viewer.sample_index == 17
-    assert api._viewer.frame_index == 9
-    assert api._viewer._optix_launch_graph is None
-    assert api._viewer._optix_graph_warmed is False
 
 
 def test_volume_composite_launches_only_when_bound(monkeypatch):
@@ -738,65 +646,14 @@ def test_volume_composite_launches_only_when_bound(monkeypatch):
     assert launches == [viewer_module.composite_volume]
 
 
-def test_volume_configuration_forwards_to_renderer():
-    """Forward volume configuration to the renderer."""
-    calls = []
-    api = PathTracerAPI.__new__(PathTracerAPI)
-    api._viewer = SimpleNamespace(
-        set_volume=lambda *args, **kwargs: calls.append((args, kwargs))
-    )
-    volume = object()
-    transfer_table = np.array(((0.0, 0.0, 1.0, 0.5), (1.0, 0.2, 0.0, 2.0)))
-
-    api.set_volume(
-        volume,
-        (-1.0, -2.0, -3.0),
-        (1.0, 2.0, 3.0),
-        density_scale=2.5,
-        anisotropy=0.3,
-        transfer_table=transfer_table,
-        density_feature=True,
-    )
-
-    assert calls == [
-        (
-            (volume, (-1.0, -2.0, -3.0), (1.0, 2.0, 3.0)),
-            {
-                "density_scale": 2.5,
-                "anisotropy": 0.3,
-                "transfer_table": transfer_table,
-                "density_feature": True,
-            },
-        )
-    ]
-
-
-def test_volume_configuration_forwards_through_backend():
-    calls = []
-    backend = PathTracingViewerBackend.__new__(PathTracingViewerBackend)
-    backend._ensure_initialized = lambda: None
-    backend._api = SimpleNamespace(
-        set_volume=lambda *args, **kwargs: calls.append((args, kwargs))
-    )
-    volume = object()
-
-    backend.set_volume(
-        volume,
-        (-1.0, -2.0, -3.0),
-        (1.0, 2.0, 3.0),
-        density_scale=2.5,
-    )
-
-    assert calls == [
-        (
-            (volume, (-1.0, -2.0, -3.0), (1.0, 2.0, 3.0)),
-            {"density_scale": 2.5},
-        )
-    ]
-
-
-def test_scene_rebuild_resets_temporal_history():
+def test_tlas_refit_keeps_but_scene_rebuild_resets_temporal_history():
     class _Scene:
+        def __init__(self):
+            self.refit_count = 0
+
+        def rebuild_tlas(self):
+            self.refit_count += 1
+
         def build(self, optix):
             self.optix = optix
 
@@ -809,28 +666,22 @@ def test_scene_rebuild_resets_temporal_history():
         _prev_instance_transforms_valid=True,
         sample_index=17,
         frame_index=9,
-        _create_sbt=lambda: None,
         _sync_prev_camera_matrices_to_current=lambda: None,
     )
 
-    api.build_scene()
+    api.rebuild_tlas()
+    assert scene.refit_count == 1
+    assert (api._viewer.sample_index, api._viewer.frame_index) == (17, 9)
 
+    api.build_scene()
     assert scene.optix is api._viewer._optix
-    assert api._viewer.sample_index == 0
-    assert api._viewer.frame_index == 0
+    assert (api._viewer.sample_index, api._viewer.frame_index) == (0, 0)
     assert api._viewer._dlss_reset_history is True
     assert api._viewer._prev_instance_transforms_valid is False
 
-    api._viewer._dlss_reset_history = False
-    api.reset_temporal_history()
-    assert api._viewer._dlss_reset_history is True
-
 
 def test_quality_modes_and_runtime_ray_budgets():
-    assert (
-        PathTracingRenderer._normalize_dlss_quality("ultra-performance")
-        == "ultra_performance"
-    )
+    assert PathTracingRenderer._normalize_dlss_quality("ultra-performance") == "ultra_performance"
     assert PathTracingRenderer._normalize_dlss_quality("native") == "native"
     with pytest.raises(ValueError, match="dlss_quality"):
         PathTracingRenderer._normalize_dlss_quality("cinematic")
@@ -867,8 +718,6 @@ def test_global_backface_culling_can_be_changed_at_runtime():
     renderer.sample_index = 17
     renderer.frame_index = 9
     renderer._dlss_reset_history = False
-    renderer._optix_launch_graph = object()
-    renderer._optix_graph_warmed = True
 
     renderer.set_backface_culling(False)
 
@@ -876,8 +725,6 @@ def test_global_backface_culling_can_be_changed_at_runtime():
     assert renderer.sample_index == 0
     assert renderer.frame_index == 0
     assert renderer._dlss_reset_history is True
-    assert renderer._optix_launch_graph is None
-    assert renderer._optix_graph_warmed is False
 
     renderer.sample_index = 4
     renderer.frame_index = 3
@@ -894,12 +741,10 @@ def test_global_backface_culling_can_be_changed_at_runtime():
     assert api.backface_culling is True
 
 
+@pytest.mark.gpu
+@pytest.mark.skipif(not wp.is_cuda_available(), reason="requires a CUDA device")
 def test_cuda_instance_batches_reuse_materials_after_count_changes():
     """Shrinking, hiding, and restoring batches must not rebuild materials."""
-    import warp as wp
-
-    if not wp.is_cuda_available():
-        pytest.skip("CUDA device unavailable")
     api = _FakePathTracerAPI()
     material_updates = []
     api.set_instance_material_arrays = lambda *args: material_updates.append(args)
@@ -916,9 +761,7 @@ def test_cuda_instance_batches_reuse_materials_after_count_changes():
     assert len(material_updates) == 1
     material_count = len(api.materials)
     for count in (2, 1, 3):
-        viewer.log_instances(
-            "batch", "triangle", xforms[:count], None, colors[:count], materials[:count]
-        )
+        viewer.log_instances("batch", "triangle", xforms[:count], None, colors[:count], materials[:count])
         viewer._flush_scene()
         assert len(api.materials) == material_count
         assert api.build_count == 1

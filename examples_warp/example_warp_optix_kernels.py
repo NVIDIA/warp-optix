@@ -13,48 +13,60 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Minimal Warp-defined OptiX entry kernels.
+"""Minimal OptiX pipeline built from ordinary Warp kernels.
 
-This example defines OptiX raygen/miss entry points with `warp_optix.optix_kernel`,
-then emits PTX so the generated entry names can be inspected.
+The raygen kernel's arguments become the launch parameters. The miss kernel
+binds the raygen argument ``scale`` by name. Tracing against a null traversable
+always invokes the miss program, so no acceleration structure is needed.
 """
 
+import numpy as np
 import warp as wp
-import warp_optix as woptix
+
+import warp_optix as wo
 
 
 @wp.struct
-class ExampleLaunchParams:
+class Payload:
     value: wp.uint32
 
 
-@woptix.optix_kernel(woptix.OptixKernelType.RAYGEN)
-def raygen_program(params: ExampleLaunchParams):
-    launch_idx = wp.optix_get_launch_index()
-    if launch_idx[0] == 0 and launch_idx[1] == 0 and launch_idx[2] == 0 and params.value == wp.uint32(0):
-        pass
+@wp.kernel(module="unique")
+def raygen(scale: wp.uint32, values: wp.array2d[wp.uint32]):
+    y, x = wp.tid()
+    payload = Payload()
+    wp.optix_trace(
+        wp.uint64(0),
+        wp.vec3(0.0),
+        wp.vec3(0.0, 0.0, -1.0),
+        0.0,
+        1.0,
+        0.0,
+        wp.uint32(255),
+        wp.uint32(0),
+        wp.uint32(0),
+        wp.uint32(1),
+        wp.uint32(0),
+        payload,
+    )
+    values[y, x] = payload.value
 
 
-@woptix.optix_kernel(woptix.OptixKernelType.MISS)
-def miss_program(params: ExampleLaunchParams):
-    _ = params.value
-    return
+@wp.kernel(module="unique")
+def miss(scale: wp.uint32):
+    index = wp.optix_get_launch_index()
+    wp.optix_set_payload_0(scale * index[1] + index[0])
 
 
 def main() -> None:
-    module = wp.get_module(__name__)
-    ptx = woptix.compile_warp_module_to_ptx(
-        module=module,
-        launch_preamble="",
-        module_tag="optix_kernels_example",
-        script_dir=__file__,
-    )
-
-    print("Generated OptiX entry symbols:")
-    print(f"  __raygen__{raygen_program.get_mangled_name()}")
-    print(f"  __miss__{miss_program.get_mangled_name()}")
-    print("\nFirst 40 lines of generated PTX:")
-    print("\n".join(ptx.decode("utf-8", errors="replace").splitlines()[:40]))
+    ctx = wo.create_context()
+    pipeline = wo.create_pipeline(ctx, raygen, miss=[miss], payload_words=1)
+    values = wp.zeros((4, 8), dtype=wp.uint32)
+    wo.launch(pipeline, dim=values.shape, inputs=[100, values])
+    result = values.numpy()
+    print("Miss program output (100 * row + column):")
+    print(result)
+    np.testing.assert_array_equal(result, 100 * np.arange(4)[:, None] + np.arange(8))
 
 
 if __name__ == "__main__":

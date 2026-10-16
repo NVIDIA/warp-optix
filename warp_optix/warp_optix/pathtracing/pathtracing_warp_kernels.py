@@ -19,31 +19,14 @@
 from __future__ import annotations
 
 import warp as wp
-import warp_optix as woptix
-from warp_optix._runtime.constants import (
+
+from warp_optix.constants import (
     OPTIX_RAY_FLAG_CULL_BACK_FACING_TRIANGLES,
     OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT,
     OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT,
 )
 
-from .dlss_helper import environment_term_rtg, positive_rcp  # noqa: F401
-from .func_common import Mat16f, Vec6f, mul_cm_3x3, mul_cm_4x4, power_heuristic  # noqa: F401
-from .optix_programs import TransformMatrix3x4 as TransformMatrix3x4_new  # noqa: F401
-from .optix_programs import (
-    compute_camera_motion_vector as compute_camera_motion_vector_new,  # noqa: F401
-)  # noqa: F401
-from .optix_programs import (
-    compute_deformable_motion_vector as compute_deformable_motion_vector_new,  # noqa: F401
-)  # noqa: F401
-from .optix_programs import (
-    compute_object_motion_vector as compute_object_motion_vector_new,  # noqa: F401
-)  # noqa: F401
-from .optix_programs import inverse_transform_point as inverse_transform_point_new  # noqa: F401
-from .optix_programs import transform_point as transform_point_new  # noqa: F401
-from .optix_programs import transforms_equal as transforms_equal_new  # noqa: F401
-from .ray_common import DLSS_INF_DISTANCE as _DLSS_INF_DISTANCE_MODULE  # noqa: F401
-from .ray_common import RayPayload, apply_matrix_3x3, build_mirror_matrix, reinhard_max  # noqa: F401
-from .viewer_rt_common import get_spherical_uv_csharp, rotate_environment_dir  # noqa: F401
+from .func_common import Mat16f, Vec6f
 
 
 @wp.struct
@@ -308,24 +291,8 @@ def _unpack_unit_from_u8(x: wp.uint32) -> wp.float32:
 
 
 @wp.func
-def _encode_unit_to_u8(x: wp.float32) -> wp.uint32:
-    return wp.uint32(wp.clamp((x * 0.5 + 0.5) * 255.0, 0.0, 255.0))
-
-
-@wp.func
 def _decode_u8(x: wp.uint32) -> wp.float32:
     return wp.float32(x) / 255.0
-
-
-@wp.func
-def _encode_u8(x: wp.float32) -> wp.uint32:
-    return wp.uint32(wp.clamp(x * 255.0, 0.0, 255.0))
-
-
-@wp.func
-def _encode_u16_norm(x: wp.float32, max_value: wp.float32) -> wp.uint32:
-    v = wp.clamp(x / wp.max(max_value, 1.0e-8), 0.0, 1.0)
-    return wp.uint32(v * 65535.0)
 
 
 @wp.func
@@ -353,9 +320,7 @@ def _fetch_vec4(flat: wp.array(dtype=wp.float32), idx: wp.int32) -> wp.vec4:
 
 @wp.func
 def _apply_uv_transform(uv: wp.vec2, m: Vec6f) -> wp.vec2:
-    return wp.vec2(
-        m[0] * uv[0] + m[1] * uv[1] + m[2], m[3] * uv[0] + m[4] * uv[1] + m[5]
-    )
+    return wp.vec2(m[0] * uv[0] + m[1] * uv[1] + m[2], m[3] * uv[0] + m[4] * uv[1] + m[5])
 
 
 @wp.func
@@ -401,12 +366,8 @@ def _sample_texture_rgba(
 
 
 @wp.func
-def _compute_pixel_center(
-    params: PathtraceLaunchParams, px: wp.int32, py: wp.int32
-) -> wp.vec2:
-    return wp.vec2(
-        wp.float32(px) + 0.5 + params.jitter[0], wp.float32(py) + 0.5 + params.jitter[1]
-    )
+def _compute_pixel_center(params: PathtraceLaunchParams, px: wp.int32, py: wp.int32) -> wp.vec2:
+    return wp.vec2(wp.float32(px) + 0.5 + params.jitter[0], wp.float32(py) + 0.5 + params.jitter[1])
 
 
 @wp.func
@@ -424,9 +385,7 @@ def _mul_mat3x3_cm(m: Mat16f, v: wp.vec3) -> wp.vec3:
 
 
 @wp.func
-def _compute_ray_dir(
-    params: PathtraceLaunchParams, px: wp.int32, py: wp.int32
-) -> wp.vec3:
+def _compute_ray_dir(params: PathtraceLaunchParams, px: wp.int32, py: wp.int32) -> wp.vec3:
     w = wp.float32(params.width)
     h = wp.float32(params.height)
     pixel_center = _compute_pixel_center(params, px, py)
@@ -463,9 +422,7 @@ def _sky_rgb_luminance(rgb: wp.vec3) -> wp.float32:
 
 
 @wp.func
-def _sky_local_coords_to_dir(
-    main_vec: wp.vec3, lx: wp.float32, ly: wp.float32, lz: wp.float32
-) -> wp.vec3:
+def _sky_local_coords_to_dir(main_vec: wp.vec3, lx: wp.float32, ly: wp.float32, lz: wp.float32) -> wp.vec3:
     u = (
         wp.vec3(0.0, -main_vec[2], main_vec[1])
         if wp.abs(main_vec[0]) < wp.abs(main_vec[1])
@@ -517,9 +474,7 @@ def _sky_calc_sun_color(sun_dir_z: wp.float32, turbidity: wp.float32) -> wp.vec3
     ko = wp.vec3(12.0, 8.5, 0.9)
     wl = wp.vec3(0.610, 0.550, 0.470)
     sol_rad = wp.vec3(1.0, 0.992, 0.911) * (127500.0 / 0.9878)
-    m = 1.0 / (
-        sun_dir_z + 0.15 * wp.pow(93.885 - (wp.acos(sun_dir_z) * 180.0 / wp.pi), -1.253)
-    )
+    m = 1.0 / (sun_dir_z + 0.15 * wp.pow(93.885 - (wp.acos(sun_dir_z) * 180.0 / wp.pi), -1.253))
     beta = 0.04608 * turbidity - 0.04586
     ta = wp.vec3(
         wp.exp(-m * beta * wp.pow(wl[0], -1.3)),
@@ -556,12 +511,8 @@ def _sky_luminance(d: wp.vec3, sun_dir: wp.vec3, turbidity: wp.float32) -> wp.fl
     C = -0.022669 * turbidity + 5.325056
     D = 0.120647 * turbidity - 2.577052
     E = -0.066967 * turbidity + 0.370275
-    num = (1.0 + A * wp.exp(B / cos_theta)) * (
-        1.0 + C * wp.exp(D * gamma) + E * cos_gamma * cos_gamma
-    )
-    den = (1.0 + A * wp.exp(B)) * (
-        1.0 + C * wp.exp(D * theta_sun) + E * cos_theta_sun * cos_theta_sun
-    )
+    num = (1.0 + A * wp.exp(B / cos_theta)) * (1.0 + C * wp.exp(D * gamma) + E * cos_gamma * cos_gamma)
+    den = (1.0 + A * wp.exp(B)) * (1.0 + C * wp.exp(D * theta_sun) + E * cos_theta_sun * cos_theta_sun)
     return num / wp.max(den, 1.0e-10)
 
 
@@ -586,14 +537,12 @@ def _sky_color_xyz(
 
     zenith_x = (
         (0.001650 * ts3 - 0.003742 * ts2 + 0.002088 * theta_sun + 0.0) * t2
-        + (-0.029028 * ts3 + 0.063773 * ts2 - 0.032020 * theta_sun + 0.003948)
-        * turbidity
+        + (-0.029028 * ts3 + 0.063773 * ts2 - 0.032020 * theta_sun + 0.003948) * turbidity
         + (0.116936 * ts3 - 0.211960 * ts2 + 0.060523 * theta_sun + 0.258852)
     )
     zenith_y = (
         (0.002759 * ts3 - 0.006105 * ts2 + 0.003162 * theta_sun + 0.0) * t2
-        + (-0.042149 * ts3 + 0.089701 * ts2 - 0.041536 * theta_sun + 0.005158)
-        * turbidity
+        + (-0.042149 * ts3 + 0.089701 * ts2 - 0.041536 * theta_sun + 0.005158) * turbidity
         + (0.153467 * ts3 - 0.267568 * ts2 + 0.066698 * theta_sun + 0.266881)
     )
 
@@ -602,12 +551,8 @@ def _sky_color_xyz(
     C = -0.000417 * turbidity + 0.212479
     D = -0.064097 * turbidity - 0.898875
     E = -0.003251 * turbidity + 0.045178
-    x_val = (
-        (1.0 + A * wp.exp(B / cos_theta))
-        * (1.0 + C * wp.exp(D * gamma) + E * cos_gamma * cos_gamma)
-    ) / (
-        (1.0 + A * wp.exp(B))
-        * (1.0 + C * wp.exp(D * theta_sun) + E * cos_theta_sun * cos_theta_sun)
+    x_val = ((1.0 + A * wp.exp(B / cos_theta)) * (1.0 + C * wp.exp(D * gamma) + E * cos_gamma * cos_gamma)) / (
+        (1.0 + A * wp.exp(B)) * (1.0 + C * wp.exp(D * theta_sun) + E * cos_theta_sun * cos_theta_sun)
     )
 
     A2 = -0.016698 * turbidity - 0.260787
@@ -615,12 +560,8 @@ def _sky_color_xyz(
     C2 = -0.007928 * turbidity + 0.210230
     D2 = -0.044050 * turbidity - 1.653694
     E2 = -0.010922 * turbidity + 0.052919
-    y_val = (
-        (1.0 + A2 * wp.exp(B2 / cos_theta))
-        * (1.0 + C2 * wp.exp(D2 * gamma) + E2 * cos_gamma * cos_gamma)
-    ) / (
-        (1.0 + A2 * wp.exp(B2))
-        * (1.0 + C2 * wp.exp(D2 * theta_sun) + E2 * cos_theta_sun * cos_theta_sun)
+    y_val = ((1.0 + A2 * wp.exp(B2 / cos_theta)) * (1.0 + C2 * wp.exp(D2 * gamma) + E2 * cos_gamma * cos_gamma)) / (
+        (1.0 + A2 * wp.exp(B2)) * (1.0 + C2 * wp.exp(D2 * theta_sun) + E2 * cos_theta_sun * cos_theta_sun)
     )
 
     local_saturation = 1.0
@@ -637,9 +578,7 @@ def _sky_calc_sky_color(sun_dir: wp.vec3, d: wp.vec3, turbidity: wp.float32) -> 
     """calcSkyColor (sky_common.h line 218)."""
     theta_sun = wp.acos(sun_dir[2])
     chi = (4.0 / 9.0 - turbidity / 120.0) * (wp.pi - 2.0 * theta_sun)
-    lum = 1000.0 * (
-        (4.0453 * turbidity - 4.9710) * wp.tan(chi) - 0.2155 * turbidity + 2.4192
-    )
+    lum = 1000.0 * ((4.0453 * turbidity - 4.9710) * wp.tan(chi) - 0.2155 * turbidity + 2.4192)
     lum = lum * _sky_luminance(d, sun_dir, turbidity)
     xyz = _sky_color_xyz(d, sun_dir, turbidity, lum)
     env_color = wp.vec3(
@@ -677,9 +616,7 @@ def _sky_tweak_saturation(sat: wp.float32, haze: wp.float32) -> wp.float32:
 
 
 @wp.func
-def _sky_tweak_vector(
-    d: wp.vec3, y_is_up: wp.int32, horiz_height: wp.float32
-) -> wp.vec3:
+def _sky_tweak_vector(d: wp.vec3, y_is_up: wp.int32, horiz_height: wp.float32) -> wp.vec3:
     out = d
     if y_is_up == 1:
         out = wp.vec3(d[0], d[2], d[1])
@@ -690,9 +627,7 @@ def _sky_tweak_vector(
 
 
 @wp.func
-def _sky_tweak_color(
-    tint: wp.vec3, saturation: wp.float32, redness: wp.float32
-) -> wp.vec3:
+def _sky_tweak_color(tint: wp.vec3, saturation: wp.float32, redness: wp.float32) -> wp.vec3:
     intensity = _sky_rgb_luminance(tint)
     gray = wp.vec3(intensity, intensity, intensity)
     out = gray * (1.0 - saturation) + tint * saturation if saturation > 0.0 else gray
@@ -723,10 +658,7 @@ def _sky_calc_physical_scale(
     glow_func_integral = sun_glow_intensity * (
         4.0 * wp.pi
         - 24.0 * wp.pi / (sun_glow_radius * sun_glow_radius)
-        + 24.0
-        * wp.pi
-        * wp.sin(sun_glow_radius)
-        / (sun_glow_radius * sun_glow_radius * sun_glow_radius)
+        + 24.0 * wp.pi * wp.sin(sun_glow_radius) / (sun_glow_radius * sun_glow_radius * sun_glow_radius)
     )
     target_sundisk_integral = sun_disk_intensity * wp.pi
     sky_sunglow_scale = 1.0
@@ -739,16 +671,9 @@ def _sky_calc_physical_scale(
     sundisk_area = 2.0 * wp.pi * (1.0 - wp.cos(sun_disk_radius))
     target_sundisk_intensity = target_sundisk_integral / wp.max(sundisk_area, 1.0e-20)
     actual_sundisk_integral = 1.0 * sundisk_area
-    actual_sundisk_intensity = (
-        sun_disk_intensity
-        * 100.0
-        * actual_sundisk_integral
-        / wp.max(sundisk_area, 1.0e-20)
-    )
+    actual_sundisk_intensity = sun_disk_intensity * 100.0 * actual_sundisk_integral / wp.max(sundisk_area, 1.0e-20)
     disk_scale = (
-        target_sundisk_intensity / wp.max(actual_sundisk_intensity, 1.0e-20)
-        if target_sundisk_intensity != 0.0
-        else 0.0
+        target_sundisk_intensity / wp.max(actual_sundisk_intensity, 1.0e-20) if target_sundisk_intensity != 0.0 else 0.0
     )
     return wp.vec2(disk_scale, sky_sunglow_scale)
 
@@ -770,9 +695,7 @@ def _sky_star_radiance(direction: wp.vec3) -> wp.vec3:
     if direction[2] <= 0.0:
         return wp.vec3(0.0)
     horizon_visibility = wp.clamp((direction[2] - 0.12) / 0.18, 0.0, 1.0)
-    horizon_visibility = (
-        horizon_visibility * horizon_visibility * (3.0 - 2.0 * horizon_visibility)
-    )
+    horizon_visibility = horizon_visibility * horizon_visibility * (3.0 - 2.0 * horizon_visibility)
     grid = 768.0
     cell_x = wp.uint32(wp.floor((direction[0] + 1.0) * grid))
     cell_y = wp.uint32(wp.floor((direction[1] + 1.0) * grid))
@@ -791,9 +714,7 @@ def _sky_star_radiance(direction: wp.vec3) -> wp.vec3:
 
 
 @wp.func
-def _eval_physical_sky_celestial(
-    ss: PhysicalSkyParams, in_direction: wp.vec3
-) -> wp.vec3:
+def _eval_physical_sky_celestial(ss: PhysicalSkyParams, in_direction: wp.vec3) -> wp.vec3:
     """Evaluate high-frequency sun, moon, halo, and star radiance."""
     if ss.multiplier <= 0.0:
         return wp.vec3(0.0)
@@ -821,39 +742,19 @@ def _eval_physical_sky_celestial(
                 )
                 disk_edge = disk_edge * disk_edge * (3.0 - 2.0 * disk_edge)
                 halo = wp.pow(center_proximity, 3.0) * 0.06 * ss.sun_glow_intensity
-                result = (
-                    wp.vec3(0.040, 0.044, 0.050)
-                    * ss.sun_disk_intensity
-                    * (disk_edge + halo)
-                )
+                result = wp.vec3(0.040, 0.044, 0.050) * ss.sun_disk_intensity * (disk_edge + halo)
             else:
                 height_adjusted = (ss.horizon_height + ss.horizon_blur) / 10.0
-                sun_dir = wp.normalize(
-                    _sky_tweak_vector(ss.sun_direction, ss.y_is_up, height_adjusted)
-                )
+                sun_dir = wp.normalize(_sky_tweak_vector(ss.sun_direction, ss.y_is_up, height_adjusted))
                 if sun_dir[2] < 0.001:
                     sun_dir = wp.normalize(wp.vec3(sun_dir[0], sun_dir[1], 0.001))
                 local_haze = wp.max(2.0, 2.0 + ss.haze)
                 data_sun_color = _sky_calc_sun_color(sun_dir[2], local_haze)
-                scales = _sky_calc_physical_scale(
-                    ss.sun_disk_scale, ss.sun_glow_intensity, ss.sun_disk_intensity
-                )
-                glow_factor = (
-                    wp.pow(center_proximity, 3.0)
-                    * 2.0
-                    * ss.sun_glow_intensity
-                    * scales[1]
-                )
+                scales = _sky_calc_physical_scale(ss.sun_disk_scale, ss.sun_glow_intensity, ss.sun_disk_intensity)
+                glow_factor = wp.pow(center_proximity, 3.0) * 2.0 * ss.sun_glow_intensity * scales[1]
                 smooth_edge = 0.95 + local_haze / 500.0
-                t_ss = wp.clamp(
-                    (center_proximity - 0.85) / (smooth_edge - 0.85), 0.0, 1.0
-                )
-                disk_factor = (
-                    (t_ss * t_ss * (3.0 - 2.0 * t_ss))
-                    * 100.0
-                    * ss.sun_disk_intensity
-                    * scales[0]
-                )
+                t_ss = wp.clamp((center_proximity - 0.85) / (smooth_edge - 0.85), 0.0, 1.0)
+                disk_factor = (t_ss * t_ss * (3.0 - 2.0 * t_ss)) * 100.0 * ss.sun_disk_intensity * scales[0]
                 rgb_scale = ss.rgb_unit_conversion * ss.multiplier
                 disk_color = wp.vec3(
                     data_sun_color[0] * (glow_factor + disk_factor) * rgb_scale[0],
@@ -861,10 +762,7 @@ def _eval_physical_sky_celestial(
                     data_sun_color[2] * (glow_factor + disk_factor) * rgb_scale[2],
                 )
                 local_saturation = _sky_tweak_saturation(ss.saturation, local_haze)
-                result = (
-                    _sky_tweak_color(disk_color, local_saturation, ss.redblueshift)
-                    * wp.pi
-                )
+                result = _sky_tweak_color(disk_color, local_saturation, ss.redblueshift) * wp.pi
 
     star_visibility = wp.clamp((-real_sun_dir[2] - 0.05) / 0.2, 0.0, 1.0)
     if star_visibility > 0.0 and celestial_dir[2] > 0.0:
@@ -895,38 +793,22 @@ def _eval_physical_sky(
     if d[2] < 0.001:
         d = wp.normalize(wp.vec3(d[0], d[1], 0.001))
 
-    sun_dir = wp.normalize(
-        _sky_tweak_vector(ss.sun_direction, ss.y_is_up, height_adjusted)
-    )
+    sun_dir = wp.normalize(_sky_tweak_vector(ss.sun_direction, ss.y_is_up, height_adjusted))
     if sun_dir[2] < 0.001:
         factor = _sky_night_brightness(sun_dir[2])
         sun_dir = wp.normalize(wp.vec3(sun_dir[0], sun_dir[1], 0.001))
 
-    tint = (
-        _sky_calc_sky_color(sun_dir, d, local_haze) * factor
-        if factor > 0.0
-        else wp.vec3(0.0, 0.0, 0.0)
-    )
-    data_sun_color = _sky_calc_sun_color(
-        sun_dir[2], local_haze if downness > 0.0 else 2.0
-    )
+    tint = _sky_calc_sky_color(sun_dir, d, local_haze) * factor if factor > 0.0 else wp.vec3(0.0, 0.0, 0.0)
+    data_sun_color = _sky_calc_sun_color(sun_dir[2], local_haze if downness > 0.0 else 2.0)
 
-    out_color = wp.vec3(
-        tint[0] * rgb_scale[0], tint[1] * rgb_scale[1], tint[2] * rgb_scale[2]
-    )
+    out_color = wp.vec3(tint[0] * rgb_scale[0], tint[1] * rgb_scale[1], tint[2] * rgb_scale[2])
 
     if downness <= 0.0:
         irrad = _sky_calc_irradiance(sun_dir, 2.0)
         down_color = wp.vec3(
-            ss.ground_color[0]
-            * (irrad[0] + data_sun_color[0] * sun_dir[2])
-            * rgb_scale[0],
-            ss.ground_color[1]
-            * (irrad[1] + data_sun_color[1] * sun_dir[2])
-            * rgb_scale[1],
-            ss.ground_color[2]
-            * (irrad[2] + data_sun_color[2] * sun_dir[2])
-            * rgb_scale[2],
+            ss.ground_color[0] * (irrad[0] + data_sun_color[0] * sun_dir[2]) * rgb_scale[0],
+            ss.ground_color[1] * (irrad[1] + data_sun_color[1] * sun_dir[2]) * rgb_scale[1],
+            ss.ground_color[2] * (irrad[2] + data_sun_color[2] * sun_dir[2]) * rgb_scale[2],
         )
         down_color = down_color * factor
         hor_blur = ss.horizon_blur / 10.0
@@ -983,9 +865,7 @@ def _sky_sample_pdf(ss: PhysicalSkyParams, in_direction: wp.vec3) -> wp.float32:
     internal_direction = _sky_tweak_vector(in_direction, ss.y_is_up, 0.0)
     sky_pdf = 1.0 / (2.0 * wp.pi) if internal_direction[2] >= 0.0 else 0.0
     sun_direction = wp.normalize(ss.sun_direction)
-    internal_sun_direction = wp.normalize(
-        _sky_tweak_vector(ss.sun_direction, ss.y_is_up, 0.0)
-    )
+    internal_sun_direction = wp.normalize(_sky_tweak_vector(ss.sun_direction, ss.y_is_up, 0.0))
     if internal_sun_direction[2] < 0.0:
         sun_direction = -sun_direction
     sun_sample_angular_radius = 1.5 * sun_angular_radius
@@ -1004,9 +884,7 @@ def _sky_sample_pdf(ss: PhysicalSkyParams, in_direction: wp.vec3) -> wp.float32:
 
 
 @wp.func
-def _sky_sample_spherical_cap(
-    z_min: wp.float32, xi0: wp.float32, xi1: wp.float32
-) -> wp.vec3:
+def _sky_sample_spherical_cap(z_min: wp.float32, xi0: wp.float32, xi1: wp.float32) -> wp.vec3:
     """sampleSphericalCap (sky_common.h line 422)."""
     z = 1.0 * (1.0 - xi1) + z_min * xi1
     r = wp.sqrt(wp.max(0.0, 1.0 - z * z))
@@ -1021,9 +899,7 @@ class SkySamplingResult:
 
 
 @wp.func
-def _sample_physical_sky(
-    ss: PhysicalSkyParams, xi0: wp.float32, xi1: wp.float32
-) -> SkySamplingResult:
+def _sample_physical_sky(ss: PhysicalSkyParams, xi0: wp.float32, xi1: wp.float32) -> SkySamplingResult:
     """samplePhysicalSky (sky_common.h line 433)."""
     result = SkySamplingResult()
     sun_prob = _sky_sun_probability(ss)
@@ -1040,16 +916,10 @@ def _sample_physical_sky(
     d = _sky_sample_spherical_cap(z_min, rx, xi1)
 
     if sample_sun:
-        sun_direction = wp.normalize(
-            _sky_tweak_vector(ss.sun_direction, ss.y_is_up, 0.0)
-        )
+        sun_direction = wp.normalize(_sky_tweak_vector(ss.sun_direction, ss.y_is_up, 0.0))
         if sun_direction[2] < 0.0:
             sun_direction = -sun_direction
-        up = (
-            wp.vec3(1.0, 0.0, 0.0)
-            if wp.abs(sun_direction[2]) > 0.999
-            else wp.vec3(0.0, 0.0, 1.0)
-        )
+        up = wp.vec3(1.0, 0.0, 0.0) if wp.abs(sun_direction[2]) > 0.999 else wp.vec3(0.0, 0.0, 1.0)
         right = wp.normalize(wp.cross(up, sun_direction))
         up = wp.cross(sun_direction, right)
         d = right * d[0] + up * d[1] + sun_direction * d[2]
@@ -1158,14 +1028,8 @@ def _eval_sky_lut(params: PathtraceLaunchParams, rd: wp.vec3) -> wp.vec3:
     c10 = lut[iy0, ix1]
     c01 = lut[iy1, ix0]
     c11 = lut[iy1, ix1]
-    c0 = (
-        wp.vec3(c00[0], c00[1], c00[2]) * (1.0 - tx)
-        + wp.vec3(c10[0], c10[1], c10[2]) * tx
-    )
-    c1 = (
-        wp.vec3(c01[0], c01[1], c01[2]) * (1.0 - tx)
-        + wp.vec3(c11[0], c11[1], c11[2]) * tx
-    )
+    c0 = wp.vec3(c00[0], c00[1], c00[2]) * (1.0 - tx) + wp.vec3(c10[0], c10[1], c10[2]) * tx
+    c1 = wp.vec3(c01[0], c01[1], c01[2]) * (1.0 - tx) + wp.vec3(c11[0], c11[1], c11[2]) * tx
     result = c0 * (1.0 - ty) + c1 * ty
     result = result + _eval_physical_sky_celestial(params.sky, rd)
     grayscale = wp.clamp(params.sky.grayscale, 0.0, 1.0)
@@ -1196,9 +1060,7 @@ def _sample_environment(params: PathtraceLaunchParams, rd: wp.vec3) -> wp.vec3:
 
 
 @wp.func
-def _environment_pdf_for_direction(
-    params: PathtraceLaunchParams, rd: wp.vec3
-) -> wp.float32:
+def _environment_pdf_for_direction(params: PathtraceLaunchParams, rd: wp.vec3) -> wp.float32:
     """Matches C++ samplePhysicalSkyPDF / env-map PDF dispatch."""
     if params.use_procedural_sky == wp.uint32(1):
         return _sky_sample_pdf(params.sky, rd)
@@ -1312,30 +1174,20 @@ def _sample_sphere_light(
         distance = wp.sqrt(distance_squared)
         axis = to_center / distance
         cos_theta_max = wp.sqrt(wp.max(1.0 - radius_squared / distance_squared, 0.0))
-        one_minus_cos = radius_squared / (
-            distance_squared * wp.max(1.0 + cos_theta_max, 1.0e-6)
-        )
+        one_minus_cos = radius_squared / (distance_squared * wp.max(1.0 + cos_theta_max, 1.0e-6))
         cos_theta = 1.0 - xi1 * one_minus_cos
         sin_theta = wp.sqrt(wp.max(1.0 - cos_theta * cos_theta, 0.0))
         phi = xi2 * 2.0 * wp.pi
-        helper = (
-            wp.vec3(0.0, 0.0, 1.0)
-            if wp.abs(axis[2]) < 0.999
-            else wp.vec3(1.0, 0.0, 0.0)
-        )
+        helper = wp.vec3(0.0, 0.0, 1.0) if wp.abs(axis[2]) < 0.999 else wp.vec3(1.0, 0.0, 0.0)
         tangent = wp.normalize(wp.cross(helper, axis))
         bitangent = wp.cross(axis, tangent)
         sample.direction = wp.normalize(
-            tangent * (sin_theta * wp.cos(phi))
-            + bitangent * (sin_theta * wp.sin(phi))
-            + axis * cos_theta
+            tangent * (sin_theta * wp.cos(phi)) + bitangent * (sin_theta * wp.sin(phi)) + axis * cos_theta
         )
         center_t = wp.dot(to_center, sample.direction)
         discriminant = radius_squared - (distance_squared - center_t * center_t)
         sample.distance = center_t - wp.sqrt(wp.max(discriminant, 0.0))
-        sample.pdf = 1.0 / (
-            2.0 * wp.pi * wp.max(one_minus_cos, 1.0e-8) * wp.float32(count)
-        )
+        sample.pdf = 1.0 / (2.0 * wp.pi * wp.max(one_minus_cos, 1.0e-8) * wp.float32(count))
     sample.radiance = light.radiance * params.analytic_light_intensity
     return sample
 
@@ -1386,15 +1238,9 @@ def _intersect_sphere_lights(
                 if center_distance_sq <= radius * radius * 1.0001:
                     hit.pdf = 1.0 / (4.0 * wp.pi * wp.float32(count))
                 else:
-                    cos_theta_max = wp.sqrt(
-                        wp.max(1.0 - radius * radius / center_distance_sq, 0.0)
-                    )
-                    one_minus_cos = (radius * radius) / (
-                        center_distance_sq * wp.max(1.0 + cos_theta_max, 1.0e-6)
-                    )
-                    hit.pdf = 1.0 / (
-                        2.0 * wp.pi * wp.max(one_minus_cos, 1.0e-8) * wp.float32(count)
-                    )
+                    cos_theta_max = wp.sqrt(wp.max(1.0 - radius * radius / center_distance_sq, 0.0))
+                    one_minus_cos = (radius * radius) / (center_distance_sq * wp.max(1.0 + cos_theta_max, 1.0e-6))
+                    hit.pdf = 1.0 / (2.0 * wp.pi * wp.max(one_minus_cos, 1.0e-8) * wp.float32(count))
                 hit.distance = distance
                 hit.radiance = light.radiance * params.analytic_light_intensity
         index = index + wp.int32(1)
@@ -1409,9 +1255,7 @@ def _sample_environment_light(
     s = LightSample()
 
     # Physical sky path (matches C++ FLAGS_ENVMAP_SKY branch).
-    if params.use_procedural_sky == wp.uint32(1) or params.env_map_length == wp.uint32(
-        0
-    ):
+    if params.use_procedural_sky == wp.uint32(1) or params.env_map_length == wp.uint32(0):
         sky_sample = _sample_physical_sky(params.sky, xi0, xi1)
         s.direction = sky_sample.direction
         s.radiance = _sample_environment(params, s.direction)
@@ -1484,7 +1328,7 @@ def _mul_mat4_cm(m: Mat16f, v: wp.vec4) -> wp.vec4:
     )
 
 
-DLSS_INF_DISTANCE = float(65504.0)
+DLSS_INF_DISTANCE = 65504.0
 FLAGS_USE_PATH_REGULARIZATION = wp.uint32(4)
 FLAGS_CULL_BACK_FACES = wp.uint32(8)
 
@@ -1518,9 +1362,7 @@ def _positive_rcp(x: wp.float32) -> wp.float32:
 
 
 @wp.func
-def _environment_term_rtg(
-    rf0: wp.vec3, n_dot_v: wp.float32, alpha_roughness: wp.float32
-) -> wp.vec3:
+def _environment_term_rtg(rf0: wp.vec3, n_dot_v: wp.float32, alpha_roughness: wp.float32) -> wp.vec3:
     xx = 1.0
     xy = n_dot_v
     xz = n_dot_v * n_dot_v
@@ -1610,11 +1452,7 @@ def _inverse_transform_point(m: TransformMatrix3x4, world_pos: wp.vec3) -> wp.ve
     a20 = m.row2[0]
     a21 = m.row2[1]
     a22 = m.row2[2]
-    det = (
-        a00 * (a11 * a22 - a12 * a21)
-        - a01 * (a10 * a22 - a12 * a20)
-        + a02 * (a10 * a21 - a11 * a20)
-    )
+    det = a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20) + a02 * (a10 * a21 - a11 * a20)
     if wp.abs(det) < 1.0e-12:
         return world_pos
     inv = 1.0 / det
@@ -1627,9 +1465,7 @@ def _inverse_transform_point(m: TransformMatrix3x4, world_pos: wp.vec3) -> wp.ve
     i20 = (a10 * a21 - a11 * a20) * inv
     i21 = (a01 * a20 - a00 * a21) * inv
     i22 = (a00 * a11 - a01 * a10) * inv
-    d = wp.vec3(
-        world_pos[0] - m.row0[3], world_pos[1] - m.row1[3], world_pos[2] - m.row2[3]
-    )
+    d = wp.vec3(world_pos[0] - m.row0[3], world_pos[1] - m.row1[3], world_pos[2] - m.row2[3])
     return wp.vec3(
         i00 * d[0] + i01 * d[1] + i02 * d[2],
         i10 * d[0] + i11 * d[1] + i12 * d[2],
@@ -1693,11 +1529,7 @@ def _compute_object_motion_vector(
     )
 
     # Deformable mesh path: use previous-frame vertex positions when available.
-    if (
-        tri_id >= 0
-        and params.instance_render_prim_ids.shape[0] > 0
-        and params.render_primitives.shape[0] > 0
-    ):
+    if tri_id >= 0 and params.instance_render_prim_ids.shape[0] > 0 and params.render_primitives.shape[0] > 0:
         inst_to_prim = params.instance_render_prim_ids
         prim_id = int(inst_to_prim[instance_id])
         if prim_id >= 0 and prim_id < int(params.render_prim_count):
@@ -1762,9 +1594,7 @@ def _pcg_rand01(state: wp.uint32) -> wp.float32:
         rng = _pcg_advance(rng)  # state = state * A + B
         val = _pcg_rand01(rng)  # extract float from new state
     """
-    word = ((state >> ((state >> wp.uint32(28)) + wp.uint32(4))) ^ state) * wp.uint32(
-        277803737
-    )
+    word = ((state >> ((state >> wp.uint32(28)) + wp.uint32(4))) ^ state) * wp.uint32(277803737)
     r = (word >> wp.uint32(22)) ^ word
     return wp.float32(r & wp.uint32(0x00FFFFFF)) * (1.0 / 16777216.0)
 
@@ -1775,12 +1605,8 @@ def _fract(x: wp.float32) -> wp.float32:
 
 
 @wp.func
-def _rand01(
-    px: wp.int32, py: wp.int32, frame: wp.int32, bounce: wp.int32, channel: wp.int32
-) -> wp.float32:
-    s = wp.float32(
-        px * 1973 + py * 9277 + frame * 26699 + bounce * 104729 + channel * 13007
-    )
+def _rand01(px: wp.int32, py: wp.int32, frame: wp.int32, bounce: wp.int32, channel: wp.int32) -> wp.float32:
+    s = wp.float32(px * 1973 + py * 9277 + frame * 26699 + bounce * 104729 + channel * 13007)
     return _fract(wp.sin(s) * 43758.5453)
 
 
@@ -1796,17 +1622,8 @@ def _hash_u32(x: wp.uint32) -> wp.uint32:
 
 
 @wp.func
-def _make_trace_seed(
-    px: wp.int32, py: wp.int32, frame: wp.int32, bounce: wp.int32, channel: wp.int32
-) -> wp.uint32:
-    s = wp.uint32(
-        px * 1973
-        + py * 9277
-        + frame * 26699
-        + bounce * 104729
-        + channel * 13007
-        + 0x9E3779B9
-    )
+def _make_trace_seed(px: wp.int32, py: wp.int32, frame: wp.int32, bounce: wp.int32, channel: wp.int32) -> wp.uint32:
+    s = wp.uint32(px * 1973 + py * 9277 + frame * 26699 + bounce * 104729 + channel * 13007 + 0x9E3779B9)
     return _hash_u32(s)
 
 
@@ -1898,39 +1715,37 @@ def _payload_get_barycentrics(p: PrimaryPayload) -> wp.vec3:
     return p.barycentrics
 
 
-MICROFACET_MIN_ROUGHNESS = float(0.0014142)
+MICROFACET_MIN_ROUGHNESS = 0.0014142
 
 # ---------------------------------------------------------------------------
 # GGX microfacet BSDF — 1:1 translation of Newton pbr_common.h
 # ---------------------------------------------------------------------------
 
-BSDF_EVENT_ABSORB = int(0)
-BSDF_EVENT_DIFFUSE = int(1)
-BSDF_EVENT_GLOSSY = int(2)
-BSDF_EVENT_IMPULSE = int(4)
-BSDF_EVENT_REFLECTION = int(8)
-BSDF_EVENT_TRANSMISSION = int(16)
-BSDF_EVENT_DIFFUSE_REFLECTION = int(9)
-BSDF_EVENT_DIFFUSE_TRANSMISSION = int(17)
-BSDF_EVENT_GLOSSY_REFLECTION = int(10)
-BSDF_EVENT_GLOSSY_TRANSMISSION = int(18)
-DIRAC = float(-1.0)
+BSDF_EVENT_ABSORB = 0
+BSDF_EVENT_DIFFUSE = 1
+BSDF_EVENT_GLOSSY = 2
+BSDF_EVENT_IMPULSE = 4
+BSDF_EVENT_REFLECTION = 8
+BSDF_EVENT_TRANSMISSION = 16
+BSDF_EVENT_DIFFUSE_REFLECTION = 9
+BSDF_EVENT_DIFFUSE_TRANSMISSION = 17
+BSDF_EVENT_GLOSSY_REFLECTION = 10
+BSDF_EVENT_GLOSSY_TRANSMISSION = 18
+DIRAC = -1.0
 
-LOBE_DIFFUSE_REFLECTION = int(0)
-LOBE_DIFFUSE_TRANSMISSION = int(1)
-LOBE_SPECULAR_TRANSMISSION = int(2)
-LOBE_SPECULAR_REFLECTION = int(3)
-LOBE_METAL_REFLECTION = int(4)
-LOBE_SHEEN_REFLECTION = int(5)
-LOBE_CLEARCOAT_REFLECTION = int(6)
-LOBE_COUNT = int(7)
+LOBE_DIFFUSE_REFLECTION = 0
+LOBE_DIFFUSE_TRANSMISSION = 1
+LOBE_SPECULAR_TRANSMISSION = 2
+LOBE_SPECULAR_REFLECTION = 3
+LOBE_METAL_REFLECTION = 4
+LOBE_SHEEN_REFLECTION = 5
+LOBE_CLEARCOAT_REFLECTION = 6
+LOBE_COUNT = 7
 
 
 # --- pbr_common.h line 135 ---
 @wp.func
-def _hvd_ggx_eval(
-    inv_roughness: wp.float32, hx: wp.float32, hy: wp.float32, hz: wp.float32
-) -> wp.float32:
+def _hvd_ggx_eval(inv_roughness: wp.float32, hx: wp.float32, hy: wp.float32, hz: wp.float32) -> wp.float32:
     x = hx * inv_roughness
     y = hy * inv_roughness
     aniso = x * x + y * y
@@ -1949,11 +1764,7 @@ def _hvd_ggx_sample_vndf(
     xi1: wp.float32,
 ) -> wp.vec3:
     v = wp.normalize(wp.vec3(kx * roughness, ky * roughness, kz))
-    t1 = (
-        wp.normalize(wp.cross(v, wp.vec3(0.0, 0.0, 1.0)))
-        if v[2] < 0.99999
-        else wp.vec3(1.0, 0.0, 0.0)
-    )
+    t1 = wp.normalize(wp.cross(v, wp.vec3(0.0, 0.0, 1.0))) if v[2] < 0.99999 else wp.vec3(1.0, 0.0, 0.0)
     t2 = wp.cross(t1, v)
     a = 1.0 / (1.0 + v[2])
     r = wp.sqrt(xi0)
@@ -1969,9 +1780,7 @@ def _hvd_ggx_sample_vndf(
 
 # --- pbr_common.h line 164 ---
 @wp.func
-def _smith_shadow_or_mask(
-    kx: wp.float32, ky: wp.float32, kz: wp.float32, roughness: wp.float32
-) -> wp.float32:
+def _smith_shadow_or_mask(kx: wp.float32, ky: wp.float32, kz: wp.float32, roughness: wp.float32) -> wp.float32:
     kz2 = kz * kz
     if kz2 == 0.0:
         return 0.0
@@ -1985,13 +1794,7 @@ def _smith_shadow_or_mask(
 def _hvd_sheen_eval(inv_roughness: wp.float32, nh: wp.float32) -> wp.float32:
     sin_theta2 = wp.max(0.0, 1.0 - nh * nh)
     sin_theta = wp.sqrt(sin_theta2)
-    return (
-        (inv_roughness + 2.0)
-        * wp.pow(sin_theta, inv_roughness)
-        * 0.5
-        * (1.0 / wp.pi)
-        * nh
-    )
+    return (inv_roughness + 2.0) * wp.pow(sin_theta, inv_roughness) * 0.5 * (1.0 / wp.pi) * nh
 
 
 @wp.func
@@ -2013,9 +1816,7 @@ def _vcavities_shadow_mask(
 
 
 @wp.func
-def _hvd_sheen_sample(
-    x0: wp.float32, x1: wp.float32, inv_roughness: wp.float32
-) -> wp.vec3:
+def _hvd_sheen_sample(x0: wp.float32, x1: wp.float32, inv_roughness: wp.float32) -> wp.vec3:
     phi = 2.0 * wp.pi * x0
     sin_phi = wp.sin(phi)
     cos_phi = wp.cos(phi)
@@ -2064,22 +1865,16 @@ def _material_f0(
     clearcoat: wp.float32,
 ) -> wp.vec3:
     """Return physical normal-incidence reflectance for reconstruction guides."""
-    dielectric = specular_color * (
-        _ior_fresnel(ior2 / wp.max(ior1, 1.0e-6), 1.0) * specular_scalar
-    )
+    dielectric = specular_color * (_ior_fresnel(ior2 / wp.max(ior1, 1.0e-6), 1.0) * specular_scalar)
     metalness = wp.clamp(metallic, 0.0, 1.0)
     base_f0 = dielectric * (1.0 - metalness) + base_color * metalness
-    coat_f0 = wp.clamp(clearcoat, 0.0, 1.0) * _ior_fresnel(
-        1.5 / wp.max(ior1, 1.0e-6), 1.0
-    )
+    coat_f0 = wp.clamp(clearcoat, 0.0, 1.0) * _ior_fresnel(1.5 / wp.max(ior1, 1.0e-6), 1.0)
     return wp.vec3(coat_f0) + base_f0 * (1.0 - coat_f0)
 
 
 # --- pbr_common.h line 522 ---
 @wp.func
-def _fresnel_cosine_approximation(
-    v_dot_n: wp.float32, roughness: wp.float32
-) -> wp.float32:
+def _fresnel_cosine_approximation(v_dot_n: wp.float32, roughness: wp.float32) -> wp.float32:
     sr = wp.sqrt(roughness)
     return v_dot_n * (1.0 - sr) + wp.sqrt(0.5 + 0.5 * v_dot_n) * sr
 
@@ -2129,19 +1924,19 @@ def _find_lobe(
     rnd: wp.float32,
 ) -> wp.int32:
     # C++ computeLobeWeights lines 531-534: clearcoat
-    fr_coat = float(0.0)
+    fr_coat = float(0.0)  # noqa: UP018
     if clearcoat > 0.0:
         fr_cosine_cc = _fresnel_cosine_approximation(v_dot_n, clearcoat_roughness)
         fr_coat = clearcoat * _ior_fresnel(1.5 / ior1, fr_cosine_cc)
 
     # C++ lines 537-542: dielectric specular
-    fr_dielectric = float(0.0)
+    fr_dielectric = float(0.0)  # noqa: UP018
     if specular_scalar > 0.0:
         fr_cosine_di = _fresnel_cosine_approximation(v_dot_n, roughness)
         fr_dielectric = _ior_fresnel(ior2 / ior1, fr_cosine_di)
         fr_dielectric = fr_dielectric * specular_scalar
 
-    sheen = float(0.0)
+    sheen = float(0.0)  # noqa: UP018
     if sheen_color[0] != 0.0 or sheen_color[1] != 0.0 or sheen_color[2] != 0.0:
         sheen = wp.pow(1.0 - wp.abs(v_dot_n), wp.max(sheen_roughness, 0.0))
         sheen = sheen / (sheen + 0.5)
@@ -2161,7 +1956,7 @@ def _find_lobe(
 
     # C++ findLobe lines 585-592: iterate from LOBE_COUNT-1 down to 0
     # LOBE order: DIFFUSE=0, DIFFUSE_TX=1, SPEC_TX=2, SPEC_REFL=3, METAL=4, SHEEN=5, CLEARCOAT=6
-    weight = float(0.0)
+    weight = float(0.0)  # noqa: UP018
     weight = weight + w_clearcoat
     if rnd < weight:
         return LOBE_CLEARCOAT_REFLECTION
@@ -2281,14 +2076,8 @@ def _bsdf_evaluate(
         result.pdf = result.pdf * 0.25 / wp.max(nk1 * nh, 1.0e-12)
         bsdf = g12 * result.pdf
         result.pdf = result.pdf * g1
-        result.bsdf_glossy = wp.vec3(
-            bsdf * sheen_color[0], bsdf * sheen_color[1], bsdf * sheen_color[2]
-        )
-    elif (
-        lobe == LOBE_SPECULAR_REFLECTION
-        or lobe == LOBE_METAL_REFLECTION
-        or lobe == LOBE_CLEARCOAT_REFLECTION
-    ):
+        result.bsdf_glossy = wp.vec3(bsdf * sheen_color[0], bsdf * sheen_color[1], bsdf * sheen_color[2])
+    elif lobe == LOBE_SPECULAR_REFLECTION or lobe == LOBE_METAL_REFLECTION or lobe == LOBE_CLEARCOAT_REFLECTION:
         N = normal
         alpha = wp.max(roughness, MICROFACET_MIN_ROUGHNESS * MICROFACET_MIN_ROUGHNESS)
         tint = base_color if lobe == LOBE_METAL_REFLECTION else specular_color
@@ -2349,7 +2138,7 @@ def _bsdf_evaluate(
         if nk1 <= 0.0 or nh <= 0.0 or k1h < 0.0 or k2h < 0.0:
             return result
 
-        fr = float(0.0)
+        fr = float(0.0)  # noqa: UP018
         if not backside:
             eta = ior1 / wp.max(ior2, 1.0e-6)
             tir = 1.0 < (eta * eta * (1.0 - k1h * k1h))
@@ -2468,11 +2257,7 @@ def _bsdf_sample(
         tint = base_color
         result.bsdf_over_pdf = tint
         result.direction = L
-        result.event_type = (
-            BSDF_EVENT_DIFFUSE_REFLECTION
-            if wp.dot(L, mat_Ng) > 0.0
-            else BSDF_EVENT_ABSORB
-        )
+        result.event_type = BSDF_EVENT_DIFFUSE_REFLECTION if wp.dot(L, mat_Ng) > 0.0 else BSDF_EVENT_ABSORB
     elif lobe == LOBE_DIFFUSE_TRANSMISSION:
         local_dir = _sample_cosine_hemisphere_local(xi0, xi1)
         L = T * local_dir[0] + B * local_dir[1] - N * local_dir[2]
@@ -2484,11 +2269,7 @@ def _bsdf_sample(
             base_color[2] * diffuse_transmission_color[2],
         )
         result.direction = L
-        result.event_type = (
-            BSDF_EVENT_DIFFUSE_TRANSMISSION
-            if wp.dot(L, -mat_Ng) > 0.0
-            else BSDF_EVENT_ABSORB
-        )
+        result.event_type = BSDF_EVENT_DIFFUSE_TRANSMISSION if wp.dot(L, -mat_Ng) > 0.0 else BSDF_EVENT_ABSORB
     elif lobe == LOBE_SHEEN_REFLECTION:
         inv_sheen_roughness = 1.0 / wp.max(sheen_roughness * sheen_roughness, 1.0e-6)
         nk1 = wp.abs(wp.dot(to_eye, N))
@@ -2526,11 +2307,7 @@ def _bsdf_sample(
         )
         result.event_type = BSDF_EVENT_GLOSSY_REFLECTION
         result.direction = L
-    elif (
-        lobe == LOBE_SPECULAR_REFLECTION
-        or lobe == LOBE_METAL_REFLECTION
-        or lobe == LOBE_CLEARCOAT_REFLECTION
-    ):
+    elif lobe == LOBE_SPECULAR_REFLECTION or lobe == LOBE_METAL_REFLECTION or lobe == LOBE_CLEARCOAT_REFLECTION:
         if lobe == LOBE_CLEARCOAT_REFLECTION:
             N = mat_Nc
             B = wp.normalize(wp.cross(N, T))
@@ -2539,9 +2316,7 @@ def _bsdf_sample(
             alpha = cc_r * cc_r
             tint = wp.vec3(1.0, 1.0, 1.0)
         else:
-            alpha = wp.max(
-                roughness, MICROFACET_MIN_ROUGHNESS * MICROFACET_MIN_ROUGHNESS
-            )
+            alpha = wp.max(roughness, MICROFACET_MIN_ROUGHNESS * MICROFACET_MIN_ROUGHNESS)
             tint = base_color if lobe == LOBE_METAL_REFLECTION else specular_color
 
         nk1 = wp.dot(to_eye, N)
@@ -2579,12 +2354,7 @@ def _bsdf_sample(
         result.event_type = BSDF_EVENT_GLOSSY_REFLECTION
 
         inv_alpha = 1.0 / alpha
-        result.pdf = (
-            _hvd_ggx_eval(inv_alpha, h0[0], h0[1], h0[2])
-            * G1
-            * 0.25
-            / wp.max(nk1 * h0[2], 1.0e-12)
-        )
+        result.pdf = _hvd_ggx_eval(inv_alpha, h0[0], h0[1], h0[2]) * G1 * 0.25 / wp.max(nk1 * h0[2], 1.0e-12)
 
         result.direction = L
     elif lobe == LOBE_SPECULAR_TRANSMISSION:
@@ -2627,18 +2397,11 @@ def _bsdf_sample(
             if tir:
                 L = 2.0 * kh * H - to_eye
             else:
-                L = wp.normalize(
-                    (-to_eye * eta)
-                    + H * (eta * kh - wp.sqrt(wp.max(1.0 - refraction, 0.0)))
-                )
+                L = wp.normalize((-to_eye * eta) + H * (eta * kh - wp.sqrt(wp.max(1.0 - refraction, 0.0))))
 
-        result.event_type = (
-            BSDF_EVENT_GLOSSY_REFLECTION if tir else BSDF_EVENT_GLOSSY_TRANSMISSION
-        )
+        result.event_type = BSDF_EVENT_GLOSSY_REFLECTION if tir else BSDF_EVENT_GLOSSY_TRANSMISSION
 
-        gnk2 = wp.dot(L, mat_Ng) * (
-            1.0 if result.event_type == BSDF_EVENT_GLOSSY_REFLECTION else -1.0
-        )
+        gnk2 = wp.dot(L, mat_Ng) * (1.0 if result.event_type == BSDF_EVENT_GLOSSY_REFLECTION else -1.0)
         if gnk2 <= 0.0 or L[0] != L[0]:
             result.event_type = BSDF_EVENT_ABSORB
             return result
@@ -2660,28 +2423,17 @@ def _bsdf_sample(
         if is_thin_walled == 0 and result.event_type == BSDF_EVENT_GLOSSY_TRANSMISSION:
             tmp = kh * ior1 - k2h * ior2
             if tmp > 0.0:
-                result.pdf = (
-                    result.pdf * kh * k2h / wp.max(nk1 * h0[2] * tmp * tmp, 1.0e-12)
-                )
+                result.pdf = result.pdf * kh * k2h / wp.max(nk1 * h0[2] * tmp * tmp, 1.0e-12)
         else:
             result.pdf = result.pdf * 0.25 / wp.max(nk1 * h0[2], 1.0e-12)
         result.direction = L
 
     # C++ bsdfSample lines 1037-1042: post-sample absorb/DIRAC guard
     bop = result.bsdf_over_pdf
-    if (
-        result.pdf <= 0.00001
-        or bop[0] != bop[0]
-        or bop[1] != bop[1]
-        or bop[2] != bop[2]
-    ):
+    if result.pdf <= 0.00001 or bop[0] != bop[0] or bop[1] != bop[1] or bop[2] != bop[2]:
         result.event_type = BSDF_EVENT_ABSORB
-    if (
-        result.pdf != result.pdf or wp.abs(result.pdf) > 1.0e30
-    ) and result.event_type != BSDF_EVENT_ABSORB:
-        result.event_type = (
-            result.event_type & (~BSDF_EVENT_GLOSSY)
-        ) | BSDF_EVENT_IMPULSE
+    if (result.pdf != result.pdf or wp.abs(result.pdf) > 1.0e30) and result.event_type != BSDF_EVENT_ABSORB:
+        result.event_type = (result.event_type & (~BSDF_EVENT_GLOSSY)) | BSDF_EVENT_IMPULSE
         result.pdf = DIRAC
 
     return result
@@ -2768,15 +2520,9 @@ def _make_invalid_shaded_hit() -> ShadedHitData:
 
 
 @wp.func
-def _set_incident_medium_for_hit(
-    hit: ShadedHitData, front_face: wp.uint32
-) -> ShadedHitData:
+def _set_incident_medium_for_hit(hit: ShadedHitData, front_face: wp.uint32) -> ShadedHitData:
     """Select the incident medium after geometry has face-forwarded its frame."""
-    if (
-        hit.valid != wp.uint32(0)
-        and front_face == wp.uint32(0)
-        and hit.is_thin_walled == 0
-    ):
+    if hit.valid != wp.uint32(0) and front_face == wp.uint32(0) and hit.is_thin_walled == 0:
         exterior_ior = hit.ior1
         hit.ior1 = hit.ior2
         hit.ior2 = exterior_ior
@@ -2798,19 +2544,13 @@ def _sample_sphere_light_contribution(
 ) -> wp.vec3:
     """Evaluate one shadowed next-event sample from the analytic light set."""
     contribution = wp.vec3(0.0, 0.0, 0.0)
-    if (
-        params.sphere_light_count == wp.uint32(0)
-        or params.analytic_light_intensity <= 0.0
-    ):
+    if params.sphere_light_count == wp.uint32(0) or params.analytic_light_intensity <= 0.0:
         return contribution
     sample = _sample_sphere_light(params, position, xi0, xi1, xi2)
     if (
         sample.pdf <= 1.0e-8
         or sample.distance <= 0.002
-        or (
-            wp.dot(sample.direction, material.Ng) <= 0.0
-            and material.transmission <= 0.0
-        )
+        or (wp.dot(sample.direction, material.Ng) <= 0.0 and material.transmission <= 0.0)
     ):
         return contribution
 
@@ -2855,9 +2595,7 @@ def _sample_sphere_light_contribution(
         wp.max(sample.distance - 0.001, 0.001),
         0.0,
         wp.uint32(255),
-        wp.uint32(
-            OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT | OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT
-        ),
+        wp.uint32(OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT | OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT),
         wp.uint32(1),
         wp.uint32(2),
         wp.uint32(1),
@@ -2871,9 +2609,7 @@ def _sample_sphere_light_contribution(
 
 
 @wp.func
-def _filter_roughness_for_normal_map(
-    microfacet_roughness: wp.float32, tangent_normal: wp.vec3
-) -> wp.float32:
+def _filter_roughness_for_normal_map(microfacet_roughness: wp.float32, tangent_normal: wp.vec3) -> wp.float32:
     """Broaden the GGX lobe by unresolved tangent-normal variance."""
     normal_length = wp.clamp(wp.length(tangent_normal), 0.0, 1.0)
     variance = 1.0 - normal_length
@@ -2949,13 +2685,9 @@ def _evaluate_material_from_payload(
     diffuse_transmission_color = wp.vec3(1.0, 1.0, 1.0)
 
     # C++ lines 143-151: apply base color texture
-    uv_base = _apply_uv_transform(
-        _select_uv(mat.base_color_tex_coord, uv, uv1), mat.base_color_uv_transform
-    )
+    uv_base = _apply_uv_transform(_select_uv(mat.base_color_tex_coord, uv, uv1), mat.base_color_uv_transform)
     if mat.base_color_tex_index >= 0:
-        base_tex = _sample_texture_rgba(
-            params, mat.base_color_tex_index, uv_base, texture_lod
-        )
+        base_tex = _sample_texture_rgba(params, mat.base_color_tex_index, uv_base, texture_lod)
         base_color = wp.vec3(
             base_color[0] * base_tex[0],
             base_color[1] * base_tex[1],
@@ -2964,9 +2696,7 @@ def _evaluate_material_from_payload(
         opacity = opacity * base_tex[3]
 
     if mat.base_color_desaturation > 0.0:
-        luminance = (
-            0.2126 * base_color[0] + 0.7152 * base_color[1] + 0.0722 * base_color[2]
-        )
+        luminance = 0.2126 * base_color[0] + 0.7152 * base_color[1] + 0.0722 * base_color[2]
         amount = wp.clamp(mat.base_color_desaturation, 0.0, 1.0)
         base_color = base_color * (1.0 - amount) + wp.vec3(luminance) * amount
     if mat.base_color_add != 0.0:
@@ -3001,14 +2731,10 @@ def _evaluate_material_from_payload(
     )
     mr_tex = wp.vec4(1.0)
     if mat.metallic_roughness_tex_index >= 0:
-        mr_tex = _sample_texture_rgba(
-            params, mat.metallic_roughness_tex_index, uv_mr, texture_lod
-        )
+        mr_tex = _sample_texture_rgba(params, mat.metallic_roughness_tex_index, uv_mr, texture_lod)
         # C++ line 158: r = max(sqrt(max(outMat.roughness.x, 0)) * mr.y, MIN)
         # outMat.roughness.x is roughness_sq at this point
-        r_linear = wp.max(
-            wp.sqrt(wp.max(roughness_sq, 0.0)) * mr_tex[1], MICROFACET_MIN_ROUGHNESS
-        )
+        r_linear = wp.max(wp.sqrt(wp.max(roughness_sq, 0.0)) * mr_tex[1], MICROFACET_MIN_ROUGHNESS)
         roughness_sq = r_linear * r_linear
         metallic = wp.clamp(metallic * mr_tex[2], 0.0, 1.0)
 
@@ -3016,12 +2742,8 @@ def _evaluate_material_from_payload(
     if mat.occlusion_tex_index >= 0:
         ao = mr_tex[0]
         if mat.occlusion_tex_index != mat.metallic_roughness_tex_index:
-            uv_ao = _apply_uv_transform(
-                _select_uv(mat.occlusion_tex_coord, uv, uv1), mat.occlusion_uv_transform
-            )
-            ao = _sample_texture_rgba(
-                params, mat.occlusion_tex_index, uv_ao, texture_lod
-            )[0]
+            uv_ao = _apply_uv_transform(_select_uv(mat.occlusion_tex_coord, uv, uv1), mat.occlusion_uv_transform)
+            ao = _sample_texture_rgba(params, mat.occlusion_tex_index, uv_ao, texture_lod)[0]
         occlusion = 1.0 + wp.clamp(mat.occlusion, 0.0, 1.0) * (ao - 1.0)
 
     if params.override_roughness > 0.0:
@@ -3032,14 +2754,10 @@ def _evaluate_material_from_payload(
 
     # C++ lines 163-174: apply the normal map to N; Ng remains geometric.
     needs_tangent_update = wp.bool(False)
-    uv_n = _apply_uv_transform(
-        _select_uv(mat.normal_tex_coord, uv, uv1), mat.normal_uv_transform
-    )
+    uv_n = _apply_uv_transform(_select_uv(mat.normal_tex_coord, uv, uv1), mat.normal_uv_transform)
     if mat.normal_tex_index >= 0:
         n_tex = _sample_texture_rgba(params, mat.normal_tex_index, uv_n, texture_lod)
-        n_tan = wp.vec3(
-            n_tex[0] * 2.0 - 1.0, n_tex[1] * 2.0 - 1.0, n_tex[2] * 2.0 - 1.0
-        )
+        n_tan = wp.vec3(n_tex[0] * 2.0 - 1.0, n_tex[1] * 2.0 - 1.0, n_tex[2] * 2.0 - 1.0)
         n_tan = wp.vec3(
             n_tan[0] * mat.normal_scale[0],
             n_tan[1] * mat.normal_scale[1],
@@ -3056,12 +2774,8 @@ def _evaluate_material_from_payload(
         mat.clearcoat_normal_uv_transform,
     )
     if mat.clearcoat_normal_tex_index >= 0:
-        cc_tex = _sample_texture_rgba(
-            params, mat.clearcoat_normal_tex_index, uv_cc, texture_lod
-        )
-        cc_tan = wp.vec3(
-            cc_tex[0] * 2.0 - 1.0, cc_tex[1] * 2.0 - 1.0, cc_tex[2] * 2.0 - 1.0
-        )
+        cc_tex = _sample_texture_rgba(params, mat.clearcoat_normal_tex_index, uv_cc, texture_lod)
+        cc_tan = wp.vec3(cc_tex[0] * 2.0 - 1.0, cc_tex[1] * 2.0 - 1.0, cc_tex[2] * 2.0 - 1.0)
         Nc = wp.normalize(t * cc_tan[0] + b * cc_tan[1] + Nc * cc_tan[2])
 
     # C++ lines 185-191: re-orthogonalize tangent frame after normal map
@@ -3073,9 +2787,7 @@ def _evaluate_material_from_payload(
 
     # C++ lines 192-199: apply emissive texture
     if params.emissive_material_intensity > 0.0 and mat.emissive_tex_index >= 0:
-        uv_e = _apply_uv_transform(
-            _select_uv(mat.emissive_tex_coord, uv, uv1), mat.emissive_uv_transform
-        )
+        uv_e = _apply_uv_transform(_select_uv(mat.emissive_tex_coord, uv, uv1), mat.emissive_uv_transform)
         e_tex = _sample_texture_rgba(params, mat.emissive_tex_index, uv_e, texture_lod)
         emissive = wp.vec3(
             emissive[0] * e_tex[0],
@@ -3115,7 +2827,7 @@ def _evaluate_material_from_payload(
     return out
 
 
-@woptix.optix_kernel(woptix.OptixKernelType.RAYGEN)
+@wp.kernel(module="unique")
 def primary_raygen(params: PathtraceLaunchParams):
     launch_idx = wp.optix_get_launch_index()
     x = int(launch_idx[0])
@@ -3175,9 +2887,7 @@ def primary_raygen(params: PathtraceLaunchParams):
 
         if hit_sky:
             sky_color = _payload_get_normal(payload)
-            psr_direct_radiance = psr_direct_radiance + _mul_vec3(
-                psr_throughput, sky_color
-            )
+            psr_direct_radiance = psr_direct_radiance + _mul_vec3(psr_throughput, sky_color)
             break
 
         psr_hit_dist = psr_hit_dist + hitT
@@ -3213,9 +2923,7 @@ def primary_raygen(params: PathtraceLaunchParams):
         is_mirror_surface = wp.bool(False)
         if pbr.valid == wp.uint32(1) and use_psr:
             is_mirror_surface = wp.bool(
-                pbr.roughness
-                <= (MICROFACET_MIN_ROUGHNESS * MICROFACET_MIN_ROUGHNESS + 0.001)
-                and pbr.metallic >= 1.0
+                pbr.roughness <= (MICROFACET_MIN_ROUGHNESS * MICROFACET_MIN_ROUGHNESS + 0.001) and pbr.metallic >= 1.0
             )
 
         if not is_mirror_surface or pbr.valid == wp.uint32(0):
@@ -3326,19 +3034,13 @@ def primary_raygen(params: PathtraceLaunchParams):
 
         if is_psr:
             aux_view_z = view_depth
-            motion_origin = wp.vec4(
-                virtual_origin[0], virtual_origin[1], virtual_origin[2], 1.0
-            )
+            motion_origin = wp.vec4(virtual_origin[0], virtual_origin[1], virtual_origin[2], 1.0)
         else:
             aux_view_z = wp.float32(DLSS_INF_DISTANCE)
             motion_origin = wp.vec4(org_dir[0], org_dir[1], org_dir[2], 0.0)
-        aux_motion = _compute_camera_motion_vector(
-            params, pixel_center, motion_origin, dim
-        )
+        aux_motion = _compute_camera_motion_vector(params, pixel_center, motion_origin, dim)
 
-        params.color_output[y, x] = wp.vec4(
-            psr_direct_radiance[0], psr_direct_radiance[1], psr_direct_radiance[2], 1.0
-        )
+        params.color_output[y, x] = wp.vec4(psr_direct_radiance[0], psr_direct_radiance[1], psr_direct_radiance[2], 1.0)
         params.normal_roughness_output[y, x] = aux_normal_roughness
         params.motion_output[y, x] = aux_motion
         params.depth_output[y, x] = aux_view_z
@@ -3349,9 +3051,7 @@ def primary_raygen(params: PathtraceLaunchParams):
 
     # No opaque hit found after PSR chain (matches C++ !foundOpaqueHit path).
     if not found_opaque_hit:
-        params.color_output[y, x] = wp.vec4(
-            psr_direct_radiance[0], psr_direct_radiance[1], psr_direct_radiance[2], 1.0
-        )
+        params.color_output[y, x] = wp.vec4(psr_direct_radiance[0], psr_direct_radiance[1], psr_direct_radiance[2], 1.0)
         params.normal_roughness_output[y, x] = wp.vec4(0.0, 0.0, 0.0, 0.0)
         params.motion_output[y, x] = wp.vec2(0.0, 0.0)
         params.depth_output[y, x] = wp.float32(DLSS_INF_DISTANCE)
@@ -3424,9 +3124,7 @@ def primary_raygen(params: PathtraceLaunchParams):
     # Omniverse's sceneDb ambient light is diffuse irradiance, separate from
     # the environment/DomeLight. AO modulates it and metals have no diffuse
     # lobe in the glTF metallic-roughness model.
-    hdr_radiance = _mul_vec3(base_color, params.ambient_light) * (
-        (1.0 - pbr_mat.metallic) * pbr_mat.occlusion
-    )
+    hdr_radiance = _mul_vec3(base_color, params.ambient_light) * ((1.0 - pbr_mat.metallic) * pbr_mat.occlusion)
     rng = _pcg_advance(rng)
     xi0_l = _pcg_rand01(rng)
     rng = _pcg_advance(rng)
@@ -3434,9 +3132,7 @@ def primary_raygen(params: PathtraceLaunchParams):
     rng = _pcg_advance(rng)
     xi2_l = _pcg_rand01(rng)
     ls = _sample_environment_light(params, xi0_l, xi1_l, xi2_l)
-    if ls.pdf > 1.0e-6 and (
-        wp.dot(ls.direction, pbr_mat.normal) > 0.0 or pbr_mat.transmission > 0.0
-    ):
+    if ls.pdf > 1.0e-6 and (wp.dot(ls.direction, pbr_mat.normal) > 0.0 or pbr_mat.transmission > 0.0):
         rng = _pcg_advance(rng)
         eval_xi_z = _pcg_rand01(rng)
         bsdf_eval = _bsdf_evaluate(
@@ -3480,10 +3176,7 @@ def primary_raygen(params: PathtraceLaunchParams):
                 0.0,
                 wp.uint32(255),
                 wp.uint32(
-                    wp.uint32(
-                        OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT
-                        | OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT
-                    )
+                    wp.uint32(OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT | OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT)
                     | _backface_culling_ray_flag(params)
                 ),
                 wp.uint32(1),
@@ -3494,9 +3187,7 @@ def primary_raygen(params: PathtraceLaunchParams):
             if shadow.visible == wp.uint32(1):
                 mis_weight = _power_heuristic(ls.pdf, bsdf_eval.pdf)
                 bsdf_sum = bsdf_eval.bsdf_diffuse + bsdf_eval.bsdf_glossy
-                hdr_radiance = hdr_radiance + _mul_vec3(bsdf_sum, ls.radiance) * (
-                    mis_weight / ls.pdf
-                )
+                hdr_radiance = hdr_radiance + _mul_vec3(bsdf_sum, ls.radiance) * (mis_weight / ls.pdf)
 
     rng = _pcg_advance(rng)
     sphere_xi0 = _pcg_rand01(rng)
@@ -3519,11 +3210,7 @@ def primary_raygen(params: PathtraceLaunchParams):
         sphere_lobe_xi,
     )
 
-    if (
-        hdr_radiance[0] != hdr_radiance[0]
-        or hdr_radiance[1] != hdr_radiance[1]
-        or hdr_radiance[2] != hdr_radiance[2]
-    ):
+    if hdr_radiance[0] != hdr_radiance[0] or hdr_radiance[1] != hdr_radiance[1] or hdr_radiance[2] != hdr_radiance[2]:
         hdr_radiance = wp.vec3(0.0, 0.0, 0.0)
 
     # directLum = psrDirectRadiance + pbrMat.emissive (matches C++ line 508, where
@@ -3578,20 +3265,14 @@ def primary_raygen(params: PathtraceLaunchParams):
     sec_throughput = bsdf_sample.bsdf_over_pdf
     bsdf_pdf = wp.max(bsdf_sample.pdf, 0.0001)
     sec_event_type = bsdf_sample.event_type
-    is_glossy_reflection = wp.bool(
-        bsdf_sample.event_type == BSDF_EVENT_GLOSSY_REFLECTION
-    )
+    is_glossy_reflection = wp.bool(bsdf_sample.event_type == BSDF_EVENT_GLOSSY_REFLECTION)
     bsdf_absorbed = wp.bool(bsdf_sample.event_type == BSDF_EVENT_ABSORB)
 
     sec_origin = _offset_ray_for_direction(hit_pos, pbr_mat.Ng, sec_direction)
-    max_depth = (
-        wp.int32(params.max_bounces)
-        if params.max_bounces > wp.uint32(0)
-        else wp.int32(1)
-    )
+    max_depth = wp.int32(params.max_bounces) if params.max_bounces > wp.uint32(0) else wp.int32(1)
     depth = wp.int32(1)
     use_path_reg = (params.flags & FLAGS_USE_PATH_REGULARIZATION) != wp.uint32(0)
-    max_roughness = float(0.0)
+    max_roughness = float(0.0)  # noqa: UP018
     while depth < max_depth:
         if bsdf_absorbed:
             break
@@ -3605,9 +3286,7 @@ def primary_raygen(params: PathtraceLaunchParams):
             1.0e16,
             0.0,
             wp.uint32(255),
-            wp.uint32(0)
-            if (sec_event_type & BSDF_EVENT_TRANSMISSION) != 0
-            else ray_flags,
+            wp.uint32(0) if (sec_event_type & BSDF_EVENT_TRANSMISSION) != 0 else ray_flags,
             wp.uint32(0),
             wp.uint32(2),
             wp.uint32(0),
@@ -3618,9 +3297,7 @@ def primary_raygen(params: PathtraceLaunchParams):
         sphere_hit = _intersect_sphere_lights(params, sec_origin, sec_direction, t_sec)
         if sphere_hit.pdf > 0.0:
             sphere_mis = _power_heuristic(bsdf_pdf, sphere_hit.pdf)
-            radiance = (
-                radiance + _mul_vec3(sec_throughput, sphere_hit.radiance) * sphere_mis
-            )
+            radiance = radiance + _mul_vec3(sec_throughput, sphere_hit.radiance) * sphere_mis
             break
 
         miss = wp.bool(t_sec >= DLSS_INF_DISTANCE * 0.99)
@@ -3654,9 +3331,7 @@ def primary_raygen(params: PathtraceLaunchParams):
             sec_uv1,
             _payload_get_barycentrics(sec_payload)[0],
         )
-        sec_pbr = _set_incident_medium_for_hit(
-            sec_pbr, _payload_get_front_face(sec_payload)
-        )
+        sec_pbr = _set_incident_medium_for_hit(sec_pbr, _payload_get_front_face(sec_payload))
 
         # C++ secondary_rchit.h lines 278-283: path regularization
         if use_path_reg:
@@ -3670,9 +3345,7 @@ def primary_raygen(params: PathtraceLaunchParams):
         sec_specular_color = sec_pbr.specular
         sec_to_eye = -sec_direction
 
-        sec_ambient = _mul_vec3(sec_base_color, params.ambient_light) * (
-            (1.0 - sec_pbr.metallic) * sec_pbr.occlusion
-        )
+        sec_ambient = _mul_vec3(sec_base_color, params.ambient_light) * ((1.0 - sec_pbr.metallic) * sec_pbr.occlusion)
         radiance = radiance + _mul_vec3(sec_throughput, sec_ambient)
 
         # Direct lighting at secondary hit (GGX BSDF).
@@ -3683,9 +3356,7 @@ def primary_raygen(params: PathtraceLaunchParams):
         rng = _pcg_advance(rng)
         xi2_s = _pcg_rand01(rng)
         sec_ls = _sample_environment_light(params, xi0_s, xi1_s, xi2_s)
-        if sec_ls.pdf > 1.0e-6 and (
-            wp.dot(sec_ls.direction, sec_pbr.normal) > 0.0 or sec_pbr.transmission > 0.0
-        ):
+        if sec_ls.pdf > 1.0e-6 and (wp.dot(sec_ls.direction, sec_pbr.normal) > 0.0 or sec_pbr.transmission > 0.0):
             rng = _pcg_advance(rng)
             sec_eval_xi_z = _pcg_rand01(rng)
             sec_bsdf_eval = _bsdf_evaluate(
@@ -3728,10 +3399,7 @@ def primary_raygen(params: PathtraceLaunchParams):
                     0.0,
                     wp.uint32(255),
                     wp.uint32(
-                        wp.uint32(
-                            OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT
-                            | OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT
-                        )
+                        wp.uint32(OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT | OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT)
                         | _backface_culling_ray_flag(params)
                     ),
                     wp.uint32(1),
@@ -3741,12 +3409,8 @@ def primary_raygen(params: PathtraceLaunchParams):
                 )
                 if sec_shadow.visible == wp.uint32(1):
                     sec_mis = _power_heuristic(sec_ls.pdf, sec_bsdf_eval.pdf)
-                    sec_bsdf_sum = (
-                        sec_bsdf_eval.bsdf_diffuse + sec_bsdf_eval.bsdf_glossy
-                    )
-                    sec_light_contrib = _mul_vec3(sec_bsdf_sum, sec_ls.radiance) * (
-                        sec_mis / sec_ls.pdf
-                    )
+                    sec_bsdf_sum = sec_bsdf_eval.bsdf_diffuse + sec_bsdf_eval.bsdf_glossy
+                    sec_light_contrib = _mul_vec3(sec_bsdf_sum, sec_ls.radiance) * (sec_mis / sec_ls.pdf)
                     radiance = radiance + _mul_vec3(sec_throughput, sec_light_contrib)
 
         rng = _pcg_advance(rng)
@@ -3827,22 +3491,15 @@ def primary_raygen(params: PathtraceLaunchParams):
         )
 
         # Russian roulette.
-        if (
-            depth >= int(params.russian_roulette_start_bounce)
-            and not completed_thick_exit
-        ):
-            max_comp = wp.max(
-                sec_throughput[0], wp.max(sec_throughput[1], sec_throughput[2])
-            )
+        if depth >= int(params.russian_roulette_start_bounce) and not completed_thick_exit:
+            max_comp = wp.max(sec_throughput[0], wp.max(sec_throughput[1], sec_throughput[2]))
             rr_prob = wp.clamp(wp.max(max_comp, 0.05), 0.05, 0.99)
             rng = _pcg_advance(rng)
             if _pcg_rand01(rng) > rr_prob:
                 break
             sec_throughput = sec_throughput / rr_prob
 
-        sec_origin = _offset_ray_for_direction(
-            sec_hit_pos, sec_pbr.Ng, sec_sample.direction
-        )
+        sec_origin = _offset_ray_for_direction(sec_hit_pos, sec_pbr.Ng, sec_sample.direction)
         sec_direction = wp.normalize(sec_sample.direction)
         sec_event_type = sec_sample.event_type
         bsdf_pdf = wp.max(sec_sample.pdf, 0.0001)
@@ -3868,26 +3525,16 @@ def primary_raygen(params: PathtraceLaunchParams):
     aux_spec_hit_dist = path_length
 
     # Guard against NaN/Inf (matches C++ lines 688-693).
-    if (
-        radiance[0] != radiance[0]
-        or radiance[1] != radiance[1]
-        or radiance[2] != radiance[2]
-    ):
+    if radiance[0] != radiance[0] or radiance[1] != radiance[1] or radiance[2] != radiance[2]:
         radiance = wp.vec3(0.0, 0.0, 0.0)
-    if (
-        direct_lum[0] != direct_lum[0]
-        or direct_lum[1] != direct_lum[1]
-        or direct_lum[2] != direct_lum[2]
-    ):
+    if direct_lum[0] != direct_lum[0] or direct_lum[1] != direct_lum[1] or direct_lum[2] != direct_lum[2]:
         direct_lum = wp.vec3(0.0, 0.0, 0.0)
     color = radiance + direct_lum
 
     # Debug visualization modes (matches C++ outputMode enums).
     out_color = color
     if params.output_mode == 2:  # DEPTH
-        depth_vis = (
-            0.0 if aux_view_z >= DLSS_INF_DISTANCE else wp.exp(-0.075 * aux_view_z)
-        )
+        depth_vis = 0.0 if aux_view_z >= DLSS_INF_DISTANCE else wp.exp(-0.075 * aux_view_z)
         out_color = wp.vec3(depth_vis, depth_vis, depth_vis)
     elif params.output_mode == 3:  # MOTION
         out_color = wp.vec3(
@@ -3902,9 +3549,7 @@ def primary_raygen(params: PathtraceLaunchParams):
             0.5 * (world_normal[2] + 1.0),
         )
     elif params.output_mode == 5:  # ROUGHNESS
-        out_color = wp.vec3(
-            aux_normal_roughness[3], aux_normal_roughness[3], aux_normal_roughness[3]
-        )
+        out_color = wp.vec3(aux_normal_roughness[3], aux_normal_roughness[3], aux_normal_roughness[3])
     elif params.output_mode == 6:  # DIFFUSE
         out_color = base_color
     elif params.output_mode == 7:  # SPECULAR (viewer uses metallic visualization)
@@ -3913,9 +3558,7 @@ def primary_raygen(params: PathtraceLaunchParams):
         vis = 1.0 - wp.exp(-0.05 * wp.max(aux_spec_hit_dist, 0.0))
         out_color = wp.vec3(vis, vis, vis)
 
-    params.color_output[y, x] = wp.vec4(
-        out_color[0], out_color[1], out_color[2], pbr_mat.opacity
-    )
+    params.color_output[y, x] = wp.vec4(out_color[0], out_color[1], out_color[2], pbr_mat.opacity)
     params.normal_roughness_output[y, x] = aux_normal_roughness
     params.motion_output[y, x] = aux_motion
     params.depth_output[y, x] = aux_view_z
@@ -3924,7 +3567,7 @@ def primary_raygen(params: PathtraceLaunchParams):
     params.spec_hit_dist_output[y, x] = aux_spec_hit_dist
 
 
-@woptix.optix_kernel(woptix.OptixKernelType.MISS)
+@wp.kernel(module="unique")
 def primary_miss(params: PathtraceLaunchParams):
     """Miss shader: set hitT = DLSS_INF_DISTANCE and store sky color in normal/envRad fields."""
     rd = wp.normalize(wp.optix_get_world_ray_direction())
@@ -3978,9 +3621,7 @@ def _resolve_material_id(
 
 
 @wp.func
-def _compute_curve_hit_geometry(
-    params: PathtraceLaunchParams, inst_id: wp.int32, segment_id: wp.int32
-) -> HitGeometry:
+def _compute_curve_hit_geometry(params: PathtraceLaunchParams, inst_id: wp.int32, segment_id: wp.int32) -> HitGeometry:
     """Extract a native round-linear or cubic Bezier curve hit."""
     geo = HitGeometry()
     geo.texture_lod = 0.0
@@ -4037,20 +3678,11 @@ def _compute_curve_hit_geometry(
             + p2 * (3.0 * one_minus_u * u2)
             + p3 * (u2 * u)
         )
-        axis_object = (
-            (p1 - p0) * (3.0 * one_minus_u2)
-            + (p2 - p1) * (6.0 * one_minus_u * u)
-            + (p3 - p2) * (3.0 * u2)
-        )
+        axis_object = (p1 - p0) * (3.0 * one_minus_u2) + (p2 - p1) * (6.0 * one_minus_u * u) + (p3 - p2) * (3.0 * u2)
         radius_derivative = (
-            (r1 - r0) * (3.0 * one_minus_u2)
-            + (r2 - r1) * (6.0 * one_minus_u * u)
-            + (r3 - r2) * (3.0 * u2)
+            (r1 - r0) * (3.0 * one_minus_u2) + (r2 - r1) * (6.0 * one_minus_u * u) + (r3 - r2) * (3.0 * u2)
         )
-    hit_world = (
-        wp.optix_get_world_ray_origin()
-        + wp.optix_get_world_ray_direction() * wp.optix_get_ray_tmax()
-    )
+    hit_world = wp.optix_get_world_ray_origin() + wp.optix_get_world_ray_direction() * wp.optix_get_ray_tmax()
     hit_object = wp.optix_transform_point_from_world_to_object_space(hit_world)
     radial_object = wp.normalize(hit_object - center_object)
     axis_length = wp.length(axis_object)
@@ -4058,35 +3690,22 @@ def _compute_curve_hit_geometry(
     # On the swept body, a changing radius tilts the normal like a cone.
     # End caps and spherical elbows retain their radial normal.
     if u > 1.0e-5 and u < 1.0 - 1.0e-5 and axis_length > 1.0e-8:
-        normal_object = wp.normalize(
-            radial_object
-            - axis_object * (radius_derivative / (axis_length * axis_length))
-        )
-    geo.normal = wp.normalize(
-        wp.optix_transform_normal_from_object_to_world_space(normal_object)
-    )
-    tangent_world = wp.normalize(
-        wp.optix_transform_vector_from_object_to_world_space(axis_object)
-    )
-    geo.tangent = wp.normalize(
-        tangent_world - geo.normal * wp.dot(geo.normal, tangent_world)
-    )
+        normal_object = wp.normalize(radial_object - axis_object * (radius_derivative / (axis_length * axis_length)))
+    geo.normal = wp.normalize(wp.optix_transform_normal_from_object_to_world_space(normal_object))
+    tangent_world = wp.normalize(wp.optix_transform_vector_from_object_to_world_space(axis_object))
+    geo.tangent = wp.normalize(tangent_world - geo.normal * wp.dot(geo.normal, tangent_world))
     to_eye = -wp.normalize(wp.optix_get_world_ray_direction())
     if wp.dot(geo.normal, to_eye) < 0.0:
         geo.normal = -geo.normal
         geo.bitangent_sign = -geo.bitangent_sign
     geo.uv = wp.vec2(u, 0.0)
     geo.uv1 = geo.uv
-    geo.material_id = _resolve_material_id(
-        params, inst_id, render_prim_id, segment_id, segment_count
-    )
+    geo.material_id = _resolve_material_id(params, inst_id, render_prim_id, segment_id, segment_count)
     return geo
 
 
 @wp.func
-def _compute_hit_geometry(
-    params: PathtraceLaunchParams, inst_id: wp.int32, tri_id: wp.int32
-) -> HitGeometry:
+def _compute_hit_geometry(params: PathtraceLaunchParams, inst_id: wp.int32, tri_id: wp.int32) -> HitGeometry:
     """Compute geometry at hit point (matching C++ GetHitStateOptiX + material lookup)."""
     geo = HitGeometry()
     geo.texture_lod = 0.0
@@ -4099,10 +3718,7 @@ def _compute_hit_geometry(
 
     if inst_id < 0 or inst_id >= int(params.instance_count):
         return geo
-    if (
-        params.instance_render_prim_ids.shape[0] == 0
-        or params.render_primitives.shape[0] == 0
-    ):
+    if params.instance_render_prim_ids.shape[0] == 0 or params.render_primitives.shape[0] == 0:
         return geo
 
     instance_render_prim_ids = params.instance_render_prim_ids
@@ -4134,9 +3750,7 @@ def _compute_hit_geometry(
     n1 = _fetch_vec3(vnor, normal_base + i1)
     n2 = _fetch_vec3(vnor, normal_base + i2)
     n_obj = wp.normalize(n0 * b0 + n1 * b1 + n2 * b2)
-    geo.normal = wp.normalize(
-        wp.optix_transform_normal_from_object_to_world_space(n_obj)
-    )
+    geo.normal = wp.normalize(wp.optix_transform_normal_from_object_to_world_space(n_obj))
 
     # Tangent
     vtng = params.packed_tangents
@@ -4146,9 +3760,7 @@ def _compute_hit_geometry(
     t2 = _fetch_vec4(vtng, tangent_base + i2)
     t_interp = t0 * b0 + t1 * b1 + t2 * b2
     t_world = wp.normalize(
-        wp.optix_transform_vector_from_object_to_world_space(
-            wp.vec3(t_interp[0], t_interp[1], t_interp[2])
-        )
+        wp.optix_transform_vector_from_object_to_world_space(wp.vec3(t_interp[0], t_interp[1], t_interp[2]))
     )
     geo.tangent = wp.normalize(t_world - geo.normal * wp.dot(geo.normal, t_world))
     geo.bitangent_sign = t_interp[3] * params.bitangent_flip
@@ -4179,22 +3791,14 @@ def _compute_hit_geometry(
         uv1_2 = _fetch_vec2(vt1, tex1_base + i2)
         geo.uv1 = uv1_0 * b0 + uv1_1 * b1 + uv1_2 * b2
 
-    geo.material_id = _resolve_material_id(
-        params, inst_id, render_prim_id, tri_id, tri_count
-    )
+    geo.material_id = _resolve_material_id(params, inst_id, render_prim_id, tri_id, tri_count)
     # Estimate an isotropic ray footprint from projected pixel width and the
     # triangle's texel density. This gives stable trilinear filtering without
     # tracing ray differentials.
     vertices = wp.optix_get_triangle_vertex_data()
-    p0 = wp.optix_transform_point_from_object_to_world_space(
-        wp.vec3(vertices[0, 0], vertices[0, 1], vertices[0, 2])
-    )
-    p1 = wp.optix_transform_point_from_object_to_world_space(
-        wp.vec3(vertices[1, 0], vertices[1, 1], vertices[1, 2])
-    )
-    p2 = wp.optix_transform_point_from_object_to_world_space(
-        wp.vec3(vertices[2, 0], vertices[2, 1], vertices[2, 2])
-    )
+    p0 = wp.optix_transform_point_from_object_to_world_space(wp.vec3(vertices[0, 0], vertices[0, 1], vertices[0, 2]))
+    p1 = wp.optix_transform_point_from_object_to_world_space(wp.vec3(vertices[1, 0], vertices[1, 1], vertices[1, 2]))
+    p2 = wp.optix_transform_point_from_object_to_world_space(wp.vec3(vertices[2, 0], vertices[2, 1], vertices[2, 2]))
     world_area = wp.length(wp.cross(p1 - p0, p2 - p0))
     duv0_1 = uv0_1 - uv0_0
     duv0_2 = uv0_2 - uv0_0
@@ -4208,275 +3812,13 @@ def _compute_hit_geometry(
     texture_size = material.texture_size
     incidence = wp.max(wp.abs(wp.dot(to_eye, geo.normal)), 0.25)
     pixel_width = (
-        2.0
-        * wp.optix_get_ray_tmax()
-        * params.cam_tan_half_fov
-        / wp.max(wp.float32(params.height), 1.0)
-        / incidence
+        2.0 * wp.optix_get_ray_tmax() * params.cam_tan_half_fov / wp.max(wp.float32(params.height), 1.0) / incidence
     )
-    footprint = (
-        pixel_width * texture_size * wp.sqrt(uv_area / wp.max(world_area, 1.0e-12))
-    )
+    footprint = pixel_width * texture_size * wp.sqrt(uv_area / wp.max(world_area, 1.0e-12))
     max_lod = wp.log(wp.max(texture_size, 1.0)) / wp.log(2.0)
-    geo.texture_lod = wp.clamp(
-        wp.log(wp.max(footprint, 1.0)) / wp.log(2.0), 0.0, max_lod
-    )
+    geo.texture_lod = wp.clamp(wp.log(wp.max(footprint, 1.0)) / wp.log(2.0), 0.0, max_lod)
 
     return geo
-
-
-@wp.func
-def _evaluate_surface_hit(
-    params: PathtraceLaunchParams,
-    inst_id: wp.int32,
-    tri_id: wp.int32,
-    rand_channel_base: wp.int32,
-) -> ShadedHitData:
-    out = _make_invalid_shaded_hit()
-    if tri_id < 0:
-        return out
-    if (
-        params.instance_render_prim_ids.shape[0] == 0
-        or params.render_primitives.shape[0] == 0
-    ):
-        return out
-
-    instance_render_prim_ids = params.instance_render_prim_ids
-    render_prim_id = int(instance_render_prim_ids[inst_id])
-    if render_prim_id < 0 or render_prim_id >= int(params.render_prim_count):
-        return out
-
-    render_primitives = params.render_primitives
-    rp = render_primitives[render_prim_id]
-    tri_count = int(rp.num_indices) // 3
-    if tri_id >= tri_count:
-        return out
-
-    indices = params.packed_indices
-    index_base = int(rp.index_offset)
-    i0 = int(indices[index_base + tri_id * 3 + 0])
-    i1 = int(indices[index_base + tri_id * 3 + 1])
-    i2 = int(indices[index_base + tri_id * 3 + 2])
-
-    vnor = params.packed_normals
-    vtng = params.packed_tangents
-    vt0 = params.packed_texcoords0
-    has_uv1 = rp.vertex_buffer.has_texcoord1 != wp.uint32(0)
-    vt1 = params.packed_texcoords1
-    normal_base = int(rp.vertex_buffer.normal_offset) // 3
-    tangent_base = int(rp.vertex_buffer.tangent_offset) // 4
-    tex0_base = int(rp.vertex_buffer.texcoord0_offset) // 2
-    tex1_base = int(rp.vertex_buffer.texcoord1_offset) // 2
-
-    bary = wp.optix_get_triangle_barycentrics()
-    b1 = bary[0]
-    b2 = bary[1]
-    b0 = 1.0 - b1 - b2
-
-    uv0_0 = _fetch_vec2(vt0, tex0_base + i0)
-    uv0_1 = _fetch_vec2(vt0, tex0_base + i1)
-    uv0_2 = _fetch_vec2(vt0, tex0_base + i2)
-    uv0 = uv0_0 * b0 + uv0_1 * b1 + uv0_2 * b2
-    uv1 = uv0
-    if has_uv1:
-        uv1_0 = _fetch_vec2(vt1, tex1_base + i0)
-        uv1_1 = _fetch_vec2(vt1, tex1_base + i1)
-        uv1_2 = _fetch_vec2(vt1, tex1_base + i2)
-        uv1 = uv1_0 * b0 + uv1_1 * b1 + uv1_2 * b2
-
-    n0 = _fetch_vec3(vnor, normal_base + i0)
-    n1 = _fetch_vec3(vnor, normal_base + i1)
-    n2 = _fetch_vec3(vnor, normal_base + i2)
-    n_obj = wp.normalize(n0 * b0 + n1 * b1 + n2 * b2)
-    n = wp.normalize(wp.optix_transform_normal_from_object_to_world_space(n_obj))
-
-    t0 = _fetch_vec4(vtng, tangent_base + i0)
-    t1 = _fetch_vec4(vtng, tangent_base + i1)
-    t2 = _fetch_vec4(vtng, tangent_base + i2)
-    t_interp = t0 * b0 + t1 * b1 + t2 * b2
-    t_world = wp.normalize(
-        wp.optix_transform_vector_from_object_to_world_space(
-            wp.vec3(t_interp[0], t_interp[1], t_interp[2])
-        )
-    )
-    bitangent_sign = t_interp[3] * params.bitangent_flip
-    to_eye = -wp.normalize(wp.optix_get_world_ray_direction())
-    if wp.dot(n, to_eye) < 0.0:
-        n = -n
-        bitangent_sign = -bitangent_sign
-    b_world = wp.normalize(wp.cross(n, t_world)) * bitangent_sign
-
-    tri_mats = params.packed_material_ids
-    mat_base = int(rp.material_id_offset)
-    material_id = int(tri_mats[mat_base + tri_id]) if tri_count > 0 else 0
-    if params.instance_material_ids.shape[0] > 0:
-        inst_mats = params.instance_material_ids
-        override_id = inst_mats[inst_id]
-        if override_id != wp.uint32(4294967295):
-            material_id = int(override_id)
-    material_id = wp.clamp(material_id, 0, int(params.material_count) - 1)
-    materials = params.compact_materials
-    mat = materials[material_id]
-
-    uv_base = _apply_uv_transform(
-        _select_uv(mat.base_color_tex_coord, uv0, uv1), mat.base_color_uv_transform
-    )
-    uv_mr = _apply_uv_transform(
-        _select_uv(mat.metallic_roughness_tex_coord, uv0, uv1),
-        mat.metallic_roughness_uv_transform,
-    )
-    uv_n = _apply_uv_transform(
-        _select_uv(mat.normal_tex_coord, uv0, uv1), mat.normal_uv_transform
-    )
-    base_tex = _sample_texture_rgba(params, mat.base_color_tex_index, uv_base, 0.0)
-    mr_tex = _sample_texture_rgba(params, mat.metallic_roughness_tex_index, uv_mr, 0.0)
-    n_tex = _sample_texture_rgba(params, mat.normal_tex_index, uv_n, 0.0)
-
-    base_color = wp.vec3(
-        mat.base_color[0] * base_tex[0],
-        mat.base_color[1] * base_tex[1],
-        mat.base_color[2] * base_tex[2],
-    )
-    roughness = wp.clamp(mat.roughness * mr_tex[1], 0.02, 1.0)
-    metallic = wp.clamp(mat.metallic * mr_tex[2], 0.0, 1.0)
-    if params.override_roughness > 0.0:
-        roughness = wp.clamp(params.override_roughness, MICROFACET_MIN_ROUGHNESS, 1.0)
-    if params.override_metallic > 0.0:
-        metallic = wp.clamp(params.override_metallic, 0.0, 1.0)
-    emissive = mat.emissive * params.emissive_material_intensity
-    if params.emissive_material_intensity > 0.0 and mat.emissive_tex_index >= 0:
-        uv_e = _apply_uv_transform(
-            _select_uv(mat.emissive_tex_coord, uv0, uv1), mat.emissive_uv_transform
-        )
-        e_tex = _sample_texture_rgba(params, mat.emissive_tex_index, uv_e, 0.0)
-        emissive = wp.vec3(
-            emissive[0] * e_tex[0],
-            emissive[1] * e_tex[1],
-            emissive[2] * e_tex[2],
-        )
-
-    if mat.normal_tex_index >= 0:
-        n_tan = wp.vec3(
-            n_tex[0] * 2.0 - 1.0, n_tex[1] * 2.0 - 1.0, n_tex[2] * 2.0 - 1.0
-        )
-        n_tan = wp.normalize(
-            wp.vec3(
-                n_tan[0] * mat.normal_scale[0],
-                n_tan[1] * mat.normal_scale[1],
-                n_tan[2],
-            )
-        )
-        n = wp.normalize(t_world * n_tan[0] + b_world * n_tan[1] + n * n_tan[2])
-
-    rd = wp.normalize(wp.optix_get_world_ray_direction())
-    t_hit = wp.optix_get_ray_tmax()
-    hit_pos = wp.optix_get_world_ray_origin() + rd * t_hit
-    v = wp.normalize(-rd)
-    shininess = wp.max(2.0, 256.0 * (1.0 - roughness))
-    f0 = wp.vec3(0.04, 0.04, 0.04) * (1.0 - metallic) + base_color * metallic
-
-    diffuse = wp.vec3(0.0, 0.0, 0.0)
-    specular = wp.vec3(0.0, 0.0, 0.0)
-    launch_idx = wp.optix_get_launch_index()
-    sx = int(launch_idx[0])
-    sy = int(launch_idx[1])
-    surf_rng = _xxhash32(
-        wp.uint32(sx), wp.uint32(sy), params.frame_index + wp.uint32(tri_id)
-    )
-    light_samples = wp.max(int(params.direct_light_samples), 1)
-    si = wp.int32(0)
-    while si < light_samples:
-        surf_rng = _pcg_advance(surf_rng)
-        xi0 = _pcg_rand01(surf_rng)
-        surf_rng = _pcg_advance(surf_rng)
-        xi1 = _pcg_rand01(surf_rng)
-        surf_rng = _pcg_advance(surf_rng)
-        xi2 = _pcg_rand01(surf_rng)
-        ls = _sample_environment_light(params, xi0, xi1, xi2)
-        ndotl = wp.max(wp.dot(n, ls.direction), 0.0)
-        if ndotl > 0.0 and ls.pdf > 0.0:
-            shadow = ShadowPayload()
-            shadow.visible = wp.uint32(0)
-            shadow.seed = wp.uint32(0)
-            shadow_origin = hit_pos + n * 0.001
-            wp.optix_trace(
-                params.tlas,
-                shadow_origin,
-                ls.direction,
-                0.001,
-                65504.0,
-                0.0,
-                wp.uint32(255),
-                wp.uint32(
-                    OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT
-                    | OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT
-                ),
-                wp.uint32(1),
-                wp.uint32(2),
-                wp.uint32(1),
-                shadow,
-            )
-            if shadow.visible == wp.uint32(1):
-                h = wp.normalize(ls.direction + v)
-                ndoth = wp.max(wp.dot(n, h), 0.0)
-                diff = base_color * ndotl * (1.0 - metallic)
-                spec = f0 * wp.pow(ndoth, shininess)
-                scale = 1.0 / ls.pdf
-                diffuse = diffuse + _mul_vec3(diff, ls.radiance) * scale
-                specular = specular + _mul_vec3(spec, ls.radiance) * scale
-        si = si + wp.int32(1)
-
-    inv_samples = 1.0 / wp.float32(light_samples)
-    diffuse = diffuse * inv_samples
-    specular = specular * inv_samples
-    color = emissive + diffuse + specular
-    color = wp.vec3(wp.min(color[0], 1.0), wp.min(color[1], 1.0), wp.min(color[2], 1.0))
-
-    out.valid = wp.uint32(1)
-    out.color = color
-    out.normal = n
-    out.Ng = n
-    out.T = t_world
-    out.B = b_world
-    out.roughness = roughness
-    out.diffuse = diffuse
-    out.specular = specular
-    out.t_hit = t_hit
-    out.spec_hit_dist = t_hit
-    out.metallic = metallic
-    out.opacity = 1.0
-    return out
-
-
-@wp.func
-def _write_primary_payload(hit: ShadedHitData, inst_id: wp.int32, tri_id: wp.int32):
-    if hit.valid == wp.uint32(0):
-        wp.optix_set_payload_0(wp.uint32(0))
-        return
-
-    payload = PrimaryShadedPayload()
-    payload.valid = wp.uint32(1)
-    payload.color_r = _encode_u8(hit.color[0])
-    payload.color_g = _encode_u8(hit.color[1])
-    payload.color_b = _encode_u8(hit.color[2])
-    payload.normal_x = _encode_unit_to_u8(hit.normal[0])
-    payload.normal_y = _encode_unit_to_u8(hit.normal[1])
-    payload.normal_z = _encode_unit_to_u8(hit.normal[2])
-    payload.roughness = _encode_u8(hit.roughness)
-    payload.diffuse_r = _encode_u8(hit.diffuse[0])
-    payload.diffuse_g = _encode_u8(hit.diffuse[1])
-    payload.diffuse_b = _encode_u8(hit.diffuse[2])
-    payload.specular_r = _encode_u8(hit.specular[0])
-    payload.specular_g = _encode_u8(hit.specular[1])
-    payload.specular_b = _encode_u8(hit.specular[2])
-    payload.t_hit = _encode_u16_norm(hit.t_hit, 65504.0)
-    payload.spec_hit_dist = _encode_u16_norm(hit.spec_hit_dist, 65504.0)
-    payload.metallic = _encode_u8(hit.metallic)
-    payload.instance_id = wp.uint32(inst_id)
-    payload.primitive_id = wp.uint32(tri_id)
-    payload.opacity = _encode_u16_norm(hit.opacity, 1.0)
-    payload.reserved0 = wp.uint32(0)
-    wp.optix_store_payload(payload)
 
 
 @wp.func
@@ -4509,33 +3851,6 @@ class AnyHitAlphaResult:
     coverage_seed: wp.uint32
 
 
-@wp.struct
-class PrimaryShadedPayload:
-    """Packed 21-word payload layout used by _write_primary_payload()."""
-
-    valid: wp.uint32
-    color_r: wp.uint32
-    color_g: wp.uint32
-    color_b: wp.uint32
-    normal_x: wp.uint32
-    normal_y: wp.uint32
-    normal_z: wp.uint32
-    roughness: wp.uint32
-    diffuse_r: wp.uint32
-    diffuse_g: wp.uint32
-    diffuse_b: wp.uint32
-    specular_r: wp.uint32
-    specular_g: wp.uint32
-    specular_b: wp.uint32
-    t_hit: wp.uint32
-    spec_hit_dist: wp.uint32
-    metallic: wp.uint32
-    instance_id: wp.uint32
-    primitive_id: wp.uint32
-    opacity: wp.uint32
-    reserved0: wp.uint32
-
-
 @wp.func
 def _compute_any_hit_alpha(params: PathtraceLaunchParams) -> AnyHitAlphaResult:
     """Evaluate coverage for triangles and curves through one material path."""
@@ -4552,10 +3867,7 @@ def _compute_any_hit_alpha(params: PathtraceLaunchParams) -> AnyHitAlphaResult:
         return out
 
     primitive_id = int(wp.optix_get_primitive_index())
-    if (
-        params.instance_render_prim_ids.shape[0] == 0
-        or params.render_primitives.shape[0] == 0
-    ):
+    if params.instance_render_prim_ids.shape[0] == 0 or params.render_primitives.shape[0] == 0:
         return out
     instance_render_prim_ids = params.instance_render_prim_ids
     render_prim_id = int(instance_render_prim_ids[inst_id])
@@ -4569,9 +3881,7 @@ def _compute_any_hit_alpha(params: PathtraceLaunchParams) -> AnyHitAlphaResult:
     primitive_count = int(rp.num_indices) if is_curve else int(rp.num_indices) // 3
     if primitive_id < 0 or primitive_id >= primitive_count:
         return out
-    material_id = _resolve_material_id(
-        params, inst_id, render_prim_id, primitive_id, primitive_count
-    )
+    material_id = _resolve_material_id(params, inst_id, render_prim_id, primitive_id, primitive_count)
     materials = params.compact_materials
     mat = materials[material_id]
     out.valid = wp.uint32(1)
@@ -4597,9 +3907,7 @@ def _compute_any_hit_alpha(params: PathtraceLaunchParams) -> AnyHitAlphaResult:
     uv_seed_x = wp.uint32(int(wp.floor(uv_base[0] * 2048.0)))
     uv_seed_y = wp.uint32(int(wp.floor(uv_base[1] * 2048.0)))
     launch_index = wp.optix_get_launch_index()
-    pixel_frame_seed = _xxhash32(
-        wp.uint32(launch_index[0]), wp.uint32(launch_index[1]), params.frame_index
-    )
+    pixel_frame_seed = _xxhash32(wp.uint32(launch_index[0]), wp.uint32(launch_index[1]), params.frame_index)
     out.coverage_seed = _xxhash32(
         wp.uint32(inst_id),
         wp.uint32(primitive_id),
@@ -4646,7 +3954,7 @@ def _store_primary_hit_payload(
     wp.optix_store_payload(payload)
 
 
-@woptix.optix_kernel(woptix.OptixKernelType.CLOSEST_HIT)
+@wp.kernel(module="unique")
 def primary_closest_hit(params: PathtraceLaunchParams):
     """Closest-hit: pass geometry data only (matching C++ primary_rchit.h)."""
     inst_id = int(wp.optix_get_instance_id())
@@ -4654,12 +3962,10 @@ def primary_closest_hit(params: PathtraceLaunchParams):
     geo = _compute_hit_geometry(params, inst_id, tri_id)
     bary = wp.optix_get_triangle_barycentrics()
     front_face = wp.uint32(1) if wp.optix_is_front_face_hit() else wp.uint32(0)
-    _store_primary_hit_payload(
-        geo, wp.int32(inst_id), wp.int32(tri_id), front_face, bary[0], bary[1]
-    )
+    _store_primary_hit_payload(geo, wp.int32(inst_id), wp.int32(tri_id), front_face, bary[0], bary[1])
 
 
-@woptix.optix_kernel(woptix.OptixKernelType.CLOSEST_HIT)
+@wp.kernel(module="unique")
 def curve_primary_closest_hit(params: PathtraceLaunchParams):
     """Adapt a native curve hit to the same PBR payload as a triangle hit."""
     inst_id = int(wp.optix_get_instance_id())
@@ -4680,7 +3986,7 @@ def _any_hit_rng(coverage_seed: wp.uint32) -> wp.uint32:
     return _pcg_advance(coverage_seed)
 
 
-@woptix.optix_kernel(woptix.OptixKernelType.ANY_HIT)
+@wp.kernel(module="unique")
 def primary_any_hit(params: PathtraceLaunchParams):
     alpha_hit = _compute_any_hit_alpha(params)
     if alpha_hit.valid == wp.uint32(0):
@@ -4697,52 +4003,20 @@ def primary_any_hit(params: PathtraceLaunchParams):
             return
 
 
-@woptix.optix_kernel(woptix.OptixKernelType.MISS)
+@wp.kernel(module="unique")
 def secondary_miss(params: PathtraceLaunchParams):
     """Matches C++ __miss__secondary: visible path for shadow ray."""
     wp.optix_set_payload_0(wp.uint32(1))
 
 
-@woptix.optix_kernel(woptix.OptixKernelType.CLOSEST_HIT)
+@wp.kernel(module="unique")
 def secondary_closest_hit(params: PathtraceLaunchParams):
     """Matches C++ __closesthit__secondary: occluded path for shadow ray."""
     wp.optix_set_payload_0(wp.uint32(0))
 
 
-@woptix.optix_kernel(woptix.OptixKernelType.ANY_HIT)
+@wp.kernel(module="unique")
 def secondary_any_hit(params: PathtraceLaunchParams):
-    alpha_hit = _compute_any_hit_alpha(params)
-    if alpha_hit.valid == wp.uint32(1):
-        blocking = alpha_hit.alpha * (1.0 - alpha_hit.transmission)
-        if blocking <= 0.001:
-            wp.optix_ignore_intersection()
-            return
-        if blocking < 0.999:
-            rng = _any_hit_rng(alpha_hit.coverage_seed)
-            if _pcg_rand01(rng) > blocking:
-                wp.optix_ignore_intersection()
-                return
-
-    payload = ShadowPayload()
-    wp.optix_load_payload(payload)
-
-    payload.visible = wp.uint32(0)
-    wp.optix_store_payload(payload)
-    wp.optix_terminate_ray()
-
-
-@woptix.optix_kernel(woptix.OptixKernelType.MISS)
-def shadow_miss(params: PathtraceLaunchParams):
-    wp.optix_set_payload_0(wp.uint32(1))
-
-
-@woptix.optix_kernel(woptix.OptixKernelType.CLOSEST_HIT)
-def shadow_closest_hit(params: PathtraceLaunchParams):
-    wp.optix_set_payload_0(wp.uint32(0))
-
-
-@woptix.optix_kernel(woptix.OptixKernelType.ANY_HIT)
-def shadow_any_hit(params: PathtraceLaunchParams):
     alpha_hit = _compute_any_hit_alpha(params)
     if alpha_hit.valid == wp.uint32(1):
         blocking = alpha_hit.alpha * (1.0 - alpha_hit.transmission)

@@ -4,28 +4,20 @@
 import numpy as np
 import pytest
 import warp as wp
-
-import warp_optix as woptix
-from warp_optix._runtime import runtime as _runtime
-from warp_optix._runtime.hit_kernels import HitKernel as _NativeHitKernel
 from warp_optix.pathtracing import PathTracerAPI
+
+pytestmark = [pytest.mark.gpu, pytest.mark.render]
 
 
 def _new_gpu_api(width=64, height=48):
-    try:
-        wp.init()
-        if not wp.is_cuda_available():
-            pytest.skip("CUDA device unavailable")
-        _runtime.require_optix()
-    except Exception as error:
-        pytest.skip(f"OptiX/Warp unavailable: {error}")
+    if not wp.is_cuda_available():
+        pytest.skip("CUDA device unavailable")
 
     api = PathTracerAPI(
         width=width,
         height=height,
         enable_dlss_rr=False,
         enable_set=False,
-        enable_cuda_graphs=True,
         backface_culling=False,
     )
     assert api.initialize()
@@ -85,89 +77,41 @@ def test_two_sided_physical_glass_transmits_for_both_windings():
     assert back_luminance / front_luminance == pytest.approx(1.0, rel=0.15)
 
 
-def test_host_instance_transform_update_produces_motion_vectors():
-    """Keep the motion transform buffer synchronized with host TLAS updates."""
+def test_instance_updates_refit_rebuild_tlas_and_produce_motion_vectors():
+    """Host instance updates refit the TLAS, periodically rebuild it, and drive motion vectors."""
     api = _new_gpu_api(width=96, height=64)
     try:
         material = api.create_emissive_material((1.0, 0.3, 0.05), intensity=2.0)
-        quad = np.asarray(
-            ((-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0), (-0.5, 0.5, 0.0)),
-            dtype=np.float32,
-        )
-        indices = np.asarray(((0, 1, 2), (0, 2, 3)), dtype=np.uint32)
-        geometry = api.create_mesh(quad, indices, material_id=material)
-        instance = api.create_instance_with_transform(
-            geometry,
-            (0.0, 0.0, 0.0),
-            (0.0, 0.0, 0.0, 1.0),
-        )
+        quad = np.asarray(((-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0), (-0.5, 0.5, 0.0)), dtype=np.float32)
+        geometry = api.create_mesh(quad, np.asarray(((0, 1, 2), (0, 2, 3)), dtype=np.uint32), material_id=material)
+        instance = api.create_instance_with_transform(geometry, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
         api.set_camera_look_at((0.0, 0.0, 2.0), (0.0, 0.0, 0.0))
-        api.build_scene()
-
-        api.render_frame()
-        api.render_frame()
-        static_motion = api._viewer._motion_buffer.numpy().copy()
-        assert float(np.max(np.abs(static_motion))) < 5.0e-5
-
-        api.set_instance_transform(
-            instance,
-            (0.25, 0.0, 0.0),
-            (0.0, 0.0, 0.0, 1.0),
-        )
-        api.rebuild_tlas()
-        api.render_frame()
-        moving_motion = api._viewer._motion_buffer.numpy()
-        magnitude = np.linalg.norm(moving_motion, axis=-1)
-
-        assert float(np.max(magnitude)) > 1.0
-        assert int(np.count_nonzero(magnitude > 1.0e-5)) > 100
-    finally:
-        api.close()
-
-
-def test_scene_rebuild_after_adding_instances_resizes_motion_buffers():
-    """Runtime instance additions must not upload into the old motion buffer."""
-    api = _new_gpu_api()
-    try:
-        material = api.create_emissive_material((1.0, 0.3, 0.05), intensity=2.0)
-        vertices = np.asarray(
-            ((-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.0, 0.5, 0.0)),
-            dtype=np.float32,
-        )
-        geometry = api.create_mesh(
-            vertices, np.asarray(((0, 1, 2),), dtype=np.uint32), material_id=material
-        )
-        api.set_camera_look_at((0.0, 0.0, 2.0), (0.0, 0.0, 0.0))
-        for count in (1, 2, 3):
-            api.create_instance(geometry)
-            api.build_scene()
-            api.render_frame()
-            assert api.scene._device_instance_transforms.shape == (count, 12)
-            assert api._viewer._prev_instance_transforms_buffer.shape == (count, 12)
-            assert np.isfinite(api.get_frame()).all()
-    finally:
-        api.close()
-
-
-def test_tlas_updates_periodically_rebuild_for_traversal_quality():
-    """Repeated refits must eventually rebuild the TLAS."""
-    api = _new_gpu_api()
-    try:
-        material = api.create_emissive_material((1.0, 1.0, 1.0), intensity=1.0)
-        vertices = np.asarray(
-            ((-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.0, 0.5, 0.0)),
-            dtype=np.float32,
-        )
-        geometry = api.create_mesh(
-            vertices, np.asarray(((0, 1, 2),), dtype=np.uint32), material_id=material
-        )
-        api.create_instance(geometry)
         api.build_scene()
         scene = api.scene
+
         for _ in range(scene._max_tlas_updates):
             api.rebuild_tlas()
         assert scene._tlas_updates_since_build == scene._max_tlas_updates
         api.rebuild_tlas()
         assert scene._tlas_updates_since_build == 0
+
+        api.render_frame()
+        api.render_frame()
+        assert float(np.max(np.abs(api._viewer._motion_buffer.numpy()))) < 5.0e-5
+        api.set_instance_transform(instance, (0.25, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
+        api.rebuild_tlas()
+        api.render_frame()
+        magnitude = np.linalg.norm(api._viewer._motion_buffer.numpy(), axis=-1)
+        assert float(np.max(magnitude)) > 1.0
+        assert int(np.count_nonzero(magnitude > 1.0e-5)) > 100
+
+        # Runtime instance additions must not upload into the old motion buffers.
+        for count in (2, 3):
+            api.create_instance(geometry)
+            api.build_scene()
+            api.render_frame()
+            assert scene._device_instance_transforms.shape == (count, 12)
+            assert api._viewer._prev_instance_transforms_buffer.shape == (count, 12)
+            assert np.isfinite(api.get_frame()).all()
     finally:
         api.close()

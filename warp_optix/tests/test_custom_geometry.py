@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from __future__ import annotations
-
 import importlib.util
 import sys
 from pathlib import Path
@@ -10,52 +8,15 @@ from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
+import warp as wp
 
-
-import warp as wp  # noqa: E402
-from warp_optix._runtime import runtime  # noqa: E402
-from warp_optix._runtime import sbt as sbt_module  # noqa: E402
-from warp_optix._runtime.hit_kernels import HitKernel  # noqa: E402
-from warp_optix._runtime.sbt import SbtKernelManager  # noqa: E402
-
-
-class _DeviceArray:
-    _next_ptr = 1000
-
-    def __init__(self, values):
-        self.values = np.asarray(values)
-        self.shape = self.values.shape
-        self.ptr = _DeviceArray._next_ptr
-        _DeviceArray._next_ptr += 1000
-
-
-class _FakeWarp:
-    Kernel = wp.Kernel
-    float32 = np.float32
-    uint32 = np.uint32
-    uint8 = np.uint8
-
-    @staticmethod
-    def array(values, dtype, device, copy=True):
-        del device, copy
-        return _DeviceArray(np.asarray(values, dtype=dtype))
-
-    @staticmethod
-    def empty(size, dtype, device):
-        del device
-        return _DeviceArray(np.empty(size, dtype=dtype))
-
-    @staticmethod
-    def synchronize_device(device):
-        del device
+import warp_optix as wo
 
 
 def test_custom_primitive_builtins_register_all_attribute_arities():
     calls = []
     fake_warp = ModuleType("warp")
-    fake_warp.build_experimental = SimpleNamespace(
-        add_builtin=lambda name, **kwargs: calls.append((name, kwargs))
-    )
+    fake_warp.build_experimental = SimpleNamespace(add_builtin=lambda name, **kwargs: calls.append((name, kwargs)))
     fake_warp.bool = bool
     fake_warp.float32 = np.float32
     fake_warp.uint32 = np.uint32
@@ -66,12 +27,10 @@ def test_custom_primitive_builtins_register_all_attribute_arities():
     fake_warp.vec3ui = type("vec3ui", (), {})
     fake_warp.mat33 = type("mat33", (), {})
     fake_warp.mat44 = type("mat44", (), {})
-    fake_warp.types = SimpleNamespace(
-        matrix=lambda *, shape, dtype: type(f"mat{shape[0]}{shape[1]}", (), {})
-    )
+    fake_warp.types = SimpleNamespace(matrix=lambda *, shape, dtype: type(f"mat{shape[0]}{shape[1]}", (), {}))
 
     module_name = "warp_optix_builtins_under_test"
-    builtins_path = Path(__file__).parents[1] / "warp_optix" / "_builtins.py"
+    builtins_path = Path(__file__).parents[1] / "warp_optix" / "builtins.py"
     spec = importlib.util.spec_from_file_location(module_name, builtins_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -137,236 +96,118 @@ def test_custom_primitive_builtins_register_all_attribute_arities():
     } <= registered_names
 
 
-class _Struct:
-    def __init__(self, **kwargs):
-        self.__dict__.update(kwargs)
+@wp.struct
+class HitPayload:
+    value: float
 
 
-class _Optix:
-    BUILD_FLAG_NONE = 0
-    BUILD_OPERATION_BUILD = 1
-    GEOMETRY_FLAG_NONE = 0
-    TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS = 1
-    TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_LEVEL_INSTANCING = 2
-    EXCEPTION_FLAG_NONE = 0
-    PRIMITIVE_TYPE_FLAGS_TRIANGLE = 1
-    PRIMITIVE_TYPE_FLAGS_CUSTOM = 4
-    COMPILE_DEFAULT_MAX_REGISTER_COUNT = 0
-    COMPILE_OPTIMIZATION_DEFAULT = 0
-    COMPILE_DEBUG_LEVEL_DEFAULT = 0
-    SBT_RECORD_HEADER_SIZE = 32
-    SBT_RECORD_ALIGNMENT = 16
-
-    AccelBuildOptions = _Struct
-    BuildInputCustomPrimitiveArray = _Struct
-    BuildInputInstanceArray = _Struct
-    PipelineCompileOptions = _Struct
-    ModuleCompileOptions = _Struct
-    ProgramGroupDesc = _Struct
-    ProgramGroupOptions = _Struct
-    PipelineLinkOptions = _Struct
-    ShaderBindingTable = _Struct
-
-    @staticmethod
-    def version():
-        return (9, 0, 0)
-
-    @staticmethod
-    def sbtRecordPackHeader(group, record):
-        del group, record
-
-    @staticmethod
-    def getDeviceRepresentation(instances):
-        return bytes(80 * len(instances))
+@wp.kernel(module="unique")
+def write_mixed_instances(triangle_gas: wp.uint64, sphere_gas: wp.uint64, records: wp.array(dtype=wo.Instance)):
+    i = wp.tid()
+    # Geometry type g owns hit records [2 * g, 2 * g + 1], one per ray type.
+    gas = triangle_gas if i == 0 else sphere_gas
+    records[i] = wo.make_instance(
+        wp.identity(3, float),
+        wp.vec3(10.0 * float(i), 0.0, 0.0),
+        gas,
+        wp.uint32(i),
+        wp.uint32(2 * i),
+        wp.uint32(0xFF),
+        wp.uint32(0),
+    )
 
 
-class _Context:
-    def __init__(self):
-        self.build_input = None
-        self.pipeline_options = None
-        self.program_descs = []
-        self.pipeline = None
-
-    def accelComputeMemoryUsage(self, options, build_inputs):
-        del options
-        self.build_input = build_inputs[0]
-        return SimpleNamespace(tempSizeInBytes=64, outputSizeInBytes=128)
-
-    def accelBuild(self, stream, options, inputs, temp, temp_size, output, output_size, emitted):
-        del stream, options, inputs, temp, temp_size, output, output_size, emitted
-        return 42
-
-    def moduleCreate(self, module_options, pipeline_options, ptx):
-        del module_options, ptx
-        self.pipeline_options = pipeline_options
-        return object(), ""
-
-    def programGroupCreate(self, descs, options=None):
-        del options
-        self.program_descs.extend(descs)
-        return [object()], ""
-
-    def pipelineCreate(self, pipeline_options, link_options, groups, log):
-        del pipeline_options, link_options, groups, log
-        self.pipeline = SimpleNamespace(stack_size=None)
-        self.pipeline.setStackSize = lambda *args: setattr(self.pipeline, "stack_size", args)
-        return self.pipeline
+@wp.kernel(module="unique")
+def mixed_raygen(
+    scene: wp.uint64, xs: wp.array(dtype=float), centers: wp.array(dtype=wp.vec3), values: wp.array2d(dtype=float)
+):
+    i = wp.tid()
+    for ray_type in range(2):
+        payload = HitPayload()
+        payload.value = 999.0
+        wp.optix_trace(
+            scene,
+            wp.vec3(xs[i], 0.0, 5.0),
+            wp.vec3(0.0, 0.0, -1.0),
+            0.0,
+            100.0,
+            0.0,
+            wp.uint32(0xFF),
+            wp.uint32(0),
+            wp.uint32(ray_type),
+            wp.uint32(2),
+            wp.uint32(0),
+            payload,
+        )
+        values[i, ray_type] = payload.value
 
 
-def test_create_custom_primitive_gas_with_sbt_offsets(monkeypatch):
-    monkeypatch.setattr(runtime, "wp", _FakeWarp)
-    optix = _Optix()
-    ctx = _Context()
-    aabbs = np.array([[[-1, -2, -3], [1, 2, 3]], [[4, 5, 6], [7, 8, 9]]], dtype=np.float64)
+@wp.func
+def hit_code() -> float:
+    instance = float(wp.optix_get_instance_id())
+    record = float(wp.optix_get_sbt_gas_index())
+    return 1.0 + 100.0 * instance + 10.0 * record + float(wp.optix_get_primitive_index())
 
-    handle, keepalive = runtime.create_custom_primitive_gas(
-        optix,
+
+@wp.kernel(module="unique")
+def primary_hit():
+    payload = HitPayload()
+    payload.value = hit_code()
+    wp.optix_store_payload(payload)
+
+
+@wp.kernel(module="unique")
+def shadow_hit():
+    payload = HitPayload()
+    payload.value = -hit_code()
+    wp.optix_store_payload(payload)
+
+
+@wp.kernel(module="unique")
+def sphere_intersection(centers: wp.array(dtype=wp.vec3)):
+    origin = wp.optix_get_object_ray_origin() - centers[int(wp.optix_get_primitive_index())]
+    direction = wp.optix_get_object_ray_direction()
+    b = wp.dot(origin, direction)
+    disc = b * b - wp.dot(origin, origin) + 0.25
+    if disc >= 0.0:
+        wp.optix_report_intersection(-b - wp.sqrt(disc), wp.uint32(0))
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not wp.is_cuda_available(), reason="requires a CUDA device")
+def test_mixed_geometry_selects_hit_records_by_geometry_primitive_and_ray_type():
+    device = wp.get_device("cuda")
+    ctx = wo.create_context(device)
+    vertices = wp.array([[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3, device=device)
+    indices = wp.array([0, 1, 2], dtype=wp.uint32, device=device)
+    triangle_gas = wo.build_accel(ctx, [wo.triangles(vertices, indices)], compact=True, device=device)
+
+    # Two spheres in one custom GAS; the second primitive uses the second SBT record.
+    centers = wp.array([[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
+    bounds = wp.array([[-0.5, -0.5, -0.5, 0.5, 0.5, 0.5], [2.5, -0.5, -0.5, 3.5, 0.5, 0.5]], dtype=float, device=device)
+    sbt_indices = wp.array([0, 1], dtype=wp.uint32, device=device)
+    flags = [wo.GeometryFlags.DISABLE_ANYHIT] * 2
+    sphere_gas = wo.build_accel(ctx, [wo.aabbs(bounds, flags=flags, sbt_indices=sbt_indices)], device=device)
+
+    records = wp.empty(2, dtype=wo.Instance, device=device)
+    wp.launch(write_mixed_instances, dim=2, inputs=[triangle_gas.handle, sphere_gas.handle, records], device=device)
+    ias = wo.build_accel(ctx, [wo.instances(records)], device=device)
+
+    triangle = [wo.HitGroup(closest_hit=primary_hit), wo.HitGroup(closest_hit=shadow_hit)]
+    sphere = [
+        wo.HitGroup(closest_hit=primary_hit, intersection=sphere_intersection),
+        wo.HitGroup(closest_hit=shadow_hit, intersection=sphere_intersection),
+    ]
+    pipeline = wo.create_pipeline(
         ctx,
-        aabbs,
-        "cuda",
-        geometry_flags=[3, 5],
-        sbt_index_offsets=np.array([0, 1]),
-        num_sbt_records=2,
-        primitive_index_offset=9,
+        mixed_raygen,
+        hit_groups=[*triangle, *sphere, *sphere],
+        ray_types=2,
+        payload_words=1,
+        graph_flags=wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
+        device=device,
     )
-
-    assert handle == 42
-    assert keepalive["d_aabbs"].shape == (2, 6)
-    assert keepalive["d_sbt_indices"].shape == (2,)
-    assert ctx.build_input.numPrimitives == 2
-    assert ctx.build_input.strideInBytes == 24
-    assert ctx.build_input.flags == [3, 5]
-    assert ctx.build_input.numSbtRecords == 2
-    assert ctx.build_input.primitiveIndexOffset == 9
-
-
-@pytest.mark.parametrize(
-    "aabbs, message",
-    [
-        (np.zeros((2, 5)), "shape"),
-        (np.zeros((0, 6)), "at least one"),
-        (np.array([[0, 0, 0, np.inf, 1, 1]]), "finite"),
-        (np.array([[1, 0, 0, -1, 1, 1]]), "minimum"),
-    ],
-)
-def test_create_custom_primitive_gas_validates_aabbs(monkeypatch, aabbs, message):
-    monkeypatch.setattr(runtime, "wp", _FakeWarp)
-    with pytest.raises(ValueError, match=message):
-        runtime.create_custom_primitive_gas(_Optix(), _Context(), aabbs, "cuda")
-
-
-def test_custom_pipeline_infers_primitive_flag_and_wires_intersection(monkeypatch):
-    monkeypatch.setattr(runtime, "wp", _FakeWarp)
-    monkeypatch.setattr(sbt_module, "wp", _FakeWarp)
-    optix = _Optix()
-    ctx = _Context()
-
-    runtime.create_pipeline_and_sbt(
-        optix,
-        ctx,
-        b"ptx",
-        "__raygen__rg",
-        "__miss__ms",
-        "__closesthit__ch",
-        2,
-        3,
-        "cuda",
-        intersection_entry="__intersection__is",
-        any_hit_entry="__anyhit__ah",
-    )
-
-    assert ctx.pipeline_options.usesPrimitiveTypeFlags == optix.PRIMITIVE_TYPE_FLAGS_CUSTOM
-    hit_desc = ctx.program_descs[2]
-    assert hit_desc.hitgroupEntryFunctionNameCH == "__closesthit__ch"
-    assert hit_desc.hitgroupEntryFunctionNameAH == "__anyhit__ah"
-    assert hit_desc.hitgroupEntryFunctionNameIS == "__intersection__is"
-
-
-def test_triangle_pipeline_default_is_preserved(monkeypatch):
-    monkeypatch.setattr(runtime, "wp", _FakeWarp)
-    monkeypatch.setattr(sbt_module, "wp", _FakeWarp)
-    optix = _Optix()
-    ctx = _Context()
-
-    runtime.create_pipeline_and_sbt(
-        optix,
-        ctx,
-        b"ptx",
-        "__raygen__rg",
-        "__miss__ms",
-        "__closesthit__ch",
-        2,
-        2,
-        "cuda",
-    )
-
-    assert ctx.pipeline_options.usesPrimitiveTypeFlags == optix.PRIMITIVE_TYPE_FLAGS_TRIANGLE
-    assert ctx.program_descs[2].hitgroupEntryFunctionNameCH == "__closesthit__ch"
-
-
-def test_mixed_pipeline_uses_contiguous_hit_records(monkeypatch):
-    monkeypatch.setattr(runtime, "wp", _FakeWarp)
-    monkeypatch.setattr(sbt_module, "wp", _FakeWarp)
-    optix = _Optix()
-    ctx = _Context()
-
-    _, sbt, resources = runtime.create_pipeline_and_sbt(
-        optix,
-        ctx,
-        b"ptx",
-        "__raygen__rg",
-        "__miss__ms",
-        None,
-        3,
-        3,
-        "cuda",
-        hit_groups=[
-            HitKernel(closest_hit="__closesthit__triangle"),
-            HitKernel(closest_hit="__closesthit__sphere", intersection="__intersection__sphere"),
-        ],
-        traversable_graph_flags=optix.TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_LEVEL_INSTANCING,
-    )
-
-    expected_flags = optix.PRIMITIVE_TYPE_FLAGS_TRIANGLE | optix.PRIMITIVE_TYPE_FLAGS_CUSTOM
-    assert ctx.pipeline_options.usesPrimitiveTypeFlags == expected_flags
-    assert sbt.hitgroupRecordCount == 2
-    assert resources["sbt"]["d_hg"].shape == (2 * optix.SBT_RECORD_HEADER_SIZE,)
-    manager = resources["sbt_manager"]
-    assert [manager.get_sbt_offset(handle) for handle in resources["hit_group_handles"]] == [0, 1]
-    assert ctx.pipeline.stack_size[-1] == 2
-
-
-def test_create_instance_acceleration_structure(monkeypatch):
-    monkeypatch.setattr(runtime, "wp", _FakeWarp)
-    ctx = _Context()
-
-    handle, keepalive = runtime.create_instance_acceleration_structure(
-        _Optix(), ctx, [object(), object()], "cuda"
-    )
-
-    assert handle == 42
-    assert keepalive["d_instances"].shape == (160,)
-    assert ctx.build_input.numInstances == 2
-
-
-def test_sbt_manager_standardizes_multiple_geometry_and_ray_types(monkeypatch):
-    monkeypatch.setattr(sbt_module, "wp", _FakeWarp)
-    manager = SbtKernelManager(_Optix(), _Context(), object(), num_ray_subtypes=2)
-    manager.set_raygen_kernel("__raygen__rg")
-    manager.add_miss_kernels(["__miss__primary", "__miss__shadow"])
-
-    triangle = manager.register_hit_shader_type(
-        HitKernel(closest_hit="__closesthit__triangle"),
-        HitKernel(any_hit="__anyhit__triangle_shadow"),
-    )
-    custom = manager.register_hit_shader_type(
-        HitKernel(closest_hit="__closesthit__custom", intersection="__intersection__custom"),
-        HitKernel(any_hit="__anyhit__custom_shadow", intersection="__intersection__custom"),
-    )
-    resources = manager.build_sbt("cuda")
-
-    assert manager.get_sbt_offset(triangle) == 0
-    assert manager.get_sbt_offset(custom) == 2
-    assert resources.sbt.missRecordCount == 2
-    assert resources.sbt.hitgroupRecordCount == 4
-    assert resources.keepalive["d_hg"].shape == (4 * _Optix.SBT_RECORD_HEADER_SIZE,)
+    xs = wp.array([0.0, 10.0, 13.0, 20.0], dtype=float, device=device)
+    values = wp.zeros((4, 2), dtype=float, device=device)
+    wo.launch(pipeline, dim=(4,), inputs=[ias.handle, xs, centers, values])
+    np.testing.assert_array_equal(values.numpy(), [[1, -1], [101, -101], [112, -112], [999, 999]])

@@ -21,8 +21,8 @@ def test_optix_headers_are_available_without_separate_sdk(monkeypatch):
     assert (include / "optix.h").is_file()
     assert (include / "optix_device.h").is_file()
     assert (include / "OptiX_LICENSE.txt").is_file()
-    from warp_optix._addon import _addon_include_dirs
-    assert str(include) in _addon_include_dirs()
+    from warp_optix.addon import build_options
+    assert str(include) in build_options().extra_cuda_include_dirs
 
 
 def test_optix_headers_editable_install_fallback(monkeypatch, tmp_path):

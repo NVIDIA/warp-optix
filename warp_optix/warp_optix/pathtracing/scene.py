@@ -20,6 +20,7 @@ Handles mesh loading, BLAS/TLAS construction, and instance management.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -28,8 +29,11 @@ from contextlib import nullcontext
 import numpy as np
 import warp as wp
 
+import warp_optix as wo
+from warp_optix import native
+
 from .color_utils import srgb_to_linear_u8
-from .materials import MaterialManager
+from .materials import ALPHA_OPAQUE, MaterialManager
 
 logger = logging.getLogger(__name__)
 _MAX_TEXTURE_BUILD_WORKERS = 8
@@ -69,108 +73,20 @@ def _update_device_instance_transforms(
     instance_ids: wp.array(dtype=wp.int32),
     xforms: wp.array(dtype=wp.transform),
     scales: wp.array(dtype=wp.vec3),
-    instance_records: wp.array2d(dtype=wp.float32),
-    render_nodes: wp.array2d(dtype=wp.float32),
-    packed_transforms: wp.array2d(dtype=wp.float32),
+    transforms: wp.array2d(dtype=wp.float32),
     global_rotation: wp.mat33,
     global_translation: wp.vec3,
 ):
     batch_index = wp.tid()
     instance_index = instance_ids[batch_index]
     xform = xforms[batch_index]
-    position = (
-        global_rotation * wp.transform_get_translation(xform) + global_translation
-    )
+    position = global_rotation * wp.transform_get_translation(xform) + global_translation
     rotation = global_rotation * wp.quat_to_matrix(wp.transform_get_rotation(xform))
     scale = scales[batch_index]
-
-    m00 = rotation[0, 0] * scale[0]
-    m01 = rotation[0, 1] * scale[1]
-    m02 = rotation[0, 2] * scale[2]
-    m10 = rotation[1, 0] * scale[0]
-    m11 = rotation[1, 1] * scale[1]
-    m12 = rotation[1, 2] * scale[2]
-    m20 = rotation[2, 0] * scale[0]
-    m21 = rotation[2, 1] * scale[1]
-    m22 = rotation[2, 2] * scale[2]
-
-    instance_records[instance_index, 0] = m00
-    instance_records[instance_index, 1] = m01
-    instance_records[instance_index, 2] = m02
-    instance_records[instance_index, 3] = position[0]
-    instance_records[instance_index, 4] = m10
-    instance_records[instance_index, 5] = m11
-    instance_records[instance_index, 6] = m12
-    instance_records[instance_index, 7] = position[1]
-    instance_records[instance_index, 8] = m20
-    instance_records[instance_index, 9] = m21
-    instance_records[instance_index, 10] = m22
-    instance_records[instance_index, 11] = position[2]
-
-    for column in range(12):
-        packed_transforms[instance_index, column] = instance_records[
-            instance_index, column
-        ]
-
-    render_nodes[instance_index, 0] = m00
-    render_nodes[instance_index, 1] = m01
-    render_nodes[instance_index, 2] = m02
-    render_nodes[instance_index, 3] = position[0]
-    render_nodes[instance_index, 4] = m10
-    render_nodes[instance_index, 5] = m11
-    render_nodes[instance_index, 6] = m12
-    render_nodes[instance_index, 7] = position[1]
-    render_nodes[instance_index, 8] = m20
-    render_nodes[instance_index, 9] = m21
-    render_nodes[instance_index, 10] = m22
-    render_nodes[instance_index, 11] = position[2]
-    render_nodes[instance_index, 12] = 0.0
-    render_nodes[instance_index, 13] = 0.0
-    render_nodes[instance_index, 14] = 0.0
-    render_nodes[instance_index, 15] = 1.0
-
-    inv_sx = 0.0
-    inv_sy = 0.0
-    inv_sz = 0.0
-    if wp.abs(scale[0]) > 1.0e-12:
-        inv_sx = 1.0 / scale[0]
-    if wp.abs(scale[1]) > 1.0e-12:
-        inv_sy = 1.0 / scale[1]
-    if wp.abs(scale[2]) > 1.0e-12:
-        inv_sz = 1.0 / scale[2]
-
-    i00 = rotation[0, 0] * inv_sx
-    i01 = rotation[1, 0] * inv_sx
-    i02 = rotation[2, 0] * inv_sx
-    i10 = rotation[0, 1] * inv_sy
-    i11 = rotation[1, 1] * inv_sy
-    i12 = rotation[2, 1] * inv_sy
-    i20 = rotation[0, 2] * inv_sz
-    i21 = rotation[1, 2] * inv_sz
-    i22 = rotation[2, 2] * inv_sz
-
-    render_nodes[instance_index, 16] = i00
-    render_nodes[instance_index, 17] = i01
-    render_nodes[instance_index, 18] = i02
-    render_nodes[instance_index, 19] = -(
-        i00 * position[0] + i01 * position[1] + i02 * position[2]
-    )
-    render_nodes[instance_index, 20] = i10
-    render_nodes[instance_index, 21] = i11
-    render_nodes[instance_index, 22] = i12
-    render_nodes[instance_index, 23] = -(
-        i10 * position[0] + i11 * position[1] + i12 * position[2]
-    )
-    render_nodes[instance_index, 24] = i20
-    render_nodes[instance_index, 25] = i21
-    render_nodes[instance_index, 26] = i22
-    render_nodes[instance_index, 27] = -(
-        i20 * position[0] + i21 * position[1] + i22 * position[2]
-    )
-    render_nodes[instance_index, 28] = 0.0
-    render_nodes[instance_index, 29] = 0.0
-    render_nodes[instance_index, 30] = 0.0
-    render_nodes[instance_index, 31] = 1.0
+    for row in range(3):
+        for column in range(3):
+            transforms[instance_index, row * 4 + column] = rotation[row, column] * scale[column]
+        transforms[instance_index, row * 4 + 3] = position[row]
 
 
 @wp.kernel
@@ -233,9 +149,7 @@ def _compose_usd_transform_level(
     if parent_index < 0:
         world_transforms[node_index] = local_transforms[node_index]
     else:
-        world_transforms[node_index] = (
-            world_transforms[parent_index] * local_transforms[node_index]
-        )
+        world_transforms[node_index] = world_transforms[parent_index] * local_transforms[node_index]
 
 
 @wp.kernel
@@ -243,37 +157,41 @@ def _write_usd_instance_transforms(
     instance_ids: wp.array(dtype=wp.int32),
     instance_node_ids: wp.array(dtype=wp.int32),
     world_transforms: wp.array(dtype=wp.mat44),
-    instance_records: wp.array2d(dtype=wp.float32),
-    render_nodes: wp.array2d(dtype=wp.float32),
-    packed_transforms: wp.array2d(dtype=wp.float32),
+    transforms: wp.array2d(dtype=wp.float32),
 ):
     mapping_index = wp.tid()
     instance_index = instance_ids[mapping_index]
     matrix = world_transforms[instance_node_ids[mapping_index]]
-    inverse = wp.inverse(matrix)
-
     for row in range(3):
         for column in range(4):
-            value = matrix[row, column]
-            flat_index = row * 4 + column
-            instance_records[instance_index, flat_index] = value
-            packed_transforms[instance_index, flat_index] = value
-
-    for row in range(4):
-        for column in range(4):
-            flat_index = row * 4 + column
-            render_nodes[instance_index, flat_index] = matrix[row, column]
-            render_nodes[instance_index, 16 + flat_index] = inverse[row, column]
+            transforms[instance_index, row * 4 + column] = matrix[row, column]
 
 
 @wp.kernel
 def _update_device_instance_visibility(
     instance_ids: wp.array(dtype=wp.int32),
     visibility_mask: wp.uint32,
-    instance_record_words: wp.array2d(dtype=wp.uint32),
+    masks: wp.array(dtype=wp.uint32),
 ):
-    instance_index = instance_ids[wp.tid()]
-    instance_record_words[instance_index, 14] = visibility_mask
+    masks[instance_ids[wp.tid()]] = visibility_mask
+
+
+@wp.kernel
+def _write_instance_records(
+    transforms: wp.array2d(dtype=wp.float32),
+    traversables: wp.array(dtype=wp.uint64),
+    sbt_offsets: wp.array(dtype=wp.uint32),
+    masks: wp.array(dtype=wp.uint32),
+    flags: wp.array(dtype=wp.uint32),
+    records: wp.array(dtype=wo.Instance),
+):
+    i = wp.tid()
+    m = transforms
+    rotation = wp.mat33(m[i, 0], m[i, 1], m[i, 2], m[i, 4], m[i, 5], m[i, 6], m[i, 8], m[i, 9], m[i, 10])
+    translation = wp.vec3(m[i, 3], m[i, 7], m[i, 11])
+    records[i] = wo.make_instance(
+        rotation, translation, traversables[i], wp.uint32(i), sbt_offsets[i], masks[i], flags[i]
+    )
 
 
 @wp.func
@@ -338,49 +256,6 @@ def _create_render_primitive_dtype():
     )
 
 
-def _create_render_node_dtype():
-    """Create numpy dtype for RenderNode structure (136 bytes)."""
-    return np.dtype(
-        [
-            ("objectToWorld", np.float32, (4, 4)),
-            ("worldToObject", np.float32, (4, 4)),
-            ("materialID", np.int32),
-            ("renderPrimID", np.int32),
-        ]
-    )
-
-
-def _create_scene_description_dtype():
-    """Create numpy dtype for SceneDescription structure (48 bytes)."""
-    return np.dtype(
-        [
-            ("materialAddress", np.uint64),
-            ("renderNodeAddress", np.uint64),
-            ("renderPrimitiveAddress", np.uint64),
-            ("lightAddress", np.uint64),
-            ("numLights", np.int32),
-            ("_padding", np.int32),
-        ]
-    )
-
-
-def _build_optix_instance_dtype() -> np.dtype:
-    """ABI-compatible OptiX instance layout (80 bytes)."""
-    names = [
-        "transform",
-        "instanceId",
-        "sbtOffset",
-        "visibilityMask",
-        "flags",
-        "traversableHandle",
-    ]
-    formats = [("f4", (12,)), "u4", "u4", "u4", "u4", "u8"]
-    offsets = [0, 48, 52, 56, 60, 64]
-    return np.dtype(
-        {"names": names, "formats": formats, "offsets": offsets, "itemsize": 80}
-    )
-
-
 class Mesh:
     """Represents a mesh with vertices, indices, and GPU buffers."""
 
@@ -410,11 +285,7 @@ class Mesh:
         """
         self.vertices = np.ascontiguousarray(vertices, dtype=np.float32)
         raw_indices = np.asarray(indices)
-        if (
-            self.vertices.ndim != 2
-            or self.vertices.shape[1] != 3
-            or not np.all(np.isfinite(self.vertices))
-        ):
+        if self.vertices.ndim != 2 or self.vertices.shape[1] != 3 or not np.all(np.isfinite(self.vertices)):
             raise ValueError("vertices must be a finite (N, 3) array")
         if (
             raw_indices.ndim != 2
@@ -429,39 +300,29 @@ class Mesh:
         if normals is None:
             normals = self._compute_normals(self.vertices, self.indices)
         self.normals = np.ascontiguousarray(normals, dtype=np.float32)
-        if self.normals.shape != self.vertices.shape or not np.all(
-            np.isfinite(self.normals)
-        ):
+        if self.normals.shape != self.vertices.shape or not np.all(np.isfinite(self.normals)):
             raise ValueError("normals must be a finite (N, 3) array matching vertices")
 
         has_texcoords = texcoords is not None
         if texcoords is None:
             texcoords = np.zeros((len(vertices), 2), dtype=np.float32)
         self.texcoords = np.ascontiguousarray(texcoords, dtype=np.float32)
-        if self.texcoords.shape != (len(self.vertices), 2) or not np.all(
-            np.isfinite(self.texcoords)
-        ):
+        if self.texcoords.shape != (len(self.vertices), 2) or not np.all(np.isfinite(self.texcoords)):
             raise ValueError("texcoords must be a finite (N, 2) array matching vertices")
         if texcoords1 is None:
             texcoords1 = np.zeros((len(vertices), 2), dtype=np.float32)
         self.texcoords1 = np.ascontiguousarray(texcoords1, dtype=np.float32)
-        if self.texcoords1.shape != (len(self.vertices), 2) or not np.all(
-            np.isfinite(self.texcoords1)
-        ):
+        if self.texcoords1.shape != (len(self.vertices), 2) or not np.all(np.isfinite(self.texcoords1)):
             raise ValueError("texcoords1 must be a finite (N, 2) array matching vertices")
 
         self.material_id = material_id
-        self.material_ids = _normalize_primitive_material_ids(
-            material_ids, len(self.indices), self.material_id
-        )
+        self.material_ids = _normalize_primitive_material_ids(material_ids, len(self.indices), self.material_id)
         self.dynamic = bool(dynamic)
         self._packed_normal_offset = 0
 
         # Tangents only need triangle accumulation when authored UVs exist.
         self.tangents = (
-            self._compute_tangents(
-                self.vertices, self.indices, self.normals, self.texcoords
-            )
+            self._compute_tangents(self.vertices, self.indices, self.normals, self.texcoords)
             if has_texcoords
             else self._fallback_tangents(self.normals)
         )
@@ -470,10 +331,6 @@ class Mesh:
         self.d_vertices = None
         self.d_indices = None
         self.d_normals = None
-        self.d_tangents = None
-        self.d_texcoords = None
-        self.d_texcoords1 = None
-        self.d_material_ids = None
 
     @staticmethod
     def _fallback_tangents(normals: np.ndarray) -> np.ndarray:
@@ -543,14 +400,10 @@ class Mesh:
         fallback_x = np.tile(np.array([1.0, 0.0, 0.0], dtype=np.float32), (n_verts, 1))
         fallback_y = np.tile(np.array([0.0, 1.0, 0.0], dtype=np.float32), (n_verts, 1))
         use_y = np.abs(n[:, 0]) > 0.9
-        tangent[~good] = np.where(
-            use_y[~good, None], fallback_y[~good], fallback_x[~good]
-        )
+        tangent[~good] = np.where(use_y[~good, None], fallback_y[~good], fallback_x[~good])
 
         cross_nt = np.cross(n, tangent)
-        handedness = np.where(np.sum(cross_nt * tan2, axis=1) < 0.0, -1.0, 1.0).astype(
-            np.float32
-        )
+        handedness = np.where(np.sum(cross_nt * tan2, axis=1) < 0.0, -1.0, 1.0).astype(np.float32)
 
         tangents[:, :3] = tangent
         tangents[:, 3] = handedness
@@ -578,29 +431,10 @@ class Mesh:
         return normals
 
     def upload_to_gpu(self):
-        """Upload mesh data to GPU."""
-        self.d_vertices = wp.array(
-            self.vertices.flatten(), dtype=wp.float32, device="cuda"
-        )
-        self.d_indices = wp.array(
-            self.indices.flatten(), dtype=wp.uint32, device="cuda"
-        )
-        self.d_normals = wp.array(
-            self.normals.flatten(), dtype=wp.float32, device="cuda"
-        )
-        self.d_tangents = wp.array(
-            self.tangents.flatten(), dtype=wp.float32, device="cuda"
-        )
-        self.d_texcoords = wp.array(
-            self.texcoords.flatten(), dtype=wp.float32, device="cuda"
-        )
-        self.d_texcoords1 = wp.array(
-            self.texcoords1.flatten(), dtype=wp.float32, device="cuda"
-        )
-
-        self.d_material_ids = wp.array(
-            self.material_ids, dtype=wp.uint32, device="cuda"
-        )
+        """Upload the acceleration-structure inputs and, for dynamic meshes, writable normals."""
+        self.d_vertices = wp.array(self.vertices.flatten(), dtype=wp.float32, device="cuda")
+        self.d_indices = wp.array(self.indices.flatten(), dtype=wp.uint32, device="cuda")
+        self.d_normals = wp.array(self.normals.flatten(), dtype=wp.float32, device="cuda") if self.dynamic else None
 
 
 class Curve:
@@ -629,16 +463,12 @@ class Curve:
         basis = str(basis).lower()
         if basis not in self._BASIS_SPECS:
             raise ValueError("curve basis must be 'linear' or 'cubic_bezier'")
-        primitive_type, control_point_count, sbt_offset, geometry_type = (
-            self._BASIS_SPECS[basis]
-        )
+        primitive_type, control_point_count, sbt_offset, geometry_type = self._BASIS_SPECS[basis]
         vertices = np.asarray(vertices, dtype=np.float32)
         if vertices.ndim != 2 or vertices.shape[1] != 3:
             raise ValueError("curve vertices must have shape (N, 3)")
         if len(vertices) < control_point_count:
-            raise ValueError(
-                f"a {basis} curve requires at least {control_point_count} control points"
-            )
+            raise ValueError(f"a {basis} curve requires at least {control_point_count} control points")
         if not np.all(np.isfinite(vertices)):
             raise ValueError("curve vertices must be finite")
 
@@ -658,25 +488,16 @@ class Curve:
                 segment_indices = np.arange(len(vertices) - 1, dtype=np.uint32)
             else:
                 if (len(vertices) - 1) % 3:
-                    raise ValueError(
-                        "default cubic_bezier topology requires 3*N + 1 control points"
-                    )
+                    raise ValueError("default cubic_bezier topology requires 3*N + 1 control points")
                 segment_indices = np.arange(0, len(vertices) - 3, 3, dtype=np.uint32)
         segment_indices = np.asarray(segment_indices)
         if segment_indices.ndim != 1 or len(segment_indices) == 0:
-            raise ValueError(
-                "segment_indices must be a non-empty one-dimensional array"
-            )
+            raise ValueError("segment_indices must be a non-empty one-dimensional array")
         if not np.issubdtype(segment_indices.dtype, np.integer):
             raise ValueError("segment_indices must contain integers")
-        if np.any(segment_indices < 0) or np.any(
-            segment_indices > len(vertices) - control_point_count
-        ):
+        if np.any(segment_indices < 0) or np.any(segment_indices > len(vertices) - control_point_count):
             control_point_label = "two" if control_point_count == 2 else "four"
-            raise ValueError(
-                f"each {basis} segment must reference {control_point_label} "
-                "consecutive control points"
-            )
+            raise ValueError(f"each {basis} segment must reference {control_point_label} consecutive control points")
 
         self.basis = basis
         self.primitive_type = primitive_type
@@ -687,9 +508,7 @@ class Curve:
         self.radii = np.ascontiguousarray(radii, dtype=np.float32)
         self.indices = np.ascontiguousarray(segment_indices, dtype=np.uint32)
         self.material_id = int(material_id)
-        self.material_ids = _normalize_primitive_material_ids(
-            material_ids, len(self.indices), self.material_id
-        )
+        self.material_ids = _normalize_primitive_material_ids(material_ids, len(self.indices), self.material_id)
         self.dynamic = bool(dynamic)
         self.d_vertices = None
         self.d_widths = None
@@ -700,9 +519,7 @@ class Curve:
 
     def upload_to_gpu(self):
         """Upload control points, radii, and segment starts to CUDA."""
-        self.d_vertices = wp.array(
-            self.vertices.reshape(-1), dtype=wp.float32, device="cuda"
-        )
+        self.d_vertices = wp.array(self.vertices.reshape(-1), dtype=wp.float32, device="cuda")
         self.d_widths = wp.array(self.radii, dtype=wp.float32, device="cuda")
         self.d_indices = wp.array(self.indices, dtype=wp.uint32, device="cuda")
 
@@ -732,7 +549,6 @@ class Instance:
         if transform is None:
             transform = np.eye(4, dtype=np.float32)
         self.transform = np.ascontiguousarray(transform, dtype=np.float32)
-        self.prev_transform = self.transform.copy()
 
 
 class Scene:
@@ -759,8 +575,6 @@ class Scene:
 
         # GPU buffers
         self._render_primitives = None
-        self._render_nodes = None
-        self._scene_desc = None
         self._instance_material_ids = None
         self._compact_materials = None
         self._compact_material_floats = None
@@ -797,39 +611,25 @@ class Scene:
         self._d_usd_instance_node_ids = None
         self._d_usd_level_nodes = []
 
-        # Acceleration structures
-        self._gas_handles = []
-        self._gas_buffers = []
-        self._gas_build_inputs = []
-        self._gas_build_flags = []
-        self._gas_update_temp_buffers = []
-        self._gas_build_temp_sizes = []
-        self._gas_update_temp_sizes = []
-        self._ias_handle = None
-        self._ias_buffer = None
-        self._instance_buffer = None
-        self._instance_record_floats = None
-        self._instance_record_words = None
-        self._render_node_floats = None
+        # Acceleration structures. Instance records are written on the GPU from
+        # the per-instance device arrays below before every TLAS build or refit.
+        self._gas = []
+        self._ias = None
+        self._opaque_materials = np.empty(0, dtype=np.bool_)
+        self._instance_records = None
+        self._instance_traversables = None
+        self._instance_sbt_offsets = None
+        self._instance_flags = None
+        self._instance_masks = None
         self._device_instance_transforms = None
         self._instance_records_dirty = True
-        self._instance_np_cache = None
-        self._instance_np_capacity = 0
         self._instance_transform_cache = np.empty((0, 4, 4), dtype=np.float32)
         self._instance_visibility_cache = np.empty(0, dtype=np.bool_)
         self._instance_cache_capacity = 0
-        self._tlas_temp_buffer = None
-        self._tlas_temp_capacity = 0
-        self._tlas_output_capacity = 0
-        self._tlas_output_size = 0
-        self._tlas_instance_count = 0
         # Repeated UPDATE operations can make a moving scene's TLAS expensive
         # to traverse. Rebuild occasionally to restore its hierarchy quality.
         self._max_tlas_updates = 16
         self._tlas_updates_since_build = 0
-
-        # Keepalive references
-        self._keepalive = {}
 
     @property
     def mesh_count(self) -> int:
@@ -881,31 +681,17 @@ class Scene:
     @property
     def tlas_handle(self) -> int:
         """Get the TLAS traversable handle."""
-        return self._ias_handle if self._ias_handle else 0
-
-    @property
-    def scene_desc_address(self) -> int:
-        """Get the device address of the scene description."""
-        return self._scene_desc.ptr if self._scene_desc else 0
+        return self._ias.handle if self._ias else 0
 
     @property
     def instance_material_ids_address(self) -> int:
         """Get device address of per-instance material id buffer."""
-        return (
-            self._instance_material_ids.ptr
-            if self._instance_material_ids is not None
-            else 0
-        )
+        return self._instance_material_ids.ptr if self._instance_material_ids is not None else 0
 
     @property
     def compact_materials_address(self) -> int:
         """Get device address of compact material table."""
         return self._compact_materials.ptr if self._compact_materials is not None else 0
-
-    @property
-    def render_nodes_address(self) -> int:
-        """Get device address of render node array."""
-        return self._render_nodes.ptr if self._render_nodes is not None else 0
 
     @property
     def render_primitives_address(self) -> int:
@@ -915,11 +701,7 @@ class Scene:
     @property
     def instance_render_prim_ids_address(self) -> int:
         """Get device address of per-instance render primitive id buffer."""
-        return (
-            self._instance_render_prim_ids.ptr
-            if self._instance_render_prim_ids is not None
-            else 0
-        )
+        return self._instance_render_prim_ids.ptr if self._instance_render_prim_ids is not None else 0
 
     @property
     def texture_data_address(self) -> int:
@@ -950,9 +732,7 @@ class Scene:
 
     def set_compact_material_bytes(self, compact_bytes: np.ndarray):
         """Upload compact material table bytes to GPU."""
-        self._compact_materials = wp.array(
-            np.asarray(compact_bytes, dtype=np.uint8), dtype=wp.uint8, device="cuda"
-        )
+        self._compact_materials = wp.array(np.asarray(compact_bytes, dtype=np.uint8), dtype=wp.uint8, device="cuda")
         self._compact_material_floats = None
 
     def set_instance_materials_device(
@@ -978,9 +758,7 @@ class Scene:
         if len(colors) not in (1, len(material_ids)):
             raise ValueError("Device colors must contain one or one value per instance")
         if len(properties) not in (1, len(material_ids)):
-            raise ValueError(
-                "Device material properties must contain one or one value per instance"
-            )
+            raise ValueError("Device material properties must contain one or one value per instance")
         wp.launch(
             _update_device_instance_materials,
             dim=len(material_ids),
@@ -1018,9 +796,7 @@ class Scene:
             if np.issubdtype(tex.dtype, np.integer):
                 tex_u8 = np.ascontiguousarray(tex, dtype=np.uint8)
             else:
-                tex_u8 = np.clip(np.asarray(tex) * 255.0 + 0.5, 0.0, 255.0).astype(
-                    np.uint8
-                )
+                tex_u8 = np.clip(np.asarray(tex) * 255.0 + 0.5, 0.0, 255.0).astype(np.uint8)
             if tex_idx in srgb_indices:
                 tex_u8 = tex_u8.copy()
                 tex_u8[..., :3] = srgb_to_linear_u8(tex_u8[..., :3])
@@ -1053,9 +829,7 @@ class Scene:
         visibility = np.empty(capacity, dtype=np.bool_)
         if self._instance_cache_capacity:
             transforms[: self._instance_cache_capacity] = self._instance_transform_cache
-            visibility[: self._instance_cache_capacity] = (
-                self._instance_visibility_cache
-            )
+            visibility[: self._instance_cache_capacity] = self._instance_visibility_cache
         self._instance_transform_cache = transforms
         self._instance_visibility_cache = visibility
         self._instance_cache_capacity = capacity
@@ -1088,7 +862,6 @@ class Scene:
         """Update an instance's transform."""
         if 0 <= instance_index < len(self._instances):
             inst = self._instances[instance_index]
-            inst.prev_transform = inst.transform.copy()
             inst.transform = np.ascontiguousarray(transform, dtype=np.float32)
             self._instance_transform_cache[instance_index] = inst.transform
             self._instance_records_dirty = True
@@ -1116,17 +889,9 @@ class Scene:
         """Update traversal, shading, and motion transforms directly on CUDA."""
         if len(instance_indices) == 0:
             return True
-        if (
-            self._instance_record_floats is None
-            or self._render_node_floats is None
-            or self._device_instance_transforms is None
-        ):
+        if self._device_instance_transforms is None:
             return False
-        if (
-            not instance_indices.device.is_cuda
-            or not xforms.device.is_cuda
-            or not scales.device.is_cuda
-        ):
+        if not instance_indices.device.is_cuda or not xforms.device.is_cuda or not scales.device.is_cuda:
             raise ValueError("Device instance updates require CUDA arrays")
         matrix = np.asarray(global_transform, dtype=np.float32).reshape(4, 4)
         rotation = matrix[:3, :3]
@@ -1138,8 +903,6 @@ class Scene:
                 instance_indices,
                 xforms,
                 scales,
-                self._instance_record_floats,
-                self._render_node_floats,
                 self._device_instance_transforms,
                 wp.mat33(*rotation.reshape(-1)),
                 wp.vec3(*translation),
@@ -1158,13 +921,9 @@ class Scene:
     ):
         """Retain a composed USD transform hierarchy for dynamic updates."""
         parents = np.asarray(parents, dtype=np.int32).reshape(-1)
-        local = np.ascontiguousarray(local_transforms, dtype=np.float32).reshape(
-            -1, 4, 4
-        )
+        local = np.ascontiguousarray(local_transforms, dtype=np.float32).reshape(-1, 4, 4)
         if len(parents) != len(local):
-            raise ValueError(
-                "USD hierarchy parents and transforms must have equal length"
-            )
+            raise ValueError("USD hierarchy parents and transforms must have equal length")
         if np.any(parents >= np.arange(len(parents), dtype=np.int32)):
             raise ValueError("USD hierarchy parents must precede their children")
 
@@ -1182,12 +941,9 @@ class Scene:
         self._usd_local_transforms = local
         self._usd_world_transforms = world
         self._usd_instance_ids = np.asarray(instance_ids, dtype=np.int32).reshape(-1)
-        self._usd_instance_node_ids = np.asarray(
-            instance_node_ids, dtype=np.int32
-        ).reshape(-1)
+        self._usd_instance_node_ids = np.asarray(instance_node_ids, dtype=np.int32).reshape(-1)
         self._usd_level_nodes = [
-            np.flatnonzero(depths == depth).astype(np.int32)
-            for depth in range(int(depths.max(initial=0)) + 1)
+            np.flatnonzero(depths == depth).astype(np.int32) for depth in range(int(depths.max(initial=0)) + 1)
         ]
         if len(self._usd_instance_ids) != len(self._usd_instance_node_ids):
             raise ValueError("USD instance and node mappings must have equal length")
@@ -1200,28 +956,13 @@ class Scene:
     def _build_usd_transform_buffers(self):
         if self.usd_scene is None or len(self._usd_node_parents) == 0:
             return
-        self._d_usd_node_parents = wp.array(
-            self._usd_node_parents, dtype=wp.int32, device="cuda"
-        )
-        self._d_usd_local_transforms = wp.array(
-            self._usd_local_transforms, dtype=wp.mat44, device="cuda"
-        )
-        self._d_usd_world_transforms = wp.array(
-            self._usd_world_transforms, dtype=wp.mat44, device="cuda"
-        )
-        self._d_usd_instance_ids = wp.array(
-            self._usd_instance_ids, dtype=wp.int32, device="cuda"
-        )
-        self._d_usd_instance_node_ids = wp.array(
-            self._usd_instance_node_ids, dtype=wp.int32, device="cuda"
-        )
-        self._d_usd_level_nodes = [
-            wp.array(level, dtype=wp.int32, device="cuda")
-            for level in self._usd_level_nodes
-        ]
-        self.usd_scene._attach_device_arrays(
-            self._d_usd_local_transforms, self._d_usd_world_transforms
-        )
+        self._d_usd_node_parents = wp.array(self._usd_node_parents, dtype=wp.int32, device="cuda")
+        self._d_usd_local_transforms = wp.array(self._usd_local_transforms, dtype=wp.mat44, device="cuda")
+        self._d_usd_world_transforms = wp.array(self._usd_world_transforms, dtype=wp.mat44, device="cuda")
+        self._d_usd_instance_ids = wp.array(self._usd_instance_ids, dtype=wp.int32, device="cuda")
+        self._d_usd_instance_node_ids = wp.array(self._usd_instance_node_ids, dtype=wp.int32, device="cuda")
+        self._d_usd_level_nodes = [wp.array(level, dtype=wp.int32, device="cuda") for level in self._usd_level_nodes]
+        self.usd_scene._attach_device_arrays(self._d_usd_local_transforms, self._d_usd_world_transforms)
 
     def _evaluate_usd_transform_hierarchy_host(self, update_instances: bool = True):
         for node_index, parent_index in enumerate(self._usd_node_parents):
@@ -1229,9 +970,7 @@ class Scene:
             if parent_index < 0:
                 self._usd_world_transforms[node_index] = local
             else:
-                self._usd_world_transforms[node_index] = (
-                    self._usd_world_transforms[parent_index] @ local
-                )
+                self._usd_world_transforms[node_index] = self._usd_world_transforms[parent_index] @ local
         if update_instances and len(self._usd_instance_ids):
             self.set_instance_transforms_batch(
                 self._usd_instance_ids,
@@ -1241,11 +980,7 @@ class Scene:
     def _evaluate_usd_transform_hierarchy(self, stream=None):
         if self._d_usd_local_transforms is None:
             raise RuntimeError("Build the scene before updating USD transforms")
-        scope = (
-            wp.ScopedStream(stream, sync_enter=False, sync_exit=False)
-            if stream is not None
-            else nullcontext()
-        )
+        scope = wp.ScopedStream(stream, sync_enter=False, sync_exit=False) if stream is not None else nullcontext()
         with scope:
             for level_nodes in self._d_usd_level_nodes:
                 wp.launch(
@@ -1267,8 +1002,6 @@ class Scene:
                         self._d_usd_instance_ids,
                         self._d_usd_instance_node_ids,
                         self._d_usd_world_transforms,
-                        self._instance_record_floats,
-                        self._render_node_floats,
                         self._device_instance_transforms,
                     ],
                     device="cuda",
@@ -1285,11 +1018,7 @@ class Scene:
         """Apply CUDA-resident USD local matrices and compose the hierarchy."""
         if self._d_usd_local_transforms is None:
             raise RuntimeError("Build the scene before updating USD transforms")
-        if (
-            not transform_count.device.is_cuda
-            or not node_ids.device.is_cuda
-            or not transforms.device.is_cuda
-        ):
+        if not transform_count.device.is_cuda or not node_ids.device.is_cuda or not transforms.device.is_cuda:
             raise ValueError("USD device transform updates require CUDA arrays")
         if len(transform_count) != 1:
             raise ValueError("transform_count must contain exactly one value")
@@ -1297,19 +1026,9 @@ class Scene:
             raise ValueError("node_ids and transforms must have equal length")
         if len(node_ids) == 0:
             return
-        if (
-            transform_count.dtype != wp.int32
-            or node_ids.dtype != wp.int32
-            or transforms.dtype != wp.mat44
-        ):
-            raise TypeError(
-                "USD device batches require an int32 count, int32 IDs, and mat44 matrices"
-            )
-        scope = (
-            wp.ScopedStream(stream, sync_enter=False, sync_exit=False)
-            if stream is not None
-            else nullcontext()
-        )
+        if transform_count.dtype != wp.int32 or node_ids.dtype != wp.int32 or transforms.dtype != wp.mat44:
+            raise TypeError("USD device batches require an int32 count, int32 IDs, and mat44 matrices")
+        scope = wp.ScopedStream(stream, sync_enter=False, sync_exit=False) if stream is not None else nullcontext()
         with scope:
             wp.launch(
                 _scatter_usd_local_transforms,
@@ -1357,14 +1076,8 @@ class Scene:
             or transforms.dtype != wp.transform
             or scales.dtype != wp.vec3
         ):
-            raise TypeError(
-                "USD TRS batches require an int32 count, int32 IDs, transform poses, and vec3 scales"
-            )
-        scope = (
-            wp.ScopedStream(stream, sync_enter=False, sync_exit=False)
-            if stream is not None
-            else nullcontext()
-        )
+            raise TypeError("USD TRS batches require an int32 count, int32 IDs, transform poses, and vec3 scales")
+        scope = wp.ScopedStream(stream, sync_enter=False, sync_exit=False) if stream is not None else nullcontext()
         with scope:
             wp.launch(
                 _scatter_usd_local_transform_trs,
@@ -1382,9 +1095,7 @@ class Scene:
             if rebuild_tlas:
                 self.rebuild_tlas()
 
-    def set_usd_local_transforms(
-        self, node_ids, transforms: np.ndarray, stream=None, rebuild_tlas: bool = True
-    ):
+    def set_usd_local_transforms(self, node_ids, transforms: np.ndarray, stream=None, rebuild_tlas: bool = True):
         """Upload a host batch and apply it through the CUDA hierarchy path."""
         indices = np.asarray(node_ids, dtype=np.int32).reshape(-1)
         matrices = np.ascontiguousarray(transforms, dtype=np.float32).reshape(-1, 4, 4)
@@ -1395,16 +1106,10 @@ class Scene:
         if int(indices.min()) < 0 or int(indices.max()) >= len(self._usd_node_parents):
             raise IndexError("USD transform handle is out of range")
         self._usd_local_transforms[indices] = matrices
-        self._evaluate_usd_transform_hierarchy_host(
-            update_instances=self._d_usd_local_transforms is None
-        )
+        self._evaluate_usd_transform_hierarchy_host(update_instances=self._d_usd_local_transforms is None)
         if self._d_usd_local_transforms is None:
             return
-        scope = (
-            wp.ScopedStream(stream, sync_enter=False, sync_exit=False)
-            if stream is not None
-            else nullcontext()
-        )
+        scope = wp.ScopedStream(stream, sync_enter=False, sync_exit=False) if stream is not None else nullcontext()
         with scope:
             device_count = wp.array([len(indices)], dtype=wp.int32, device="cuda")
             device_ids = wp.array(indices, dtype=wp.int32, device="cuda")
@@ -1437,19 +1142,17 @@ class Scene:
         if int(indices.min()) < 0 or int(indices.max()) >= len(self._instances):
             raise IndexError("instance index is out of range")
         self._instance_visibility_cache[indices] = bool(visible)
-        if self._instance_record_words is None:
+        if self._instance_masks is None:
             self._instance_records_dirty = True
             return
-        device_indices = wp.array(
-            indices.astype(np.int32), dtype=wp.int32, device="cuda"
-        )
+        device_indices = wp.array(indices.astype(np.int32), dtype=wp.int32, device="cuda")
         wp.launch(
             _update_device_instance_visibility,
             dim=len(indices),
             inputs=[
                 device_indices,
                 wp.uint32(0xFF if visible else 0),
-                self._instance_record_words,
+                self._instance_masks,
             ],
             device="cuda",
         )
@@ -1492,9 +1195,7 @@ class Scene:
 
         if clear_existing:
             self.clear()
-        return bool(
-            load_scene_from_gltf(self, gltf_path, root_transform=root_transform)
-        )
+        return bool(load_scene_from_gltf(self, gltf_path, root_transform=root_transform))
 
     def load_from_usd(
         self,
@@ -1688,33 +1389,15 @@ class Scene:
         self._instances.clear()
         self._sphere_lights.clear()
         self._sphere_light_data = None
-        self._gas_handles.clear()
-        self._gas_buffers.clear()
-        self._ias_handle = None
-        self._gas_build_inputs.clear()
-        self._gas_build_flags.clear()
-        self._gas_update_temp_buffers.clear()
-        self._gas_build_temp_sizes.clear()
-        self._gas_update_temp_sizes.clear()
-        self._ias_buffer = None
-        self._instance_buffer = None
-        self._instance_record_floats = None
-        self._instance_record_words = None
-        self._render_node_floats = None
+        self._gas.clear()
+        self._ias = None
+        self._instance_records = None
         self._device_instance_transforms = None
         self._instance_records_dirty = True
-        self._instance_np_cache = None
-        self._instance_np_capacity = 0
         self._instance_transform_cache = np.empty((0, 4, 4), dtype=np.float32)
         self._instance_visibility_cache = np.empty(0, dtype=np.bool_)
         self._instance_cache_capacity = 0
-        self._tlas_temp_buffer = None
-        self._tlas_temp_capacity = 0
-        self._tlas_output_capacity = 0
-        self._tlas_output_size = 0
-        self._tlas_instance_count = 0
         self._tlas_updates_since_build = 0
-        self._keepalive.clear()
         self.materials.clear()
         self._instance_material_ids = None
         self._compact_materials = None
@@ -1762,23 +1445,19 @@ class Scene:
             logger.info("No meshes to build.")
             return
 
-        # A full build may be requested again after prototypes or instances
-        # are added. Drop the previous acceleration-structure references so
-        # the mesh and instance indices stay aligned.
-        self._gas_handles.clear()
-        self._gas_buffers.clear()
-        self._ias_handle = None
-        self._gas_build_inputs.clear()
-        self._gas_build_flags.clear()
-        self._gas_update_temp_buffers.clear()
-        self._gas_build_temp_sizes.clear()
-        self._gas_update_temp_sizes.clear()
-        self._tlas_instance_count = 0
-        # Full builds may change the instance count. Scene buffers below
-        # allocate the matching motion transforms after rebuilding the TLAS.
+        # A full build may be requested again after prototypes, instances, or
+        # materials change. Rebuild every acceleration structure and the
+        # per-instance records so geometry and instance indices stay aligned.
+        self._gas.clear()
+        self._ias = None
+        self._instance_records = None
         self._device_instance_transforms = None
-        self._keepalive.clear()
         self._instance_records_dirty = True
+        # Any-hit programs only matter for alpha-tested or transmissive materials.
+        self._opaque_materials = np.array(
+            [m["alphaMode"] == ALPHA_OPAQUE and m["transmissionFactor"] <= 0.0 for m in self.materials._materials],
+            dtype=np.bool_,
+        )
 
         logger.info(
             "Building scene with %d geometries and %d instances.",
@@ -1800,12 +1479,8 @@ class Scene:
         self._build_scene_buffers()
 
         total_verts = sum(len(m.vertices) for m in self._meshes)
-        total_tris = sum(
-            len(m.indices) for m in self._meshes if m.primitive_type == "triangles"
-        )
-        total_curves = sum(
-            len(m.indices) for m in self._meshes if m.primitive_type != "triangles"
-        )
+        total_tris = sum(len(m.indices) for m in self._meshes if m.primitive_type == "triangles")
+        total_curves = sum(len(m.indices) for m in self._meshes if m.primitive_type != "triangles")
         logger.info(
             "Scene build complete: %d vertices, %d triangles, %d curve segments.",
             total_verts,
@@ -1819,92 +1494,55 @@ class Scene:
             return
         if self._optix is None:
             return
-        if len(self._gas_handles) != len(self._meshes):
+        if len(self._gas) != len(self._meshes):
             # Fallback if a full build has not been completed yet.
             self.build(self._optix)
             return
         self._build_tlas(stream=stream)
 
     def _build_blas(self):
-        """Build bottom-level acceleration structures for all geometry."""
-        optix = self._optix
-        stream = int(wp.get_stream("cuda").cuda_stream)
-        build_jobs = []
-        max_temp_size = 0
+        """Build bottom-level acceleration structures for all geometry.
+
+        Geometry whose materials are all opaque disables any-hit programs;
+        dynamic geometry keeps them because its per-primitive materials may
+        change on the device. Static geometry is not compacted; one
+        synchronization after all builds releases the scratch buffers of
+        static geometry, which is never refit.
+        """
+        opaque = self._opaque_materials
         for geometry in self._meshes:
-            build_flags = int(optix.BUILD_FLAG_ALLOW_RANDOM_VERTEX_ACCESS)
-            if getattr(geometry, "dynamic", False):
-                build_flags |= int(
-                    optix.BUILD_FLAG_ALLOW_UPDATE | optix.BUILD_FLAG_PREFER_FAST_BUILD
-                )
-            accel_options = optix.AccelBuildOptions(
-                buildFlags=build_flags,
-                operation=optix.BUILD_OPERATION_BUILD,
+            all_opaque = (
+                not geometry.dynamic
+                and len(opaque) > 0
+                and bool(opaque[np.clip(geometry.material_ids, 0, len(opaque) - 1)].all())
             )
+            geometry_flags = native.GEOMETRY_FLAG_DISABLE_ANYHIT if all_opaque else native.GEOMETRY_FLAG_NONE
             if geometry.primitive_type == "triangles":
-                build_input = optix.BuildInputTriangleArray()
-                build_input.vertexFormat = optix.VERTEX_FORMAT_FLOAT3
-                build_input.numVertices = len(geometry.vertices)
-                build_input.vertexStrideInBytes = 12
-                build_input.vertexBuffers = [geometry.d_vertices.ptr]
-                build_input.indexFormat = optix.INDICES_FORMAT_UNSIGNED_INT3
-                build_input.numIndexTriplets = len(geometry.indices)
-                build_input.indexStrideInBytes = 12
-                build_input.indexBuffer = geometry.d_indices.ptr
-                build_input.flags = [optix.GEOMETRY_FLAG_NONE]
-                build_input.numSbtRecords = 1
+                build_input = wo.triangles(geometry.d_vertices, geometry.d_indices, flags=geometry_flags)
             else:
-                build_input = optix.BuildInputCurveArray(
-                    curveType=(
-                        optix.PRIMITIVE_TYPE_ROUND_LINEAR
-                        if geometry.primitive_type == "round_linear"
-                        else optix.PRIMITIVE_TYPE_ROUND_CUBIC_BEZIER
-                    ),
-                    numPrimitives=len(geometry.indices),
-                    vertexBuffers=[geometry.d_vertices.ptr],
-                    numVertices=len(geometry.vertices),
-                    vertexStrideInBytes=12,
-                    widthBuffers=[geometry.d_widths.ptr],
-                    widthStrideInBytes=4,
-                    normalBuffers=[0],
-                    normalStrideInBytes=0,
-                    indexBuffer=geometry.d_indices.ptr,
-                    indexStrideInBytes=4,
-                    flag=optix.GEOMETRY_FLAG_NONE,
-                    primitiveIndexOffset=0,
+                curve_type = (
+                    native.PRIMITIVE_TYPE_ROUND_LINEAR
+                    if geometry.primitive_type == "round_linear"
+                    else native.PRIMITIVE_TYPE_ROUND_CUBIC_BEZIER
                 )
-
-            sizes = self._ctx.accelComputeMemoryUsage([accel_options], [build_input])
-            build_jobs.append((build_input, sizes, accel_options, build_flags))
-            max_temp_size = max(max_temp_size, int(sizes.tempSizeInBytes))
-
-        # Every build is submitted to the same CUDA stream, so its scratch
-        # range can be reused once the preceding build reaches completion.
-        # Large composed USD stages otherwise retain hundreds of independent
-        # temporary allocations until the full build is synchronized.
-        d_temp = wp.empty(max_temp_size, dtype=wp.uint8, device="cuda")
-        for build_input, sizes, accel_options, build_flags in build_jobs:
-            d_gas = wp.empty(sizes.outputSizeInBytes, dtype=wp.uint8, device="cuda")
-
-            handle = self._ctx.accelBuild(
-                stream,
-                [accel_options],
-                [build_input],
-                d_temp.ptr,
-                sizes.tempSizeInBytes,
-                d_gas.ptr,
-                sizes.outputSizeInBytes,
-                [],
+                build_input = wo.curves(
+                    geometry.d_vertices,
+                    geometry.d_widths,
+                    geometry.d_indices,
+                    curve_type=curve_type,
+                    flags=geometry_flags,
+                )
+            build_flags = native.BUILD_FLAG_ALLOW_RANDOM_VERTEX_ACCESS | (
+                native.BUILD_FLAG_ALLOW_UPDATE | native.BUILD_FLAG_PREFER_FAST_BUILD
+                if geometry.dynamic
+                else native.BUILD_FLAG_PREFER_FAST_TRACE
             )
-
-            self._gas_handles.append(int(handle))
-            self._gas_buffers.append(d_gas)
-            self._gas_build_inputs.append(build_input)
-            self._gas_build_flags.append(build_flags)
-            self._gas_update_temp_buffers.append(None)
-            self._gas_build_temp_sizes.append(int(sizes.tempSizeInBytes))
-            self._gas_update_temp_sizes.append(int(sizes.tempUpdateSizeInBytes))
-        self._keepalive["gas_temp"] = d_temp
+            self._gas.append(wo.build_accel(self._ctx, [build_input], flags=build_flags, device="cuda"))
+        wp.synchronize_stream(wp.get_stream("cuda"))
+        self._gas = [
+            gas if geometry.dynamic else dataclasses.replace(gas, scratch=None)
+            for gas, geometry in zip(self._gas, self._meshes)
+        ]
 
     def _update_dynamic_geometry_accel(
         self,
@@ -1913,41 +1551,8 @@ class Scene:
         rebuild_gas: bool,
         rebuild_tlas: bool,
     ) -> bool:
-        required_temp = (
-            self._gas_build_temp_sizes[geometry_index]
-            if rebuild_gas
-            else self._gas_update_temp_sizes[geometry_index]
-        )
-        d_temp = self._gas_update_temp_buffers[geometry_index]
-        if d_temp is None or d_temp.size < required_temp:
-            d_temp = wp.empty(required_temp, dtype=wp.uint8, device="cuda")
-            self._gas_update_temp_buffers[geometry_index] = d_temp
-
-        optix = self._optix
-        accel_options = optix.AccelBuildOptions(
-            buildFlags=self._gas_build_flags[geometry_index],
-            operation=(
-                optix.BUILD_OPERATION_BUILD
-                if rebuild_gas
-                else optix.BUILD_OPERATION_UPDATE
-            ),
-        )
-        stream_handle = int(
-            wp.get_stream("cuda").cuda_stream
-            if stream is None
-            else getattr(stream, "cuda_stream", stream)
-        )
-        self._gas_handles[geometry_index] = int(
-            self._ctx.accelBuild(
-                stream_handle,
-                [accel_options],
-                [self._gas_build_inputs[geometry_index]],
-                d_temp.ptr,
-                required_temp,
-                self._gas_buffers[geometry_index].ptr,
-                self._gas_buffers[geometry_index].size,
-                [],
-            )
+        self._gas[geometry_index] = wo.update_accel(
+            self._ctx, self._gas[geometry_index], rebuild=rebuild_gas, stream=stream
         )
         if rebuild_tlas:
             self.rebuild_tlas(stream=stream)
@@ -1969,7 +1574,7 @@ class Scene:
             raise ValueError("geometry must be a dynamic triangle mesh")
         if self._optix is None:
             return False
-        if len(self._gas_handles) != len(self._meshes):
+        if len(self._gas) != len(self._meshes):
             raise RuntimeError("build the scene before refitting dynamic meshes")
 
         wp.copy(
@@ -1979,9 +1584,7 @@ class Scene:
             count=geometry.normals.size,
             stream=stream,
         )
-        return self._update_dynamic_geometry_accel(
-            geometry_index, stream, rebuild_gas, rebuild_tlas
-        )
+        return self._update_dynamic_geometry_accel(geometry_index, stream, rebuild_gas, rebuild_tlas)
 
     def refit_mesh(self, geometry_index: int, stream=None, rebuild_tlas: bool = True):
         """Refit one dynamic triangle GAS after its device buffers were updated."""
@@ -2008,7 +1611,7 @@ class Scene:
             raise ValueError("geometry must be a dynamic curve")
         if self._optix is None:
             return False
-        if len(self._gas_handles) != len(self._meshes):
+        if len(self._gas) != len(self._meshes):
             raise RuntimeError("build the scene before refitting dynamic curves")
 
         wp.copy(
@@ -2025,9 +1628,7 @@ class Scene:
             count=geometry.radii.size,
             stream=stream,
         )
-        return self._update_dynamic_geometry_accel(
-            geometry_index, stream, rebuild_gas, rebuild_tlas
-        )
+        return self._update_dynamic_geometry_accel(geometry_index, stream, rebuild_gas, rebuild_tlas)
 
     def refit_curve(self, geometry_index: int, stream=None, rebuild_tlas: bool = True):
         """Refit one dynamic curve GAS after its retained buffers were updated."""
@@ -2039,142 +1640,72 @@ class Scene:
         )
 
     def _build_tlas(self, stream=None):
-        """Build top-level acceleration structure."""
-        optix = self._optix
+        """Write instance records on the GPU, then build or refit the TLAS.
 
-        if len(self._instances) == 0:
-            return
-        inst_dtype = _build_optix_instance_dtype()
+        The TLAS is refit in place while the instance count is unchanged and
+        rebuilt in place every ``_max_tlas_updates`` refits to restore its
+        traversal quality.
+        """
         count = len(self._instances)
-        if self._instance_np_capacity < count:
-            self._instance_np_capacity = max(count, 1, self._instance_np_capacity * 2)
-            self._instance_np_cache = np.zeros(
-                self._instance_np_capacity, dtype=inst_dtype
-            )
-        required_bytes = count * inst_dtype.itemsize
-        buffer_changed = (
-            self._instance_buffer is None
-            or self._instance_buffer.shape[0] != required_bytes
-        )
-        if buffer_changed:
-            self._instance_buffer = wp.empty(
-                required_bytes, dtype=wp.uint8, device="cuda"
-            )
-            self._instance_record_floats = None
-            self._instance_record_words = None
+        if count == 0:
+            return
+        if self._instance_records is None or len(self._instance_records) != count:
+            opaque = self._opaque_materials
+            mesh_indices = np.fromiter((inst.mesh_index for inst in self._instances), dtype=np.intp, count=count)
+            flags = np.zeros(count, dtype=np.uint32)
+            for index, inst in enumerate(self._instances):
+                if inst.double_sided:
+                    flags[index] |= native.INSTANCE_FLAG_DISABLE_TRIANGLE_FACE_CULLING
+                # A material override replaces every per-primitive material of the instance.
+                if inst.material_id is not None:
+                    override_opaque = 0 <= inst.material_id < len(opaque) and opaque[inst.material_id]
+                    flags[index] |= (
+                        native.INSTANCE_FLAG_DISABLE_ANYHIT if override_opaque else native.INSTANCE_FLAG_ENFORCE_ANYHIT
+                    )
+            handles = np.array([gas.handle for gas in self._gas], dtype=np.uint64)
+            sbt_offsets = np.array([geometry.sbt_offset for geometry in self._meshes], dtype=np.uint32)
+            self._instance_traversables = wp.array(handles[mesh_indices], dtype=wp.uint64, device="cuda")
+            self._instance_sbt_offsets = wp.array(sbt_offsets[mesh_indices], dtype=wp.uint32, device="cuda")
+            self._instance_flags = wp.array(flags, dtype=wp.uint32, device="cuda")
+            self._instance_masks = wp.empty(count, dtype=wp.uint32, device="cuda")
+            self._device_instance_transforms = wp.empty((count, 12), dtype=wp.float32, device="cuda")
+            self._instance_records = wp.empty(count, dtype=wo.Instance, device="cuda")
             self._instance_records_dirty = True
-        if self._instance_records_dirty:
-            inst_np = self._instance_np_cache[:count]
-            mesh_indices = np.fromiter(
-                (inst.mesh_index for inst in self._instances),
-                dtype=np.intp,
-                count=count,
-            )
-            inst_np["transform"] = self._instance_transform_cache[
-                :count, :3, :
-            ].reshape(count, 12)
-            inst_np["instanceId"] = np.arange(count, dtype=np.uint32)
-            inst_np["sbtOffset"] = np.fromiter(
-                (self._meshes[inst.mesh_index].sbt_offset for inst in self._instances),
-                dtype=np.uint32,
-                count=count,
-            )
-            inst_np["visibilityMask"] = np.where(
-                self._instance_visibility_cache[:count], 0xFF, 0
-            ).astype(np.uint32)
-            inst_np["flags"] = np.fromiter(
-                (
-                    int(optix.INSTANCE_FLAG_DISABLE_TRIANGLE_FACE_CULLING)
-                    if inst.double_sided
-                    else int(optix.INSTANCE_FLAG_NONE)
-                    for inst in self._instances
-                ),
-                dtype=np.uint32,
-                count=count,
-            )
-            inst_np["traversableHandle"] = np.asarray(
-                self._gas_handles, dtype=np.uint64
-            )[mesh_indices]
-            self._instance_buffer.assign(inst_np.view(np.uint8).reshape(-1))
-            if self._device_instance_transforms is not None:
-                # Motion-vector reconstruction consumes this compact transform
-                # buffer, independently of the OptiX instance records above.
-                # Keep it current for host-driven transform/TLAS updates too.
-                self._device_instance_transforms.assign(inst_np["transform"])
+            self._ias = None
 
+        if self._instance_records_dirty:
+            # Motion-vector reconstruction reads the same transforms buffer.
+            self._device_instance_transforms.assign(self._instance_transform_cache[:count, :3, :].reshape(count, 12))
+            self._instance_masks.assign(np.where(self._instance_visibility_cache[:count], 0xFF, 0).astype(np.uint32))
             self._instance_records_dirty = False
 
-        build_options = optix.AccelBuildOptions(
-            buildFlags=int(optix.BUILD_FLAG_ALLOW_UPDATE),
-            operation=optix.BUILD_OPERATION_BUILD,
+        wp.launch(
+            _write_instance_records,
+            dim=count,
+            inputs=[
+                self._device_instance_transforms,
+                self._instance_traversables,
+                self._instance_sbt_offsets,
+                self._instance_masks,
+                self._instance_flags,
+            ],
+            outputs=[self._instance_records],
+            device="cuda",
+            stream=stream,
         )
-
-        ias_input = optix.BuildInputInstanceArray()
-        ias_input.instances = int(self._instance_buffer.ptr)
-        ias_input.numInstances = count
-
-        sizes = self._ctx.accelComputeMemoryUsage([build_options], [ias_input])
-        required_build_temp = int(sizes.tempSizeInBytes)
-        required_update_temp = int(sizes.tempUpdateSizeInBytes)
-        required_output = int(sizes.outputSizeInBytes)
-
-        can_update = (
-            self._ias_handle is not None
-            and not buffer_changed
-            and self._tlas_instance_count == count
-            and self._ias_buffer is not None
-            and self._tlas_output_size == required_output
-            and self._tlas_updates_since_build < self._max_tlas_updates
-        )
-
-        # Reuse TLAS scratch/output buffers across rebuilds.
-        # Overallocate slightly to reduce realloc churn when scene size
-        # changes by a small amount.
-        output_buffer_changed = (
-            self._ias_buffer is None or self._tlas_output_capacity < required_output
-        )
-        if output_buffer_changed:
-            self._tlas_output_capacity = max(
-                required_output, int(required_output * 1.25)
+        if self._ias is None:
+            self._ias = wo.build_accel(
+                self._ctx,
+                [wo.instances(self._instance_records)],
+                flags=native.BUILD_FLAG_ALLOW_UPDATE,
+                stream=stream,
+                device="cuda",
             )
-            self._ias_buffer = wp.empty(
-                self._tlas_output_capacity, dtype=wp.uint8, device="cuda"
-            )
-            can_update = False
-
-        required_temp = required_update_temp if can_update else required_build_temp
-        if self._tlas_temp_buffer is None or self._tlas_temp_capacity < required_temp:
-            self._tlas_temp_capacity = max(required_temp, int(required_temp * 1.25))
-            self._tlas_temp_buffer = wp.empty(
-                self._tlas_temp_capacity, dtype=wp.uint8, device="cuda"
-            )
-
-        accel_options = optix.AccelBuildOptions(
-            buildFlags=int(optix.BUILD_FLAG_ALLOW_UPDATE),
-            operation=optix.BUILD_OPERATION_UPDATE
-            if can_update
-            else optix.BUILD_OPERATION_BUILD,
-        )
-
-        self._ias_handle = self._ctx.accelBuild(
-            int(
-                wp.get_stream("cuda").cuda_stream
-                if stream is None
-                else getattr(stream, "cuda_stream", stream)
-            ),
-            [accel_options],
-            [ias_input],
-            self._tlas_temp_buffer.ptr,
-            required_temp,
-            self._ias_buffer.ptr,
-            required_output,
-            [],
-        )
-
-        self._tlas_output_size = required_output
-        self._tlas_instance_count = count
-        self._tlas_updates_since_build = self._tlas_updates_since_build + 1 if can_update else 0
-        self._keepalive["ias_temp"] = self._tlas_temp_buffer
+            self._tlas_updates_since_build = 0
+        else:
+            rebuild = self._tlas_updates_since_build >= self._max_tlas_updates
+            self._ias = wo.update_accel(self._ctx, self._ias, rebuild=rebuild, stream=stream)
+            self._tlas_updates_since_build = 0 if rebuild else self._tlas_updates_since_build + 1
 
     def _build_scene_buffers(self):
         """Build GPU buffers for scene description."""
@@ -2203,34 +1734,12 @@ class Scene:
             rp = render_primitives[i]
             flat_indices = geometry.indices.reshape(-1)
             is_triangle_mesh = geometry.primitive_type == "triangles"
-            flat_positions = (
-                np.empty(0, dtype=np.float32)
-                if is_triangle_mesh
-                else geometry.vertices.reshape(-1)
-            )
-            flat_radii = (
-                np.empty(0, dtype=np.float32) if is_triangle_mesh else geometry.radii
-            )
-            flat_normals = (
-                geometry.normals.reshape(-1)
-                if is_triangle_mesh
-                else np.empty(0, dtype=np.float32)
-            )
-            flat_tangents = (
-                geometry.tangents.reshape(-1)
-                if is_triangle_mesh
-                else np.empty(0, dtype=np.float32)
-            )
-            flat_tex0 = (
-                geometry.texcoords.reshape(-1)
-                if is_triangle_mesh
-                else np.empty(0, dtype=np.float32)
-            )
-            flat_tex1 = (
-                geometry.texcoords1.reshape(-1)
-                if is_triangle_mesh
-                else np.empty(0, dtype=np.float32)
-            )
+            flat_positions = np.empty(0, dtype=np.float32) if is_triangle_mesh else geometry.vertices.reshape(-1)
+            flat_radii = np.empty(0, dtype=np.float32) if is_triangle_mesh else geometry.radii
+            flat_normals = geometry.normals.reshape(-1) if is_triangle_mesh else np.empty(0, dtype=np.float32)
+            flat_tangents = geometry.tangents.reshape(-1) if is_triangle_mesh else np.empty(0, dtype=np.float32)
+            flat_tex0 = geometry.texcoords.reshape(-1) if is_triangle_mesh else np.empty(0, dtype=np.float32)
+            flat_tex1 = geometry.texcoords1.reshape(-1) if is_triangle_mesh else np.empty(0, dtype=np.float32)
             primitive_material_ids = geometry.material_ids
 
             rp["indexOffset"] = np.uint32(index_offset)
@@ -2271,17 +1780,11 @@ class Scene:
 
         rp_bytes = render_primitives.view(np.uint8).reshape(-1)
         self._render_primitives = wp.array(rp_bytes, dtype=wp.uint8, device="cuda")
-        self._packed_indices = wp.array(
-            np.concatenate(packed_indices), dtype=wp.uint32, device="cuda"
-        )
+        self._packed_indices = wp.array(np.concatenate(packed_indices), dtype=wp.uint32, device="cuda")
 
         def packed_float_buffer(parts):
             values = np.concatenate(parts)
-            return (
-                wp.array(values, dtype=wp.float32, device="cuda")
-                if values.size
-                else None
-            )
+            return wp.array(values, dtype=wp.float32, device="cuda") if values.size else None
 
         self._packed_positions = packed_float_buffer(packed_positions)
         self._packed_radii = packed_float_buffer(packed_radii)
@@ -2290,104 +1793,29 @@ class Scene:
         self._packed_texcoords0 = packed_float_buffer(packed_texcoords0)
         self._packed_texcoords1 = packed_float_buffer(packed_texcoords1)
         self._packed_prev_positions = None
-        self._packed_material_ids = wp.array(
-            np.concatenate(packed_material_ids), dtype=wp.uint32, device="cuda"
-        )
+        self._packed_material_ids = wp.array(np.concatenate(packed_material_ids), dtype=wp.uint32, device="cuda")
 
-        # Build RenderNode array
-        rn_dtype = _create_render_node_dtype()
-        render_nodes = np.zeros(len(self._instances), dtype=rn_dtype)
-
-        count = len(self._instances)
-        transforms = self._instance_transform_cache[:count]
-        render_nodes["objectToWorld"] = transforms
-        render_nodes["worldToObject"] = np.linalg.inv(transforms)
-        render_nodes["materialID"] = -1  # Use per-triangle materials
-        render_nodes["renderPrimID"] = np.fromiter(
-            (inst.mesh_index for inst in self._instances), dtype=np.int32, count=count
-        )
-
-        rn_bytes = render_nodes.view(np.uint8).reshape(-1)
-        self._render_nodes = wp.array(rn_bytes, dtype=wp.uint8, device="cuda")
-
-        count = len(self._instances)
-        record_capacity = int(self._instance_buffer.capacity)
-        self._instance_record_floats = wp.array(
-            ptr=self._instance_buffer.ptr,
-            shape=(count, 20),
-            dtype=wp.float32,
-            capacity=record_capacity,
-            device="cuda",
-        )
-        self._instance_record_words = wp.array(
-            ptr=self._instance_buffer.ptr,
-            shape=(count, 20),
-            dtype=wp.uint32,
-            capacity=record_capacity,
-            device="cuda",
-        )
-        self._render_node_floats = wp.array(
-            ptr=self._render_nodes.ptr,
-            shape=(count, 34),
-            dtype=wp.float32,
-            capacity=int(self._render_nodes.capacity),
-            device="cuda",
-        )
-        transforms = self._instance_transform_cache[:count, :3, :].reshape(count, 12)
-        self._device_instance_transforms = wp.array(
-            transforms, dtype=wp.float32, device="cuda"
-        )
         self._build_usd_transform_buffers()
 
         light_data = np.zeros((len(self._sphere_lights), 8), dtype=np.float32)
-        for index, (position, radius, color, intensity) in enumerate(
-            self._sphere_lights
-        ):
+        for index, (position, radius, color, intensity) in enumerate(self._sphere_lights):
             light_data[index, :3] = position
             light_data[index, 3] = radius
             light_data[index, 4:7] = np.asarray(color) * intensity
-        self._sphere_light_data = (
-            wp.array(light_data, dtype=wp.float32, device="cuda")
-            if len(light_data)
-            else None
-        )
-
-        # Build SceneDescription
-        sd_dtype = _create_scene_description_dtype()
-        scene_desc = np.zeros(1, dtype=sd_dtype)
-        scene_desc[0]["materialAddress"] = self.materials.gpu_address
-        scene_desc[0]["renderNodeAddress"] = self._render_nodes.ptr
-        scene_desc[0]["renderPrimitiveAddress"] = self._render_primitives.ptr
-        scene_desc[0]["lightAddress"] = (
-            0 if self._sphere_light_data is None else self._sphere_light_data.ptr
-        )
-        scene_desc[0]["numLights"] = len(self._sphere_lights)
-
-        sd_bytes = scene_desc.view(np.uint8).reshape(-1)
-        self._scene_desc = wp.array(sd_bytes, dtype=wp.uint8, device="cuda")
+        self._sphere_light_data = wp.array(light_data, dtype=wp.float32, device="cuda") if len(light_data) else None
 
         # Build per-instance material ID lookup buffer.
-        instance_material_ids = np.full(
-            len(self._instances), NO_MATERIAL_OVERRIDE, dtype=np.uint32
-        )
+        instance_material_ids = np.full(len(self._instances), NO_MATERIAL_OVERRIDE, dtype=np.uint32)
         instance_render_prim_ids = np.zeros(len(self._instances), dtype=np.uint32)
         instance_geometry_types = np.zeros(len(self._instances), dtype=np.uint32)
         for i, inst in enumerate(self._instances):
             if inst.material_id is not None:
                 instance_material_ids[i] = np.uint32(inst.material_id)
             instance_render_prim_ids[i] = np.uint32(inst.mesh_index)
-            instance_geometry_types[i] = np.uint32(
-                getattr(self._meshes[inst.mesh_index], "geometry_type", 0)
-            )
-        self._instance_material_ids = wp.array(
-            instance_material_ids, dtype=wp.uint32, device="cuda"
-        )
-        self._instance_render_prim_ids = wp.array(
-            instance_render_prim_ids, dtype=wp.uint32, device="cuda"
-        )
-        self._instance_geometry_types = wp.array(
-            instance_geometry_types, dtype=wp.uint32, device="cuda"
-        )
+            instance_geometry_types[i] = np.uint32(getattr(self._meshes[inst.mesh_index], "geometry_type", 0))
+        self._instance_material_ids = wp.array(instance_material_ids, dtype=wp.uint32, device="cuda")
+        self._instance_render_prim_ids = wp.array(instance_render_prim_ids, dtype=wp.uint32, device="cuda")
+        self._instance_geometry_types = wp.array(instance_geometry_types, dtype=wp.uint32, device="cuda")
 
         # Build compact material table for robust device-side lookup.
         compact_dt = np.dtype(
@@ -2485,24 +1913,16 @@ class Scene:
             compact[i]["diffuseTransmissionFactor"] = mat["diffuseTransmissionFactor"]
             compact[i]["diffuseTransmissionColor"] = mat["diffuseTransmissionColor"]
             compact[i]["isThinWalled"] = 1 if mat["thicknessFactor"] == 0.0 else 0
-            compact[i]["clearcoatNormalTexIndex"] = mat["clearcoatNormalTexture"][
-                "index"
-            ]
-            compact[i]["clearcoatNormalTexCoord"] = mat["clearcoatNormalTexture"][
-                "texCoord"
-            ]
+            compact[i]["clearcoatNormalTexIndex"] = mat["clearcoatNormalTexture"]["index"]
+            compact[i]["clearcoatNormalTexCoord"] = mat["clearcoatNormalTexture"]["texCoord"]
             compact[i]["opacity"] = mat["pbrBaseColorFactor"][3]
             compact[i]["opacityFresnelLow"] = mat["opacityFresnelLow"]
             compact[i]["opacityFresnelHigh"] = mat["opacityFresnelHigh"]
             compact[i]["opacityFresnelFalloff"] = mat["opacityFresnelFalloff"]
             compact[i]["baseColorTexIndex"] = mat["pbrBaseColorTexture"]["index"]
             compact[i]["baseColorTexCoord"] = mat["pbrBaseColorTexture"]["texCoord"]
-            compact[i]["metallicRoughnessTexIndex"] = mat[
-                "pbrMetallicRoughnessTexture"
-            ]["index"]
-            compact[i]["metallicRoughnessTexCoord"] = mat[
-                "pbrMetallicRoughnessTexture"
-            ]["texCoord"]
+            compact[i]["metallicRoughnessTexIndex"] = mat["pbrMetallicRoughnessTexture"]["index"]
+            compact[i]["metallicRoughnessTexCoord"] = mat["pbrMetallicRoughnessTexture"]["texCoord"]
             compact[i]["normalTexIndex"] = mat["normalTexture"]["index"]
             compact[i]["normalTexCoord"] = mat["normalTexture"]["texCoord"]
             compact[i]["emissiveTexIndex"] = mat["emissiveTexture"]["index"]
@@ -2577,9 +1997,7 @@ class Scene:
 
             workers = _texture_worker_count(len(self._gltf_textures))
             with ThreadPoolExecutor(max_workers=workers) as executor:
-                self._texture_objects = list(
-                    executor.map(create_texture, self._gltf_textures)
-                )
+                self._texture_objects = list(executor.map(create_texture, self._gltf_textures))
             self._texture_data = wp.array(
                 self._texture_objects,
                 dtype=wp.Texture2D,

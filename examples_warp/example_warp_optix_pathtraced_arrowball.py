@@ -9,7 +9,6 @@ from pathlib import Path
 
 import numpy as np
 import warp as wp
-import warp_optix as woptix
 from example_warp_optix_basic_pathtracing import (
     FreeCameraController,
     _pack_display_rgba8,
@@ -20,6 +19,7 @@ from example_warp_optix_pathtraced_scene import (
     create_rainbow_materials,
     rainbow_height_slots,
 )
+from warp_optix.gl import GLInteropViewer
 from warp_optix.pathtracing import (
     DEFAULT_VIEWER_HEIGHT,
     DEFAULT_VIEWER_WIDTH,
@@ -28,24 +28,18 @@ from warp_optix.pathtracing import (
 
 
 def _parse_args():
-    parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--arrow-count", type=int, default=1800)
     parser.add_argument("--seed", type=int, default=11)
     parser.add_argument("--ball-radius", type=float, default=0.8)
     parser.add_argument("--arrow-length", type=float, default=0.42)
-    parser.add_argument(
-        "--swirl", type=float, default=0.24, help="Tangential direction bias."
-    )
+    parser.add_argument("--swirl", type=float, default=0.24, help="Tangential direction bias.")
     parser.add_argument("--small-radius", type=float, default=0.011)
     parser.add_argument("--large-radius", type=float, default=0.034)
     parser.add_argument("--tip-length-ratio", type=float, default=0.28)
     parser.add_argument("--width", type=int, default=DEFAULT_VIEWER_WIDTH)
     parser.add_argument("--height", type=int, default=DEFAULT_VIEWER_HEIGHT)
-    parser.add_argument(
-        "--fps", type=int, default=0, help="Presentation rate cap; 0 is unlimited."
-    )
+    parser.add_argument("--fps", type=int, default=0, help="Presentation rate cap; 0 is unlimited.")
     parser.add_argument(
         "--max-frames",
         type=int,
@@ -59,7 +53,6 @@ def _parse_args():
     parser.add_argument("--contrast", type=float, default=1.08)
     parser.add_argument("--saturation", type=float, default=1.1)
     parser.add_argument("--no-dlss-rr", action="store_true")
-    parser.add_argument("--no-cuda-graphs", action="store_true")
     parser.add_argument("--no-set", action="store_true")
     return parser.parse_args()
 
@@ -129,7 +122,6 @@ def main():
         height=args.height,
         enable_dlss_rr=not args.no_dlss_rr,
         enable_set=not args.no_set,
-        enable_cuda_graphs=not args.no_cuda_graphs,
     )
     if not api.initialize():
         raise RuntimeError("Failed to initialize pathtracing API.")
@@ -162,7 +154,7 @@ def main():
         api.resize(render_width, render_height)
         last_elapsed = 0.0
 
-    viewer = woptix.GLInteropViewer(
+    viewer = GLInteropViewer(
         width=args.width,
         height=args.height,
         device="cuda",
@@ -171,9 +163,7 @@ def main():
         on_resize=_on_resize,
         vsync=args.fps > 0,
     )
-    controller = FreeCameraController(
-        viewer, api, (0.0, 0.18, 3.55), 180.0, -3.0, 42.0, args.camera_speed
-    )
+    controller = FreeCameraController(viewer, api, (0.0, 0.18, 3.55), 180.0, -3.0, 42.0, args.camera_speed)
 
     def _render(mapped_image: wp.array, _frame_idx: int, elapsed_sec: float):
         nonlocal last_elapsed
@@ -192,21 +182,16 @@ def main():
             device="cuda",
         )
 
-    print(
-        f"[optix] arrow ball: {args.arrow_count:,} arrows, "
-        f"{2 * args.arrow_count:,} curve primitives"
-    )
+    print(f"[optix] arrow ball: {args.arrow_count:,} arrows, {2 * args.arrow_count:,} curve primitives")
     print("[optix] controls: left-drag look, WASD move, Q/E down/up, wheel zoom")
     viewer.run(_render, max_frames=args.max_frames)
     if args.screenshot is not None:
-        from PIL import Image  # noqa: PLC0415
+        from PIL import Image
 
         screenshot = args.screenshot.expanduser().resolve()
         screenshot.parent.mkdir(parents=True, exist_ok=True)
         frame = np.clip(api.get_frame(), 0.0, 1.0)
-        Image.fromarray(
-            (frame[..., :3] * 255.0 + 0.5).astype(np.uint8), mode="RGB"
-        ).save(screenshot)
+        Image.fromarray((frame[..., :3] * 255.0 + 0.5).astype(np.uint8), mode="RGB").save(screenshot)
         print(f"[optix] saved screenshot: {screenshot}")
 
 

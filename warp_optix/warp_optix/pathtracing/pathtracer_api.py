@@ -26,8 +26,6 @@ from collections.abc import Iterable
 import numpy as np
 import warp as wp
 
-from warp_optix._runtime.transform_utils import build_transform_matrix
-
 from .arrows import (
     ArrowBatch,
     arrow_segment_indices,
@@ -41,6 +39,7 @@ from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH
 from .pathtracing_viewer import PathTracingViewer as PathTracingRenderer
 from .ptx_compiler import get_optix_include_dir
 from .scene import Curve, Mesh
+from .transform_utils import build_transform_matrix
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +51,7 @@ def _validate_material_ids(scene, material_ids: np.ndarray | None):
     if not np.issubdtype(values.dtype, np.integer):
         raise ValueError("material_ids must contain integers")
     if np.any(values < 0) or np.any(values >= scene.materials.count):
-        raise ValueError(
-            f"material_ids must reference the {scene.materials.count} existing materials"
-        )
+        raise ValueError(f"material_ids must reference the {scene.materials.count} existing materials")
     return values
 
 
@@ -67,7 +64,6 @@ class PathTracerAPI:
         height: int = DEFAULT_VIEWER_HEIGHT,
         enable_dlss_rr: bool = True,
         enable_set: bool = True,
-        enable_cuda_graphs: bool = True,
         dlss_quality: str = "quality",
         samples_per_frame: int = 1,
         max_bounces: int = 4,
@@ -86,7 +82,6 @@ class PathTracerAPI:
             scene_setup=lambda _scene: None,
             enable_dlss_rr=bool(enable_dlss_rr),
             enable_set=bool(enable_set),
-            enable_cuda_graphs=bool(enable_cuda_graphs),
             accumulate_samples=False,
             dlss_quality=dlss_quality,
             samples_per_frame=samples_per_frame,
@@ -168,11 +163,6 @@ class PathTracerAPI:
     def dlss_init_error(self) -> str | None:
         """Return the DLSS initialization error, if Ray Reconstruction fell back."""
         return self._viewer._dlss_init_error
-
-    @property
-    def cuda_graph_active(self) -> bool:
-        """Whether the stable OptiX launch has been captured for replay."""
-        return self._viewer._optix_launch_graph is not None
 
     @property
     def dlss_quality(self) -> str:
@@ -372,9 +362,6 @@ class PathTracerAPI:
     def build_scene(self):
         scene = self._require_scene()
         scene.build(self._viewer._optix)
-        self._viewer._create_sbt()
-        self._viewer._optix_launch_graph = None
-        self._viewer._optix_graph_warmed = False
         self._viewer.sample_index = 0
         self._viewer.frame_index = 0
         self._viewer._dlss_reset_history = True
@@ -397,9 +384,6 @@ class PathTracerAPI:
 
     def rebuild_tlas(self):
         scene = self._require_scene()
-        # A captured OptiX launch retains acceleration-structure state. Keep
-        # temporal history, but force an ordinary launch after each TLAS update.
-        self._invalidate_optix_launch_graph_for_accel_update()
         scene.rebuild_tlas()
 
     def clear_scene(self):
@@ -464,9 +448,7 @@ class PathTracerAPI:
                     usd_path,
                 )
             else:
-                self.set_environment_hdr(
-                    str(environment_path), scaling=float(usd_environment_scale)
-                )
+                self.set_environment_hdr(str(environment_path), scaling=float(usd_environment_scale))
         if ok and build_scene:
             self.build_scene()
         return ok
@@ -548,7 +530,6 @@ class PathTracerAPI:
     ) -> None:
         """Update a dynamic triangle GAS after its CUDA buffers were modified."""
         self._dynamic_triangle_mesh(geometry_id)
-        self._invalidate_optix_launch_graph_for_accel_update()
         self._require_scene().update_mesh_accel(
             geometry_id,
             stream=stream,
@@ -640,7 +621,6 @@ class PathTracerAPI:
                 dest_offset=curve._packed_material_offset,
                 stream=stream,
             )
-        self._invalidate_optix_launch_graph_for_accel_update()
         scene.update_curve_accel(
             int(geometry_id),
             stream=stream,
@@ -694,9 +674,7 @@ class PathTracerAPI:
             arrow_material_ids = _validate_material_ids(scene, material_ids)
             if arrow_material_ids.shape != (capacity,):
                 raise ValueError(f"material_ids must have shape ({capacity},)")
-            segment_material_ids = np.repeat(
-                np.asarray(arrow_material_ids, dtype=np.uint32), 2
-            )
+            segment_material_ids = np.repeat(np.asarray(arrow_material_ids, dtype=np.uint32), 2)
 
         curve = Curve(
             np.zeros((4 * capacity, 3), dtype=np.float32),
@@ -727,14 +705,6 @@ class PathTracerAPI:
         if curve.primitive_type != "round_linear" or not curve.dynamic:
             raise ValueError("arrow batch geometry is no longer available")
         return curve
-
-    def _invalidate_optix_launch_graph_for_accel_update(self) -> None:
-        """Release a captured launch graph before changing OptiX acceleration data."""
-        renderer = self._viewer
-        if renderer._optix_launch_graph is not None:
-            wp.synchronize_stream(renderer._render_stream)
-        renderer._optix_launch_graph = None
-        renderer._optix_graph_warmed = False
 
     def update_arrow_batch(
         self,
@@ -771,25 +741,20 @@ class PathTracerAPI:
             arrow_material_ids = _validate_material_ids(scene, material_ids)
             if arrow_material_ids.shape != (count,):
                 raise ValueError(f"material_ids must have shape ({count},)")
-            curve.material_ids[: 2 * count] = np.repeat(
-                np.asarray(arrow_material_ids, dtype=np.uint32), 2
-            )
+            curve.material_ids[: 2 * count] = np.repeat(np.asarray(arrow_material_ids, dtype=np.uint32), 2)
 
         if curve.d_vertices is None:
             return
         curve.d_vertices.assign(curve.vertices.reshape(-1))
         curve.d_widths.assign(curve.radii)
         if material_ids is not None:
-            device_material_ids = wp.array(
-                curve.material_ids, dtype=wp.uint32, device="cuda"
-            )
+            device_material_ids = wp.array(curve.material_ids, dtype=wp.uint32, device="cuda")
             wp.copy(
                 scene._packed_material_ids,
                 device_material_ids,
                 dest_offset=curve._packed_material_offset,
                 count=len(curve.material_ids),
             )
-        self._invalidate_optix_launch_graph_for_accel_update()
         scene.update_curve_accel(
             batch.geometry_id,
             rebuild_gas=bool(rebuild_gas),
@@ -845,13 +810,9 @@ class PathTracerAPI:
             if active_count.ndim != 1 or len(active_count) < 1:
                 raise ValueError("active_count must contain at least one value")
             if len(starts) < batch.capacity or len(ends) < batch.capacity:
-                raise ValueError(
-                    "device-count endpoint arrays must contain batch.capacity values"
-                )
+                raise ValueError("device-count endpoint arrays must contain batch.capacity values")
             if material_ids is not None and len(material_ids) < batch.capacity:
-                raise ValueError(
-                    "device-count material_ids must contain batch.capacity values"
-                )
+                raise ValueError("device-count material_ids must contain batch.capacity values")
             launch_dim = batch.capacity
             geometry_kernel = update_arrow_curves_device_count
             geometry_inputs = [
@@ -871,14 +832,10 @@ class PathTracerAPI:
             if count < 0 or count > batch.capacity:
                 raise ValueError("active_count must be within batch capacity")
             if len(starts) < count or len(ends) < count:
-                raise ValueError(
-                    "endpoint arrays contain fewer than active_count values"
-                )
+                raise ValueError("endpoint arrays contain fewer than active_count values")
             if material_ids is not None and len(material_ids) < count:
                 raise ValueError("material_ids contains fewer than active_count values")
-            launch_dim = (
-                batch.capacity if previous_count < 0 else max(count, previous_count)
-            )
+            launch_dim = batch.capacity if previous_count < 0 else max(count, previous_count)
             geometry_kernel = update_arrow_curves_host_count
             geometry_inputs = [
                 starts,
@@ -902,16 +859,12 @@ class PathTracerAPI:
             )
             if material_ids is not None:
                 material_kernel = (
-                    expand_arrow_material_ids_device_count
-                    if device_count
-                    else expand_arrow_material_ids_host_count
+                    expand_arrow_material_ids_device_count if device_count else expand_arrow_material_ids_host_count
                 )
                 material_inputs = [material_ids, active_count]
                 if device_count:
                     material_inputs.append(batch.capacity)
-                material_inputs.extend(
-                    [scene._packed_material_ids, curve._packed_material_offset]
-                )
+                material_inputs.extend([scene._packed_material_ids, curve._packed_material_offset])
                 wp.launch(
                     material_kernel,
                     dim=launch_dim,
@@ -919,7 +872,6 @@ class PathTracerAPI:
                     device=starts.device,
                     stream=stream,
                 )
-        self._invalidate_optix_launch_graph_for_accel_update()
         scene.update_curve_accel(
             batch.geometry_id,
             rebuild_gas=bool(rebuild_gas),
@@ -945,9 +897,7 @@ class PathTracerAPI:
         scale: float | Iterable[float] = 1.0,
     ) -> int:
         transform = build_transform_matrix(position, rotation_xyzw, scale)
-        return int(
-            self._require_scene().add_instance(int(mesh_id), transform=transform)
-        )
+        return int(self._require_scene().add_instance(int(mesh_id), transform=transform))
 
     def set_instance_transform(
         self,
@@ -963,31 +913,21 @@ class PathTracerAPI:
         m = np.asarray(matrix, dtype=np.float32).reshape(4, 4)
         self._require_scene().set_instance_transform(int(instance_id), m)
 
-    def set_instance_transform_matrices(
-        self, instance_ids: Iterable[int], matrices: np.ndarray
-    ):
+    def set_instance_transform_matrices(self, instance_ids: Iterable[int], matrices: np.ndarray):
         self._require_scene().set_instance_transforms_batch(instance_ids, matrices)
 
-    def set_instance_transform_arrays(
-        self, instance_ids, xforms, scales, global_transform
-    ) -> bool:
+    def set_instance_transform_arrays(self, instance_ids, xforms, scales, global_transform) -> bool:
         """Update instance transforms from CUDA-resident Warp arrays."""
-        return self._require_scene().set_instance_transforms_device(
-            instance_ids, xforms, scales, global_transform
-        )
+        return self._require_scene().set_instance_transforms_device(instance_ids, xforms, scales, global_transform)
 
     def set_instance_material_arrays(self, material_ids, colors, properties) -> bool:
         """Update compact materials from CUDA-resident Warp arrays."""
-        return self._require_scene().set_instance_materials_device(
-            material_ids, colors, properties
-        )
+        return self._require_scene().set_instance_materials_device(material_ids, colors, properties)
 
     def set_instances_visible(self, instance_ids: Iterable[int], visible: bool):
         self._require_scene().set_instances_visible_batch(instance_ids, visible)
 
-    def set_instance_transforms_batch(
-        self, instance_ids: Iterable[int], transforms_flat: np.ndarray
-    ):
+    def set_instance_transforms_batch(self, instance_ids: Iterable[int], transforms_flat: np.ndarray):
         self.initialize()
         ids = list(instance_ids)
         arr = np.asarray(transforms_flat, dtype=np.float32).reshape(-1, 8)
@@ -1003,27 +943,13 @@ class PathTracerAPI:
             )
 
     def create_diffuse_material(self, color: Iterable[float]) -> int:
-        return int(
-            self._require_scene().materials.add_diffuse(tuple(float(v) for v in color))
-        )
+        return int(self._require_scene().materials.add_diffuse(tuple(float(v) for v in color)))
 
-    def create_metallic_material(
-        self, color: Iterable[float], roughness: float = 0.1
-    ) -> int:
-        return int(
-            self._require_scene().materials.add_metal(
-                tuple(float(v) for v in color), float(roughness)
-            )
-        )
+    def create_metallic_material(self, color: Iterable[float], roughness: float = 0.1) -> int:
+        return int(self._require_scene().materials.add_metal(tuple(float(v) for v in color), float(roughness)))
 
-    def create_emissive_material(
-        self, color: Iterable[float], intensity: float = 1.0
-    ) -> int:
-        return int(
-            self._require_scene().materials.add_emissive(
-                tuple(float(v) for v in color), float(intensity)
-            )
-        )
+    def create_emissive_material(self, color: Iterable[float], intensity: float = 1.0) -> int:
+        return int(self._require_scene().materials.add_emissive(tuple(float(v) for v in color), float(intensity)))
 
     def create_pbr_material(
         self,
@@ -1056,9 +982,7 @@ class PathTracerAPI:
             )
         )
 
-    def add_box(
-        self, min_pt: Iterable[float], max_pt: Iterable[float], material_id: int
-    ) -> int:
+    def add_box(self, min_pt: Iterable[float], max_pt: Iterable[float], material_id: int) -> int:
         return int(
             self._require_scene().add_box(
                 tuple(float(v) for v in min_pt),
@@ -1067,9 +991,7 @@ class PathTracerAPI:
             )
         )
 
-    def add_sphere(
-        self, center: Iterable[float], radius: float, segments: int, material_id: int
-    ) -> int:
+    def add_sphere(self, center: Iterable[float], radius: float, segments: int, material_id: int) -> int:
         return int(
             self._require_scene().add_sphere(
                 tuple(float(v) for v in center),
@@ -1103,9 +1025,7 @@ class PathTracerAPI:
     ):
         """Bind graph-written CUDA eye and target arrays to the path tracer."""
         self.initialize()
-        self._viewer.bind_device_camera(
-            positions, targets, fov=fov, up=up, camera_transform=camera_transform
-        )
+        self._viewer.bind_device_camera(positions, targets, fov=fov, up=up, camera_transform=camera_transform)
 
     def unbind_device_camera(self):
         """Restore the host-driven path tracer camera."""

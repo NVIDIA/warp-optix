@@ -6,6 +6,8 @@ import array
 import pytest
 import warp as wp
 
+pytestmark = pytest.mark.gpu
+
 
 PAYLOAD_PTX = """
 .version 7.0
@@ -44,9 +46,7 @@ def _context():
         pytest.skip("CUDA device unavailable")
     if tuple(optix.version()) < (7, 4):
         pytest.skip("Payload metadata requires OptiX 7.4")
-    context = optix.deviceContextCreate(
-        wp.get_device("cuda").context, optix.DeviceContextOptions()
-    )
+    context = optix.deviceContextCreate(wp.get_device("cuda").context, optix.DeviceContextOptions())
     return optix, context
 
 
@@ -62,10 +62,7 @@ def test_payload_metadata_reaches_native_compiler(setter):
     optix, context = _context()
     module = None
     try:
-        semantics = (
-            optix.PAYLOAD_SEMANTICS_TRACE_CALLER_READ
-            | optix.PAYLOAD_SEMANTICS_MS_WRITE
-        )
+        semantics = optix.PAYLOAD_SEMANTICS_TRACE_CALLER_READ | optix.PAYLOAD_SEMANTICS_MS_WRITE
         payload = optix.PayloadType([semantics])
         options = optix.ModuleCompileOptions(payloadTypes=[payload])
         if setter:
@@ -91,9 +88,7 @@ def test_bound_values_reach_native_compiler():
             annotation="outside_params",
         )
         options = optix.ModuleCompileOptions(boundValues=[entry])
-        pipeline = optix.PipelineCompileOptions(
-            pipelineLaunchParamsVariableName="params"
-        )
+        pipeline = optix.PipelineCompileOptions(pipelineLaunchParamsVariableName="params")
         module = _compile(context, optix.ModuleCompileOptions(), pipeline, PARAMS_PTX)
         module.destroy()
         module = None

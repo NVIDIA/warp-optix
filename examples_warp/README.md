@@ -2,37 +2,47 @@
 
 These examples were moved from `warp/examples/core/pyoptix/` into this directory.
 
-Prerequisites:
+Run these commands from the repository root after installing the package with
+the example extras (see the root [README](../README.md) for system prerequisites):
 
 ```bash
-pip install -e ..
+uv sync --python 3.12 --extra pathtracing --extra ui --extra usd --extra training
+uv run --no-sync python examples_warp/neural_texture/compress.py --output material.wnt
+uv run --no-sync python examples_warp/example_warp_optix_kernels.py
+uv run --no-sync python examples_warp/example_warp_optix_curves.py
+uv run --no-sync python examples_warp/example_warp_optix_motion_blur.py
+uv run --no-sync python examples_warp/example_warp_optix_mixed_geometry.py
+
+uv run --no-sync python examples_warp/example_warp_optix_tiny_raytracer.py
+uv run --no-sync python examples_warp/example_warp_optix_basic_pathtracing.py
+uv run --no-sync python examples_warp/example_warp_optix_basic_pathtracing.py --denoiser optix --optix-upscale
+uv run --no-sync python examples_warp/example_warp_optix_pathtraced_hairball.py
+uv run --no-sync python examples_warp/example_warp_optix_pathtraced_arrowball.py
+uv run --no-sync python examples_warp/example_warp_optix_pathtraced_contact_lines.py
+uv run --no-sync python examples_warp/example_warp_optix_usd_pathtracing.py path/to/scene.usd
 ```
 
-Then run individual examples, e.g.
+With pip, `pip install -e ".[pathtracing,ui,usd,training]"` installs the same set.
 
-```bash
-python example_warp_optix_neural_texture.py --output material.wnt
-python example_warp_optix_kernels.py
-python example_warp_optix_curves.py
-python example_warp_optix_motion_blur.py
-python example_warp_optix_mixed_geometry.py
+The kernels, curves, motion-blur, mixed-geometry, and tiny-raytracer examples
+use the core `warp_optix` API directly (see the [package README](../warp_optix/README.md)):
+OptiX programs are ordinary `@wp.kernel(module="unique")` kernels, the raygen
+kernel's arguments are the launch parameters, acceleration structures are built
+from Warp device arrays with `wo.build_accel()`, and `wo.launch()` mirrors
+`wp.launch()`. `example_warp_optix_kernels.py` is the smallest complete
+pipeline; `example_warp_optix_mixed_geometry.py` combines triangle, built-in
+curve, and custom-intersection geometry under instances written on the GPU with
+`wo.make_instance()`; `example_warp_optix_motion_blur.py` builds a two-key
+motion GAS. The image examples write a BMP (`--output`); the tiny ray tracer
+opens an OpenGL viewer with `--live` (`--max-frames N` exits after N frames).
 
-python example_warp_optix_tiny_raytracer.py
-python example_warp_optix_basic_pathtracing.py
-python example_warp_optix_basic_pathtracing.py --denoiser optix --optix-upscale
-python example_warp_optix_pathtraced_hairball.py
-python example_warp_optix_pathtraced_arrowball.py
-python example_warp_optix_pathtraced_contact_lines.py
-python example_warp_optix_usd_pathtracing.py path/to/scene.usd
-```
-
-The neural-texture example procedurally generates a material texture (or loads
-an HWC NumPy array with `--input`), trains packed latents and a small decoder
-with the optional warp-nn backend, writes a memory-mappable `.wnt` asset, and
-reports its stored size and FP8-projected reconstruction PSNR. Install
-`warp_optix[training]` to run compression. Loading and OptiX inference do not
-depend on warp-nn.
-
+The neural-texture example (`neural_texture/compress.py`, see
+[neural_texture/README.md](neural_texture/README.md)) procedurally generates a
+material texture (or loads an HWC NumPy array with `--input`), trains packed
+latents and a small decoder with the optional warp-nn backend, writes a
+memory-mappable `.wnt` asset, and reports its stored size and FP8-projected
+reconstruction PSNR. Compression needs the `training` extra. Loading and
+OptiX inference do not depend on warp-nn.
 
 The hair-ball example procedurally packs thousands of randomized, tapered
 helical strands into one native round-cubic-Bezier curve geometry. Twelve saturated
@@ -101,12 +111,10 @@ or `.glb` scene instead.
 
 The USD path-tracing example loads a user-supplied composed USD stage and maps
 UsdPreviewSurface plus common NVIDIA OmniPBR/OmniGlass MDL inputs to the
-renderer's glTF-style PBR materials. Install OpenUSD alongside the existing
-path-tracing image dependencies:
+renderer's glTF-style PBR materials. It needs the `usd` extra:
 
 ```bash
-pip install -e "..[pathtracing,usd]"
-python example_warp_optix_usd_pathtracing.py \
+uv run --no-sync python examples_warp/example_warp_optix_usd_pathtracing.py \
   "D:\Sample_Scenes_NVD@10013\Samples\Marbles\Marbles_Assets.usd"
 ```
 
@@ -134,14 +142,7 @@ from `/stage/Overview`. If no suitable perspective camera is authored, it
 frames transform-aware world-space geometry bounds. Use `--usd-camera PATH`
 to select a camera explicitly or `--no-usd-camera` to force bounds framing.
 Extreme flat ground planes are excluded from fallback camera fitting when
-other geometry is present, but remain loaded and rendered. Both examples
-capture the stable OptiX launch as a CUDA graph by default while keeping
-per-frame camera/jitter parameters and DLSS evaluation dynamic; use
-`--no-cuda-graphs` only for diagnostics. Frame-level capture is automatically
-skipped while DLSS-RR or temporal OptiX denoising is active. DLSS resource event
-bookkeeping is not legal during CUDA stream capture, and captured OptiX launches
-can freeze camera/sample parameters on the tested runtime. USD transform/TLAS device batches remain
-independently graph-capturable.
+other geometry is present, but remain loaded and rendered.
 The loader triangulates authored polygons but does not tessellate subdivision
 surfaces or import camera animation, curves, or point instancers. Other USD
 light types are not currently imported.

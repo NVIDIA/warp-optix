@@ -20,7 +20,6 @@ static_assert(OPTIX_VERSION == 90100,
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <iostream>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -51,7 +50,7 @@ namespace py = pybind11;
 #ifdef PYOPTIX_ENABLE_DLSS
 #define PYDLSS_CHECK(call) do { NVSDK_NGX_Result result = (call); \
     if (result != NVSDK_NGX_Result_Success) throw std::runtime_error( \
-        "DLSS call failed with result code: " + std::to_string(static_cast<int>(result))); } while (0)
+        "DLSS call failed: " + warp_optix_ext::dlssRRGetResultString(result)); } while (0)
 #endif
 #include "pyoptix_compat.h"
 
@@ -213,6 +212,12 @@ struct DlssRRSupportedSizes
     unsigned int optimalWidth = 0;
     unsigned int optimalHeight = 0;
 };
+
+std::string dlssRRGetResultString( int ngxResultCode )
+{
+    const wchar_t* text = GetNGXResultAsString( static_cast<NVSDK_NGX_Result>( ngxResultCode ) );
+    return text ? std::filesystem::path( text ).u8string() : "NGX result " + std::to_string( ngxResultCode );
+}
 #endif
 
 size_t coopVecMatrixComputeSize(
@@ -380,16 +385,33 @@ static std::filesystem::path dlssFeatureSearchPath( const std::string& featureSe
     return std::filesystem::weakly_canonical( path );
 }
 
-static void NVSDK_CONV dlssLogCallback( const char* message, NVSDK_NGX_Logging_Level, NVSDK_NGX_Feature )
+// Forwards NGX messages to the Python logger "warp_optix.dlss"; NGX may call
+// this from its own threads.
+static void NVSDK_CONV dlssLogCallback( const char* message, NVSDK_NGX_Logging_Level level, NVSDK_NGX_Feature )
 {
-    if( message )
-        std::clog << "[NGX] " << message << std::endl;
+    if( !message || !Py_IsInitialized() )
+        return;
+    std::string text( message );
+    while( !text.empty() && ( text.back() == '\n' || text.back() == '\r' ) )
+        text.pop_back();
+    py::gil_scoped_acquire gil;
+    try
+    {
+        const int pythonLevel = level == NVSDK_NGX_LOGGING_LEVEL_VERBOSE ? 10 /* DEBUG */ : 20 /* INFO */;
+        // NGX messages are not guaranteed to be valid UTF-8.
+        py::object decoded = py::reinterpret_steal<py::object>( PyUnicode_DecodeUTF8( text.data(), text.size(), "replace" ) );
+        py::module_::import( "logging" ).attr( "getLogger" )( "warp_optix.dlss" ).attr( "log" )( pythonLevel, decoded );
+    }
+    catch( py::error_already_set& error )
+    {
+        error.discard_as_unraisable( "warp_optix.dlss log callback" );
+    }
 }
 
 void dlssRRContextInit(
     warp_optix_ext::DlssRRContext& context,
-    const std::string& applicationDataPath,
     const std::string& projectId,
+    const std::string& applicationDataPath,
     const std::string& engineVersion,
     const std::string& featureSearchPath,
     bool enableLogging
@@ -409,8 +431,6 @@ void dlssRRContextInit(
         featureInfo.LoggingInfo.LoggingCallback = dlssLogCallback;
         featureInfo.LoggingInfo.MinimumLoggingLevel = NVSDK_NGX_LOGGING_LEVEL_VERBOSE;
     }
-    const NVSDK_NGX_FeatureCommonInfo* featureInfoPtr =
-        featurePath.empty() && !enableLogging ? nullptr : &featureInfo;
     // NGX CUDA state is process-wide. Contexts share the first initialization
     // and the last context shuts it down.
     const bool startSdk = warp_optix_ext::DlssRRContext::activeContexts == 0;
@@ -422,7 +442,7 @@ void dlssRRContextInit(
                 NVSDK_NGX_ENGINE_TYPE_CUSTOM,
                 engineVersion.c_str(),
                 appPath.c_str(),
-                featureInfoPtr
+                &featureInfo
             )
         );
     }
@@ -447,8 +467,8 @@ void dlssRRContextDeinit( warp_optix_ext::DlssRRContext& context )
         throw std::runtime_error( "Deinitialize all DLSS RR denoisers before the context." );
     if( context.ngxParams )
     {
-        NVSDK_NGX_CUDA_DestroyParameters( context.ngxParams );
-        context.ngxParams = nullptr;
+        NVSDK_NGX_Parameter* params = std::exchange( context.ngxParams, nullptr );
+        PYDLSS_CHECK( NVSDK_NGX_CUDA_DestroyParameters( params ) );
     }
     if( context.initialized )
     {
@@ -486,12 +506,6 @@ py::tuple dlssRRContextGetMinDriverVersion( const warp_optix_ext::DlssRRContext&
     PYDLSS_CHECK( context.ngxParams->Get( NVSDK_NGX_Parameter_SuperSamplingDenoising_MinDriverVersionMajor, &major ) );
     PYDLSS_CHECK( context.ngxParams->Get( NVSDK_NGX_Parameter_SuperSamplingDenoising_MinDriverVersionMinor, &minor ) );
     return py::make_tuple( major, minor );
-}
-
-std::string dlssRRGetResultString( int ngxResultCode )
-{
-    (void)GetNGXResultAsString( static_cast<NVSDK_NGX_Result>( ngxResultCode ) );
-    return std::string( "NGX result code: " ) + std::to_string( ngxResultCode );
 }
 
 warp_optix_ext::DlssRRSupportedSizes dlssRRQuerySupportedDlssInputSizes(
@@ -562,15 +576,6 @@ warp_optix_ext::DlssRRDenoiser dlssRRCreate(
     dlssParams.InFeatureCreateFlags = createFlags;
     dlssParams.InEnableOutputSubrects = false;
 
-    // Upscaling and Ray Reconstruction select their transformer models through separate hints.
-    const auto upscalingPreset = NVSDK_NGX_DLSS_Hint_Render_Preset_K;
-    context.ngxParams->Set( NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA, upscalingPreset );
-    context.ngxParams->Set( NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Quality, upscalingPreset );
-    context.ngxParams->Set( NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraQuality, upscalingPreset );
-    context.ngxParams->Set( NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Balanced, upscalingPreset );
-    context.ngxParams->Set( NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_Performance, upscalingPreset );
-    context.ngxParams->Set( NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_UltraPerformance, upscalingPreset );
-
     context.ngxParams->Set( NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_DLAA, initInfo.preset );
     context.ngxParams->Set( NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_Quality, initInfo.preset );
     context.ngxParams->Set( NVSDK_NGX_Parameter_RayReconstruction_Hint_Render_Preset_UltraQuality, initInfo.preset );
@@ -586,7 +591,11 @@ warp_optix_ext::DlssRRDenoiser dlssRRCreate(
     cudaParams.Feature = dlssParams;
     cudaParams.InCUContext = cuContext;
     cudaParams.InCUStream = reinterpret_cast<CUstream>( stream );
-    PYDLSS_CHECK( NGX_CUDA_CREATE_DLSSD_EXT( &denoiser.handle, context.ngxParams, &cudaParams ) );
+    {
+        // Feature creation loads the model and can take hundreds of milliseconds.
+        py::gil_scoped_release release;
+        PYDLSS_CHECK( NGX_CUDA_CREATE_DLSSD_EXT( &denoiser.handle, context.ngxParams, &cudaParams ) );
+    }
     denoiser.context = &context;
     ++context.activeDenoisers;
     return denoiser;
@@ -847,15 +856,13 @@ PYBIND11_MODULE(_ext, m) {
         .value( "MAX_QUALITY", NVSDK_NGX_PerfQuality_Value_MaxQuality )
         .value( "ULTRA_PERFORMANCE", NVSDK_NGX_PerfQuality_Value_UltraPerformance )
         .value( "ULTRA_QUALITY", NVSDK_NGX_PerfQuality_Value_UltraQuality )
-        .value( "DLAA", NVSDK_NGX_PerfQuality_Value_DLAA )
-        .export_values();
+        .value( "DLAA", NVSDK_NGX_PerfQuality_Value_DLAA );
 
     py::enum_<NVSDK_NGX_RayReconstruction_Hint_Render_Preset>(m, "RayReconstructionHintRenderPreset", py::arithmetic())
         .value( "DEFAULT", NVSDK_NGX_RayReconstruction_Hint_Render_Preset_Default )
         .value( "D", NVSDK_NGX_RayReconstruction_Hint_Render_Preset_D )
         .value( "E", NVSDK_NGX_RayReconstruction_Hint_Render_Preset_E )
-        .value( "F", NVSDK_NGX_RayReconstruction_Hint_Render_Preset_F )
-        .export_values();
+        .value( "F", NVSDK_NGX_RayReconstruction_Hint_Render_Preset_F );
 
     py::enum_<warp_optix_ext::DlssRRResource>(m, "DlssRRResource", py::arithmetic())
         .value( "RESOURCE_COLOR_IN", warp_optix_ext::RESOURCE_COLOR_IN )
@@ -865,16 +872,15 @@ PYBIND11_MODULE(_ext, m) {
         .value( "RESOURCE_NORMALROUGHNESS", warp_optix_ext::RESOURCE_NORMALROUGHNESS )
         .value( "RESOURCE_MOTIONVECTOR", warp_optix_ext::RESOURCE_MOTIONVECTOR )
         .value( "RESOURCE_LINEARDEPTH", warp_optix_ext::RESOURCE_LINEARDEPTH )
-        .value( "RESOURCE_SPECULAR_HITDISTANCE", warp_optix_ext::RESOURCE_SPECULAR_HITDISTANCE )
-        .export_values();
+        .value( "RESOURCE_SPECULAR_HITDISTANCE", warp_optix_ext::RESOURCE_SPECULAR_HITDISTANCE );
 
     py::class_<warp_optix_ext::DlssRRContext>( m, "DlssRRContext" )
         .def( py::init<>() )
         .def(
             "init",
             &warp_optix_ext::dlssRRContextInit,
+            py::arg( "projectId" ),
             py::arg( "applicationDataPath" ) = "",
-            py::arg( "projectId" ) = "dddbee68-a452-4fab-9371-f9575480a154",
             py::arg( "engineVersion" ) = "1.0.0",
             py::arg( "featureSearchPath" ) = "",
             py::arg( "enableLogging" ) = false

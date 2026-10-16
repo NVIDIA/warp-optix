@@ -9,7 +9,6 @@ from pathlib import Path
 
 import numpy as np
 import warp as wp
-import warp_optix as woptix
 from example_warp_optix_basic_pathtracing import (
     FreeCameraController,
     _pack_display_rgba8,
@@ -20,6 +19,7 @@ from example_warp_optix_pathtraced_scene import (
     create_rainbow_materials,
     rainbow_height_slots,
 )
+from warp_optix.gl import GLInteropViewer
 from warp_optix.pathtracing import (
     DEFAULT_VIEWER_HEIGHT,
     DEFAULT_VIEWER_WIDTH,
@@ -35,13 +35,9 @@ def rainbow_segment_slots(points: np.ndarray, segments: int) -> np.ndarray:
 
 
 def _parse_args():
-    parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--hair-count", type=int, default=4000)
-    parser.add_argument(
-        "--segments", type=int, default=5, help="Cubic Bezier segments per hair."
-    )
+    parser.add_argument("--segments", type=int, default=5, help="Cubic Bezier segments per hair.")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--ball-radius", type=float, default=0.8)
     parser.add_argument("--hair-length", type=float, default=0.48)
@@ -50,9 +46,7 @@ def _parse_args():
     parser.add_argument("--root-radius", type=float, default=0.012)
     parser.add_argument("--width", type=int, default=DEFAULT_VIEWER_WIDTH)
     parser.add_argument("--height", type=int, default=DEFAULT_VIEWER_HEIGHT)
-    parser.add_argument(
-        "--fps", type=int, default=0, help="Presentation rate cap; 0 is unlimited."
-    )
+    parser.add_argument("--fps", type=int, default=0, help="Presentation rate cap; 0 is unlimited.")
     parser.add_argument(
         "--max-frames",
         type=int,
@@ -66,7 +60,6 @@ def _parse_args():
     parser.add_argument("--contrast", type=float, default=1.08)
     parser.add_argument("--saturation", type=float, default=1.1)
     parser.add_argument("--no-dlss-rr", action="store_true")
-    parser.add_argument("--no-cuda-graphs", action="store_true")
     parser.add_argument("--no-set", action="store_true")
     return parser.parse_args()
 
@@ -115,24 +108,14 @@ def generate_hair_ball(
     turns = curl_turns * rng.uniform(0.72, 1.28, (hair_count, 1))
     curl = curl_radius * rng.uniform(0.65, 1.35, (hair_count, 1))
     lean_angle = rng.uniform(0.0, 2.0 * np.pi, (hair_count, 1))
-    lean = (
-        np.cos(lean_angle)[..., None] * tangent[:, None, :]
-        + np.sin(lean_angle)[..., None] * bitangent[:, None, :]
-    )
+    lean = np.cos(lean_angle)[..., None] * tangent[:, None, :] + np.sin(lean_angle)[..., None] * bitangent[:, None, :]
 
     u = np.linspace(0.0, 1.0, segments + 1, dtype=np.float64)[None, :]
     angle = phase + 2.0 * np.pi * turns * u
     envelope = np.sin(0.5 * np.pi * u) ** 1.25
-    helix = (
-        np.cos(angle)[..., None] * tangent[:, None, :]
-        + np.sin(angle)[..., None] * bitangent[:, None, :]
-    )
+    helix = np.cos(angle)[..., None] * tangent[:, None, :] + np.sin(angle)[..., None] * bitangent[:, None, :]
     center = (ball_radius + length * u)[..., None] * radial[:, None, :]
-    knots = (
-        center
-        + (curl * envelope)[..., None] * helix
-        + (0.13 * length * u * u)[..., None] * lean
-    )
+    knots = center + (curl * envelope)[..., None] * helix + (0.13 * length * u * u)[..., None] * lean
 
     width_scale = rng.uniform(0.8, 1.2, (hair_count, 1))
     radius_knots = root_radius * width_scale * (0.08 + 0.92 * (1.0 - u) ** 0.75)
@@ -144,9 +127,7 @@ def generate_hair_ball(
     radius_derivatives = np.empty_like(radius_knots)
     radius_derivatives[:, 0] = (radius_knots[:, 1] - radius_knots[:, 0]) / step
     radius_derivatives[:, -1] = (radius_knots[:, -1] - radius_knots[:, -2]) / step
-    radius_derivatives[:, 1:-1] = (radius_knots[:, 2:] - radius_knots[:, :-2]) / (
-        2.0 * step
-    )
+    radius_derivatives[:, 1:-1] = (radius_knots[:, 2:] - radius_knots[:, :-2]) / (2.0 * step)
 
     points_per_hair = 3 * segments + 1
     points = np.empty((hair_count, points_per_hair, 3), dtype=np.float64)
@@ -192,7 +173,6 @@ def main():
         height=args.height,
         enable_dlss_rr=not args.no_dlss_rr,
         enable_set=not args.no_set,
-        enable_cuda_graphs=not args.no_cuda_graphs,
     )
     if not api.initialize():
         raise RuntimeError("Failed to initialize pathtracing API.")
@@ -202,9 +182,7 @@ def main():
 
     core_mat = api.create_pbr_material((0.025, 0.03, 0.04), 0.72, 0.0)
     palette_materials = create_rainbow_materials(api)
-    segment_material_ids = palette_materials[
-        rainbow_segment_slots(points, args.segments)
-    ]
+    segment_material_ids = palette_materials[rainbow_segment_slots(points, args.segments)]
     api.add_sphere((0.0, 0.0, 0.0), args.ball_radius * 1.005, 64, core_mat)
     add_checker_ground(api, height=-1.38)
     curve_id = api.create_curve(
@@ -228,7 +206,7 @@ def main():
         api.resize(render_width, render_height)
         last_elapsed = 0.0
 
-    viewer = woptix.GLInteropViewer(
+    viewer = GLInteropViewer(
         width=args.width,
         height=args.height,
         device="cuda",
@@ -237,9 +215,7 @@ def main():
         on_resize=_on_resize,
         vsync=args.fps > 0,
     )
-    controller = FreeCameraController(
-        viewer, api, (0.0, 0.18, 3.55), 180.0, -3.0, 42.0, args.camera_speed
-    )
+    controller = FreeCameraController(viewer, api, (0.0, 0.18, 3.55), 180.0, -3.0, 42.0, args.camera_speed)
 
     def _render(mapped_image: wp.array, _frame_idx: int, elapsed_sec: float):
         nonlocal last_elapsed
@@ -258,21 +234,16 @@ def main():
             device="cuda",
         )
 
-    print(
-        f"[optix] hair ball: {args.hair_count:,} strands, "
-        f"{len(segment_indices):,} cubic Bezier segments"
-    )
+    print(f"[optix] hair ball: {args.hair_count:,} strands, {len(segment_indices):,} cubic Bezier segments")
     print("[optix] controls: left-drag look, WASD move, Q/E down/up, wheel zoom")
     viewer.run(_render, max_frames=args.max_frames)
     if args.screenshot is not None:
-        from PIL import Image  # noqa: PLC0415
+        from PIL import Image
 
         screenshot = args.screenshot.expanduser().resolve()
         screenshot.parent.mkdir(parents=True, exist_ok=True)
         frame = np.clip(api.get_frame(), 0.0, 1.0)
-        Image.fromarray(
-            (frame[..., :3] * 255.0 + 0.5).astype(np.uint8), mode="RGB"
-        ).save(screenshot)
+        Image.fromarray((frame[..., :3] * 255.0 + 0.5).astype(np.uint8), mode="RGB").save(screenshot)
         print(f"[optix] saved screenshot: {screenshot}")
 
 
