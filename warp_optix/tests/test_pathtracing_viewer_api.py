@@ -52,7 +52,6 @@ class _FakePathTracerAPI:
         self.refit_count = 0
         self.render_count = 0
         self.debug_mode = 0
-        self.dlss_enabled = True
         self.tonemap_exposure = 1.0
         self.tonemap_contrast = 1.0
         self.tonemap_saturation = 1.0
@@ -326,17 +325,17 @@ def test_light_intensity_controls_clamp_and_reset_history():
     api._viewer = SimpleNamespace(
         analytic_light_intensity=1.0,
         emissive_material_intensity=1.0,
-        _dlss_reset_history=False,
+        _denoiser_reset_history=False,
     )
 
     api.analytic_light_intensity = -1.0
     assert api.analytic_light_intensity == 0.0
-    assert api._viewer._dlss_reset_history is True
+    assert api._viewer._denoiser_reset_history is True
 
-    api._viewer._dlss_reset_history = False
+    api._viewer._denoiser_reset_history = False
     api.emissive_material_intensity = 0.25
     assert api.emissive_material_intensity == 0.25
-    assert api._viewer._dlss_reset_history is True
+    assert api._viewer._denoiser_reset_history is True
 
 
 def test_load_scene_from_usd_forwards_options_and_builds():
@@ -375,7 +374,7 @@ def test_load_scene_from_usd_forwards_options_and_builds():
     ]
 
 
-def test_resize_releases_old_dlss_resources_before_native_reallocation(monkeypatch):
+def test_resize_releases_old_denoiser_before_native_reallocation(monkeypatch):
     viewer = PathTracingRenderer.__new__(PathTracingRenderer)
     viewer.width = 800
     viewer.height = 600
@@ -389,7 +388,6 @@ def test_resize_releases_old_dlss_resources_before_native_reallocation(monkeypat
         resize=lambda width, height: events.append(("tonemap", width, height))
     )
     viewer._sync_prev_camera_matrices_to_current = lambda: events.append(("camera",))
-    viewer._destroy_dlss_rr = lambda **kwargs: events.append(("destroy", kwargs))
     viewer._destroy_optix_denoiser = lambda: events.append(("destroy_optix",))
     viewer._init_denoiser = lambda: events.append(("init",))
     monkeypatch.setattr(
@@ -400,8 +398,7 @@ def test_resize_releases_old_dlss_resources_before_native_reallocation(monkeypat
 
     assert viewer.width == 3840
     assert viewer.height == 2160
-    assert events[:2] == [("sync",), ("destroy", {"restore_resolution": False})]
-    assert events[2] == ("destroy_optix",)
+    assert events[:2] == [("sync",), ("destroy_optix",)]
     assert events[-2:] == [("init",), ("tonemap", 3840, 2160)]
 
 
@@ -692,7 +689,8 @@ def test_volume_composite_launches_only_when_bound(monkeypatch):
     viewer.sample_index = 0
     viewer._render_width = 16
     viewer._render_height = 8
-    viewer._dlss_enabled = True
+    viewer._color_buffer = object()
+    viewer._accum_buffer = object()
     viewer._launch_params = object()
     viewer._volume_params = None
     viewer._render_stream = object()
@@ -714,7 +712,7 @@ def test_volume_composite_launches_only_when_bound(monkeypatch):
         view_inv=matrix,
         proj_inv=matrix,
     )
-    assert launches == []
+    assert launches == [viewer_module._accumulate_sample]
 
     viewer._volume = SimpleNamespace(id=1)
     viewer._volume_min = (0.0, 0.0, 0.0)
@@ -735,7 +733,7 @@ def test_volume_composite_launches_only_when_bound(monkeypatch):
         view_inv=matrix,
         proj_inv=matrix,
     )
-    assert launches == [viewer_module.composite_volume]
+    assert launches == [viewer_module._accumulate_sample, viewer_module.composite_volume, viewer_module._accumulate_sample]
 
 
 def test_volume_configuration_forwards_to_renderer():
@@ -805,7 +803,7 @@ def test_scene_rebuild_resets_temporal_history():
     api._viewer = SimpleNamespace(
         _scene=scene,
         _optix=object(),
-        _dlss_reset_history=False,
+        _denoiser_reset_history=False,
         _prev_instance_transforms_valid=True,
         sample_index=17,
         frame_index=9,
@@ -818,23 +816,15 @@ def test_scene_rebuild_resets_temporal_history():
     assert scene.optix is api._viewer._optix
     assert api._viewer.sample_index == 0
     assert api._viewer.frame_index == 0
-    assert api._viewer._dlss_reset_history is True
+    assert api._viewer._denoiser_reset_history is True
     assert api._viewer._prev_instance_transforms_valid is False
 
-    api._viewer._dlss_reset_history = False
+    api._viewer._denoiser_reset_history = False
     api.reset_temporal_history()
-    assert api._viewer._dlss_reset_history is True
+    assert api._viewer._denoiser_reset_history is True
 
 
-def test_quality_modes_and_runtime_ray_budgets():
-    assert (
-        PathTracingRenderer._normalize_dlss_quality("ultra-performance")
-        == "ultra_performance"
-    )
-    assert PathTracingRenderer._normalize_dlss_quality("native") == "native"
-    with pytest.raises(ValueError, match="dlss_quality"):
-        PathTracingRenderer._normalize_dlss_quality("cinematic")
-
+def test_runtime_ray_budgets():
     renderer = PathTracingRenderer.__new__(PathTracingRenderer)
     renderer._pipeline_max_bounces = 6
     renderer.max_bounces = 4
@@ -866,7 +856,7 @@ def test_global_backface_culling_can_be_changed_at_runtime():
     renderer.backface_culling = True
     renderer.sample_index = 17
     renderer.frame_index = 9
-    renderer._dlss_reset_history = False
+    renderer._denoiser_reset_history = False
     renderer._optix_launch_graph = object()
     renderer._optix_graph_warmed = True
 
@@ -875,17 +865,17 @@ def test_global_backface_culling_can_be_changed_at_runtime():
     assert renderer.backface_culling is False
     assert renderer.sample_index == 0
     assert renderer.frame_index == 0
-    assert renderer._dlss_reset_history is True
+    assert renderer._denoiser_reset_history is True
     assert renderer._optix_launch_graph is None
     assert renderer._optix_graph_warmed is False
 
     renderer.sample_index = 4
     renderer.frame_index = 3
-    renderer._dlss_reset_history = False
+    renderer._denoiser_reset_history = False
     renderer.set_backface_culling(False)
     assert renderer.sample_index == 4
     assert renderer.frame_index == 3
-    assert renderer._dlss_reset_history is False
+    assert renderer._denoiser_reset_history is False
 
     api = PathTracerAPI.__new__(PathTracerAPI)
     api._viewer = renderer

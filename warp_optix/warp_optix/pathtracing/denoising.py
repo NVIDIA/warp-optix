@@ -17,7 +17,7 @@ class DenoiserInputs:
 
     Normals are world-space float4 (roughness in w); albedo is float4 (RGB
     plus metadata). Motion is float2, current-to-previous in input pixels,
-    excluding camera jitter. Depth and specular guides are used only by DLSS.
+    excluding camera jitter. Optional depth and specular fields describe additional render outputs.
     """
 
     color: wp.array
@@ -29,27 +29,10 @@ class DenoiserInputs:
     specular_hit_distance: wp.array | None = None
 
 
-# One registration table drives DLSS allocation, binding, and frame uploads.
-DLSS_INPUTS = (
-    ("color", "_dlss_color_in_tex", 4, "RESOURCE_COLOR_IN"),
-    ("normal", "_dlss_normal_roughness_tex", 4, "RESOURCE_NORMALROUGHNESS"),
-    ("motion", "_dlss_motion_tex", 2, "RESOURCE_MOTIONVECTOR"),
-    ("depth", "_dlss_depth_tex", 1, "RESOURCE_LINEARDEPTH"),
-    ("albedo", "_dlss_diffuse_tex", 4, "RESOURCE_DIFFUSE_ALBEDO"),
-    ("specular_albedo", "_dlss_specular_tex", 4, "RESOURCE_SPECULAR_ALBEDO"),
-    (
-        "specular_hit_distance",
-        "_dlss_spec_hit_dist_tex",
-        1,
-        "RESOURCE_SPECULAR_HITDISTANCE",
-    ),
-)
-
-
 @wp.kernel(enable_backward=False)
 def _prepare_flow(motion: wp.array2d(dtype=wp.vec2), flow: wp.array2d(dtype=wp.vec2)):
     y, x = wp.tid()
-    # OptiX expects previous-to-current flow, whereas the renderer/DLSS use
+    # OptiX expects previous-to-current flow, whereas the renderer uses
     # current-to-previous reprojection offsets.
     flow[y, x] = -motion[y, x]
 

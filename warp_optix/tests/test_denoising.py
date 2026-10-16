@@ -15,7 +15,7 @@ from warp_optix.pathtracing import (
 from warp_optix.pathtracing import pathtracing_viewer as renderer_module
 
 
-def _renderer(monkeypatch, mode, *, dlss_available=False):
+def _renderer(monkeypatch, mode):
     renderer = PathTracingRenderer.__new__(PathTracingRenderer)
     renderer.width, renderer.height = 64, 48
     renderer._render_width, renderer._render_height = 64, 48
@@ -27,84 +27,51 @@ def _renderer(monkeypatch, mode, *, dlss_available=False):
     renderer._optix = object()
     renderer._render_stream = object()
     renderer._optix_denoiser = None
-    renderer._dlss_enabled = False
-    renderer._dlss_init_error = None
     renderer._sync_prev_camera_matrices_to_current = lambda: None
-    renderer._destroy_dlss_rr = lambda **kwargs: setattr(
-        renderer, "_dlss_enabled", False
-    )
     renderer._set_render_resolution = lambda w, h: (
-        setattr(renderer, "_render_width", w),
-        setattr(renderer, "_render_height", h),
+        setattr(renderer, "_render_width", w), setattr(renderer, "_render_height", h)
     )
-
-    def init_dlss():
-        renderer._dlss_enabled = dlss_available
-        renderer._dlss_init_error = None if dlss_available else "DLSS unavailable"
-
-    renderer._init_dlss_rr = init_dlss
     monkeypatch.setattr(renderer_module.wp, "synchronize_stream", lambda stream: None)
     return renderer
 
 
-def test_auto_prefers_dlss_and_preserves_diagnostic_on_optix_fallback(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        renderer_module,
-        "OptixDenoiser",
-        lambda *args, **kwargs: (
-            calls.append(kwargs) or SimpleNamespace(close=lambda: None)
-        ),
-    )
-    renderer = _renderer(monkeypatch, "auto", dlss_available=True)
-    renderer._init_denoiser()
-    assert renderer.active_denoiser == "dlss"
-    assert not calls
-    renderer._init_dlss_rr = lambda: setattr(
-        renderer, "_dlss_init_error", "DLSS unavailable"
-    )
+def test_auto_selects_optix(monkeypatch):
+    monkeypatch.setattr(renderer_module, "OptixDenoiser",
+                        lambda *args, **kwargs: SimpleNamespace(close=lambda: None))
+    renderer = _renderer(monkeypatch, "auto")
     renderer._init_denoiser()
     assert renderer.active_denoiser == "optix"
-    assert renderer.denoiser_error == "DLSS unavailable"
-    assert len(calls) == 1
+    assert renderer.denoiser_error is None
 
 
 def test_auto_falls_back_to_raw_but_explicit_backend_fails(monkeypatch):
     def unavailable(*args, **kwargs):
         raise RuntimeError("OptiX unavailable")
-
     monkeypatch.setattr(renderer_module, "OptixDenoiser", unavailable)
     renderer = _renderer(monkeypatch, "auto")
     renderer._init_denoiser()
     assert renderer.active_denoiser == "none"
-    assert "DLSS unavailable" in renderer.denoiser_error
     assert "OptiX unavailable" in renderer.denoiser_error
     renderer.denoiser = "optix"
     with pytest.raises(RuntimeError, match="OptiX unavailable"):
         renderer._init_denoiser()
-    renderer.denoiser = "dlss"
-    with pytest.raises(RuntimeError, match="DLSS unavailable"):
-        renderer._init_denoiser()
-    renderer._denoiser_explicit = False
-    renderer._init_denoiser()  # Legacy enable_dlss_rr still permits raw fallback.
-    assert renderer.active_denoiser == "none"
 
 
 def test_failed_switch_restores_previous_backend(monkeypatch):
     renderer = _renderer(monkeypatch, "none")
-    monkeypatch.setattr(
-        renderer_module,
-        "OptixDenoiser",
-        lambda *args, **kwargs: SimpleNamespace(close=lambda: None),
-    )
+    def create(*args, **kwargs):
+        if not kwargs["upscale"]:
+            raise RuntimeError("unavailable configuration")
+        return SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(renderer_module, "OptixDenoiser", create)
     renderer.set_denoiser("optix", optix_upscale=True)
     assert renderer.active_denoiser == "optix"
     assert (renderer._render_width, renderer._render_height) == (32, 24)
-    with pytest.raises(RuntimeError, match="DLSS unavailable"):
-        renderer.set_denoiser("dlss")
+    with pytest.raises(RuntimeError, match="unavailable configuration"):
+        renderer.set_denoiser("optix", optix_upscale=False)
     assert renderer.denoiser == renderer.active_denoiser == "optix"
     assert renderer.optix_upscale is True
-    assert renderer._dlss_reset_history is True
+    assert renderer._denoiser_reset_history is True
     assert renderer.sample_index == 0
     assert renderer._optix_launch_graph is None
     renderer.width = 63
@@ -186,55 +153,16 @@ def test_renderer_gpu_switch_resize_and_history():
         api.close()
 
 
-def test_renderer_gpu_dlss_quality_survives_backend_switch():
+def test_optix_gpu_frame_is_ordered_when_called_from_another_stream():
     from warp_optix import native as optix
 
     context, _logger = _gpu_context()
     context.close()
-    if not optix.dlss_rr_available():
-        pytest.skip("DLSS RR unavailable")
-    api = PathTracerAPI(
-        width=128,
-        height=96,
-        denoiser="dlss",
-        dlss_quality="performance",
-        enable_set=False,
-    )
-    try:
-        assert api.initialize()
-        api.scene.create_cornell_box()
-        api.build_scene()
-        api.render_frame()
-        assert api.active_denoiser == "dlss"
-        performance_size = (api.viewer._render_width, api.viewer._render_height)
-        api.set_denoiser("optix", optix_upscale=True)
-        api.render_frame()
-        assert api.active_denoiser == "optix"
-        api.set_dlss_quality("native")
-        assert api.active_denoiser == "optix"
-        api.set_denoiser("dlss")
-        api.render_frame()
-        assert api.dlss_quality == "native"
-        assert (api.viewer._render_width, api.viewer._render_height) == (128, 96)
-        assert performance_size != (128, 96)
-        assert api.get_frame().shape == (96, 128, 4)
-        assert np.isfinite(api.get_frame()).all()
-    finally:
-        api.close()
-
-
-def test_dlss_gpu_frame_is_ordered_when_called_from_another_stream():
-    from warp_optix import native as optix
-
-    context, _logger = _gpu_context()
-    context.close()
-    if not optix.dlss_rr_available():
-        pytest.skip("DLSS RR unavailable")
     def first_frame(caller):
         api = PathTracerAPI(
             width=384,
             height=256,
-            denoiser="dlss",
+            denoiser="optix",
             enable_set=False,
             enable_cuda_graphs=False,
         )
@@ -292,3 +220,13 @@ def test_optix_gpu_frames_and_camera_advance(cuda_graphs):
         )
     finally:
         api.close()
+
+
+def test_public_denoiser_properties():
+    api = PathTracerAPI.__new__(PathTracerAPI)
+    api._viewer = SimpleNamespace(denoiser="auto", active_denoiser="optix",
+                                  denoiser_error=None, _optix_launch_graph=None)
+    assert api.denoiser == "auto"
+    assert api.active_denoiser == "optix"
+    assert api.denoiser_error is None
+    assert api.cuda_graph_active is False

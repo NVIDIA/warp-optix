@@ -659,7 +659,7 @@ def _fit_textures_to_budget(
 
             free_bytes = int(wp.get_device("cuda").free_memory)
             # Keep both half of currently free VRAM and 4 GiB available for
-            # geometry, OptiX structures, frame buffers, and DLSS-RR resources.
+            # geometry, OptiX structures, frame buffers, and denoiser resources.
             max_bytes = min(
                 free_bytes // 2,
                 max(0, free_bytes - _TEXTURE_VRAM_RESERVE_BYTES),

@@ -7,7 +7,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Modified Python/Warp adaptation of vk_denoise_dlssrr ray-generation, hit,
-# miss, and DLSS guide-buffer shaders, through an intermediate CUDA/OptiX port:
+# miss, and render-guide shaders, through an intermediate CUDA/OptiX port:
 # https://github.com/nvpro-samples/vk_denoise_dlssrr/tree/f8113a84fa952278bb1286e7899f81b7afe8f41e/dlss_rr/shaders
 # Sky, BSDF, material evaluation, and sampling helpers derive from nvpro_core:
 # https://github.com/nvpro-samples/nvpro_core/blob/bc19d6ac3ef62938d0ea0e099735878457ce1b6e/nvvkhl/shaders
@@ -26,7 +26,6 @@ from warp_optix._runtime.constants import (
     OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT,
 )
 
-from .dlss_helper import environment_term_rtg, positive_rcp  # noqa: F401
 from .func_common import Mat16f, Vec6f, mul_cm_3x3, mul_cm_4x4, power_heuristic  # noqa: F401
 from .optix_programs import TransformMatrix3x4 as TransformMatrix3x4_new  # noqa: F401
 from .optix_programs import (
@@ -41,7 +40,7 @@ from .optix_programs import (
 from .optix_programs import inverse_transform_point as inverse_transform_point_new  # noqa: F401
 from .optix_programs import transform_point as transform_point_new  # noqa: F401
 from .optix_programs import transforms_equal as transforms_equal_new  # noqa: F401
-from .ray_common import DLSS_INF_DISTANCE as _DLSS_INF_DISTANCE_MODULE  # noqa: F401
+from .ray_common import MISS_DISTANCE as _MISS_DISTANCE_MODULE  # noqa: F401
 from .ray_common import RayPayload, apply_matrix_3x3, build_mirror_matrix, reinhard_max  # noqa: F401
 from .viewer_rt_common import get_spherical_uv_csharp, rotate_environment_dir  # noqa: F401
 
@@ -51,7 +50,7 @@ class PrimaryPayload:
     """Matches C++ RayPayload layout using 19 32-bit payload words.
 
     Register map (same as primary_rchit.h):
-      0: hitT            (float)  -- DLSS_INF_DISTANCE for miss
+      0: hitT            (float)  -- MISS_DISTANCE for miss
       1-3: normal/envRad  (float3) -- shading normal for hits, env radiance for miss
       4-6: tangent        (float3)
       7-8: uv             (float2)
@@ -1484,7 +1483,7 @@ def _mul_mat4_cm(m: Mat16f, v: wp.vec4) -> wp.vec4:
     )
 
 
-DLSS_INF_DISTANCE = float(65504.0)
+MISS_DISTANCE = float(65504.0)
 FLAGS_USE_PATH_REGULARIZATION = wp.uint32(4)
 FLAGS_CULL_BACK_FACES = wp.uint32(8)
 
@@ -1510,55 +1509,6 @@ def _reinhard_max(color: wp.vec3) -> wp.vec3:
     lum = wp.max(1.0e-7, wp.max(wp.max(color[0], color[1]), color[2]))
     reinhard = lum / (lum + 1.0)
     return color * (reinhard / lum)
-
-
-@wp.func
-def _positive_rcp(x: wp.float32) -> wp.float32:
-    return 1.0 / wp.max(x, 1.0e-15)
-
-
-@wp.func
-def _environment_term_rtg(
-    rf0: wp.vec3, n_dot_v: wp.float32, alpha_roughness: wp.float32
-) -> wp.vec3:
-    xx = 1.0
-    xy = n_dot_v
-    xz = n_dot_v * n_dot_v
-    xw = n_dot_v * xz
-
-    yx = 1.0
-    yy = alpha_roughness
-    yz = alpha_roughness * alpha_roughness
-    yw = alpha_roughness * yz
-
-    m1x_x = 0.99044 * xx + 1.29678 * xy
-    m1x_y = -1.28514 * xx + (-0.755907) * xy
-
-    m2x_x = 1.0 * xx + 20.3225 * xy + 121.563 * xw
-    m2x_y = 2.92338 * xx + (-27.0302) * xy + 626.13 * xw
-    m2x_z = 59.4188 * xx + 222.592 * xy + 316.627 * xw
-
-    m3x_x = 0.0365463 * xx + 9.0632 * xy
-    m3x_y = 3.32707 * xx + (-9.04756) * xy
-
-    m4x_x = 1.0 * xx + 9.04401 * xz + 5.56589 * xw
-    m4x_y = 3.59685 * xx + (-16.3174) * xz + 19.7886 * xw
-    m4x_z = -1.36772 * xx + 9.22949 * xz + (-20.2123) * xw
-
-    dot_m1_y = m1x_x * yx + m1x_y * yy
-    dot_m2_y = m2x_x * yx + m2x_y * yy + m2x_z * yw
-    dot_m3_y = m3x_x * yx + m3x_y * yy
-    dot_m4_y = m4x_x * yx + m4x_y * yy + m4x_z * yw
-
-    bias = dot_m1_y * _positive_rcp(dot_m2_y)
-    scale = dot_m3_y * _positive_rcp(dot_m4_y)
-
-    result = rf0 * scale + wp.vec3(bias, bias, bias)
-    return wp.vec3(
-        wp.clamp(result[0], 0.0, 1.0),
-        wp.clamp(result[1], 0.0, 1.0),
-        wp.clamp(result[2], 0.0, 1.0),
-    )
 
 
 @wp.func
@@ -1829,7 +1779,7 @@ def _max_vec3(a: wp.vec3, b: wp.vec3) -> wp.vec3:
 @wp.func
 def _init_primary_payload() -> PrimaryPayload:
     p = PrimaryPayload()
-    p.hit_t = DLSS_INF_DISTANCE
+    p.hit_t = MISS_DISTANCE
     p.normal = wp.vec3(0.0, 0.0, 0.0)
     p.tangent = wp.vec3(0.0, 0.0, 0.0)
     p.uv = wp.vec2(0.0, 0.0)
@@ -3152,7 +3102,7 @@ def primary_raygen(params: PathtraceLaunchParams):
     )
 
     hitT = _payload_get_hitT(payload)
-    hit_sky = wp.bool(hitT >= DLSS_INF_DISTANCE)
+    hit_sky = wp.bool(hitT >= MISS_DISTANCE)
 
     # PSR state tracking (matches C++ psrMirror / psrHitDist / isPsr / psrThroughput / psrDirectRadiance).
     is_psr = wp.bool(False)
@@ -3171,7 +3121,7 @@ def primary_raygen(params: PathtraceLaunchParams):
     max_psr_depth = wp.int32(5)
     while psr_depth < max_psr_depth:
         hitT = _payload_get_hitT(payload)
-        hit_sky = wp.bool(hitT >= DLSS_INF_DISTANCE)
+        hit_sky = wp.bool(hitT >= MISS_DISTANCE)
 
         if hit_sky:
             sky_color = _payload_get_normal(payload)
@@ -3308,8 +3258,8 @@ def primary_raygen(params: PathtraceLaunchParams):
     virtual_origin = ray_origin + org_dir * psr_hit_dist
     view_depth = _compute_view_z(params.view, virtual_origin)
 
-    # DLSS auxiliary defaults.
-    aux_view_z = wp.float32(DLSS_INF_DISTANCE)
+    # Render-guide defaults.
+    aux_view_z = wp.float32(MISS_DISTANCE)
     aux_motion = wp.vec2(0.0, 0.0)
     aux_normal_roughness = wp.vec4(0.0, 0.0, 0.0, 0.0)
     aux_diffuse_albedo = wp.vec4(0.0, 0.0, 0.0, 0.0)
@@ -3330,7 +3280,7 @@ def primary_raygen(params: PathtraceLaunchParams):
                 virtual_origin[0], virtual_origin[1], virtual_origin[2], 1.0
             )
         else:
-            aux_view_z = wp.float32(DLSS_INF_DISTANCE)
+            aux_view_z = wp.float32(MISS_DISTANCE)
             motion_origin = wp.vec4(org_dir[0], org_dir[1], org_dir[2], 0.0)
         aux_motion = _compute_camera_motion_vector(
             params, pixel_center, motion_origin, dim
@@ -3354,7 +3304,7 @@ def primary_raygen(params: PathtraceLaunchParams):
         )
         params.normal_roughness_output[y, x] = wp.vec4(0.0, 0.0, 0.0, 0.0)
         params.motion_output[y, x] = wp.vec2(0.0, 0.0)
-        params.depth_output[y, x] = wp.float32(DLSS_INF_DISTANCE)
+        params.depth_output[y, x] = wp.float32(MISS_DISTANCE)
         params.diffuse_output[y, x] = wp.vec4(0.0, 0.0, 0.0, 0.0)
         params.specular_output[y, x] = wp.vec4(0.0, 0.0, 0.0, 0.0)
         params.spec_hit_dist_output[y, x] = wp.float32(0.0)
@@ -3476,7 +3426,7 @@ def primary_raygen(params: PathtraceLaunchParams):
                 shadow_origin,
                 ls.direction,
                 0.001,
-                DLSS_INF_DISTANCE,
+                MISS_DISTANCE,
                 0.0,
                 wp.uint32(255),
                 wp.uint32(
@@ -3623,7 +3573,7 @@ def primary_raygen(params: PathtraceLaunchParams):
             )
             break
 
-        miss = wp.bool(t_sec >= DLSS_INF_DISTANCE * 0.99)
+        miss = wp.bool(t_sec >= MISS_DISTANCE * 0.99)
 
         if depth == 1 and is_glossy_reflection:
             path_length = wp.abs(t_sec)
@@ -3724,7 +3674,7 @@ def primary_raygen(params: PathtraceLaunchParams):
                     _offset_ray(sec_hit_pos, sec_pbr.Ng),
                     sec_ls.direction,
                     0.001,
-                    DLSS_INF_DISTANCE,
+                    MISS_DISTANCE,
                     0.0,
                     wp.uint32(255),
                     wp.uint32(
@@ -3849,7 +3799,7 @@ def primary_raygen(params: PathtraceLaunchParams):
         if not completed_thick_exit:
             depth = depth + wp.int32(1)
 
-    # Specular albedo (pre-integrated environment term).
+    # Normal-incidence specular reflectance for the debug output.
     guide_f0 = _mul_vec3(
         _material_f0(
             guide_pbr.diffuse,
@@ -3862,9 +3812,7 @@ def primary_raygen(params: PathtraceLaunchParams):
         ),
         psr_throughput,
     )
-    v_dot_n = wp.max(wp.dot(to_eye, guide_pbr.normal), 0.0)
-    f_env = _environment_term_rtg(guide_f0, v_dot_n, guide_pbr.roughness)
-    aux_specular_albedo = wp.vec4(f_env[0], f_env[1], f_env[2], 0.0)
+    aux_specular_albedo = wp.vec4(guide_f0[0], guide_f0[1], guide_f0[2], 0.0)
     aux_spec_hit_dist = path_length
 
     # Guard against NaN/Inf (matches C++ lines 688-693).
@@ -3886,7 +3834,7 @@ def primary_raygen(params: PathtraceLaunchParams):
     out_color = color
     if params.output_mode == 2:  # DEPTH
         depth_vis = (
-            0.0 if aux_view_z >= DLSS_INF_DISTANCE else wp.exp(-0.075 * aux_view_z)
+            0.0 if aux_view_z >= MISS_DISTANCE else wp.exp(-0.075 * aux_view_z)
         )
         out_color = wp.vec3(depth_vis, depth_vis, depth_vis)
     elif params.output_mode == 3:  # MOTION
@@ -3926,11 +3874,11 @@ def primary_raygen(params: PathtraceLaunchParams):
 
 @woptix.optix_kernel(woptix.OptixKernelType.MISS)
 def primary_miss(params: PathtraceLaunchParams):
-    """Miss shader: set hitT = DLSS_INF_DISTANCE and store sky color in normal/envRad fields."""
+    """Miss shader: set hitT = MISS_DISTANCE and store sky color in normal/envRad fields."""
     rd = wp.normalize(wp.optix_get_world_ray_direction())
     sky = _sample_environment(params, rd)
     miss_payload = PrimaryMissPayload()
-    miss_payload.hit_t = DLSS_INF_DISTANCE
+    miss_payload.hit_t = MISS_DISTANCE
     miss_payload.env_radiance = sky
     wp.optix_store_payload(miss_payload)
 

@@ -99,7 +99,7 @@ def _broadcast_rows(
 
 
 class PathTracingViewerBackend:
-    """OptiX/DLSS viewer backend independent of any simulation framework.
+    """OptiX viewer backend independent of any simulation framework.
 
     The ``log_*`` surface intentionally accepts Warp arrays and mirrors the
     renderer-facing protocol used by simulation viewers. It can be used
@@ -117,9 +117,7 @@ class PathTracingViewerBackend:
         paused: bool = False,
         render_when_paused: bool = False,
         num_frames: int | None = None,
-        enable_dlss_rr: bool = True,
         enable_set: bool = True,
-        dlss_quality: str = "quality",
         samples_per_frame: int = 1,
         max_bounces: int = 4,
         direct_light_samples: int = 1,
@@ -191,11 +189,9 @@ class PathTracingViewerBackend:
         self._api = api or PathTracerAPI(
             width=self.width,
             height=self.height,
-            enable_dlss_rr=enable_dlss_rr,
             denoiser=denoiser,
             optix_upscale=optix_upscale,
             enable_set=enable_set,
-            dlss_quality=dlss_quality,
             samples_per_frame=samples_per_frame,
             max_bounces=max_bounces,
             direct_light_samples=direct_light_samples,
@@ -341,15 +337,6 @@ class PathTracingViewerBackend:
         """Set the nonnegative display saturation multiplier."""
         self._api.tonemap_saturation = value
 
-    @property
-    def dlss_quality(self) -> str:
-        """Return the selected DLSS input-resolution/quality mode."""
-        return self._api.dlss_quality
-
-    @dlss_quality.setter
-    def dlss_quality(self, value: str) -> None:
-        """Select a DLSS quality mode."""
-        self._api.set_dlss_quality(value)
 
     @property
     def denoiser(self) -> str:
@@ -380,20 +367,13 @@ class PathTracingViewerBackend:
 
     def _ui_denoiser_controls(self, imgui):
         imgui.text(f"Denoiser: {self.active_denoiser}")
-        modes = ["auto", "dlss", "optix", "none"]
+        modes = ["auto", "optix", "none"]
         changed, selected = imgui.combo("Denoiser", modes.index(self.denoiser), modes)
         if changed:
             try:
                 self.set_denoiser(modes[selected])
             except (RuntimeError, ValueError) as exc:
                 logger.warning("Could not switch denoiser: %s", exc)
-        if self.denoiser in ("dlss", "auto"):
-            quality_modes = list(self._api.viewer.DLSS_QUALITY_MODES)
-            changed, selected = imgui.combo(
-                "DLSS Quality", quality_modes.index(self.dlss_quality), quality_modes
-            )
-            if changed:
-                self.dlss_quality = quality_modes[selected]
         if self.denoiser in ("optix", "auto"):
             changed, upscale = imgui.checkbox("OptiX 2x Upscaling", self.optix_upscale)
             if changed:
@@ -419,7 +399,7 @@ class PathTracingViewerBackend:
 
     @property
     def samples_per_frame(self) -> int:
-        """Return samples per frame used without DLSS."""
+        """Return samples per frame used per frame."""
         return self._api.samples_per_frame
 
     def set_ray_budget(
@@ -1591,7 +1571,7 @@ class PathTracingViewerBackend:
         self._api.set_sun_direction(*direction, intensity=float(intensity))
 
     def reset_temporal_history(self):
-        """Discard DLSS reconstruction history after a discontinuous scene change."""
+        """Discard temporal denoising history after a discontinuous scene change."""
         self._api.reset_temporal_history()
 
     def set_volume(self, volume, bounds_min, bounds_max, **kwargs):

@@ -76,41 +76,6 @@ if(NOT TARGET CUDA::cuda_driver)
   find_package(CUDAToolkit 10.0 REQUIRED)
 endif()
 
-# DLSS Ray Reconstruction bindings and runtime are required package components.
-if(NOT DEFINED PYOPTIX_ENABLE_DLSS AND DEFINED ENV{PYOPTIX_ENABLE_DLSS})
-  set(PYOPTIX_ENABLE_DLSS "$ENV{PYOPTIX_ENABLE_DLSS}")
-endif()
-if(DEFINED PYOPTIX_ENABLE_DLSS AND NOT PYOPTIX_ENABLE_DLSS)
-  message(FATAL_ERROR "warp-optix requires DLSS; set PYOPTIX_ENABLE_DLSS=ON or omit the setting")
-endif()
-set(PYOPTIX_ENABLE_DLSS ON)
-
-foreach(_dlss_setting DLSS_ROOT PYOPTIX_DLSS_VERSION PYOPTIX_AUTO_DOWNLOAD_DLSS)
-  if(NOT DEFINED ${_dlss_setting} AND DEFINED ENV{${_dlss_setting}})
-    set(${_dlss_setting} "$ENV{${_dlss_setting}}" CACHE STRING "Forwarded from the environment")
-  endif()
-endforeach()
-
-if(PYOPTIX_ENABLE_DLSS)
-  find_package(DLSS REQUIRED)
-  if(NOT EXISTS "${DLSS_RUNTIME_LIBRARY_RELEASE}")
-    message(FATAL_ERROR "warp-optix packaging requires the DLSS Release runtime in DLSS_ROOT")
-  endif()
-  if(NOT EXISTS "${DLSS_LICENSE_FILE}")
-    message(FATAL_ERROR "DLSS builds require the SDK LICENSE.txt")
-  endif()
-  # Keep the SDK used by the linker consistent with the terms in wheel metadata.
-  file(READ "${DLSS_LICENSE_FILE}" _dlss_sdk_license)
-  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/DLSS_LICENSE.txt" _dlss_packaged_license)
-  string(REPLACE "\r\n" "\n" _dlss_sdk_license "${_dlss_sdk_license}")
-  string(REPLACE "\r\n" "\n" _dlss_packaged_license "${_dlss_packaged_license}")
-  string(STRIP "${_dlss_sdk_license}" _dlss_sdk_license)
-  string(STRIP "${_dlss_packaged_license}" _dlss_packaged_license)
-  if(NOT _dlss_sdk_license STREQUAL _dlss_packaged_license)
-    message(FATAL_ERROR "DLSS SDK license differs from DLSS_LICENSE.txt; review and update the packaged terms")
-  endif()
-endif()
-
 #------------------------------------------------------------------------------
 # Main build
 #------------------------------------------------------------------------------
@@ -128,16 +93,11 @@ target_link_libraries(_ext PRIVATE
     pybind11::headers
 )
 
-if(PYOPTIX_ENABLE_DLSS)
-  target_compile_definitions(_ext PRIVATE PYOPTIX_ENABLE_DLSS=1)
-  target_link_libraries(_ext PRIVATE DLSS::DLSS)
-  dlss_setup_runtime_dependencies(_ext)
-endif()
 
 target_compile_features(_ext PRIVATE cxx_std_17)
 
 # The dependency owns optix._optix. Install only our supplemental extension,
-# shader headers, and DLSS runtime under warp_optix.
+# and shader headers under warp_optix.
 set(WARP_OPTIX_INSTALL_DIR "${SKBUILD_PLATLIB_DIR}/warp_optix")
 install(TARGETS _ext DESTINATION ${WARP_OPTIX_INSTALL_DIR})
 # Warp compiles OptiX kernels at runtime, so wheels need the unmodified SDK
@@ -146,16 +106,3 @@ install(DIRECTORY "${optix_headers_SOURCE_DIR}/include/"
         DESTINATION ${WARP_OPTIX_INSTALL_DIR}/include)
 install(FILES "${optix_headers_SOURCE_DIR}/LICENSE.txt"
         DESTINATION ${WARP_OPTIX_INSTALL_DIR}/include RENAME OptiX_LICENSE.txt)
-
-if(PYOPTIX_ENABLE_DLSS AND (DLSS_RUNTIME_LIBRARY_DEBUG OR DLSS_RUNTIME_LIBRARY_RELEASE))
-  if(NOT EXISTS "${DLSS_LICENSE_FILE}")
-    message(FATAL_ERROR "DLSS runtime packaging requires the SDK LICENSE.txt in DLSS_ROOT")
-  endif()
-  install(FILES "${DLSS_LICENSE_FILE}" DESTINATION ${WARP_OPTIX_INSTALL_DIR}
-          RENAME DLSS_LICENSE.txt)
-  install(FILES
-    "${DLSS_RUNTIME_LIBRARY_RELEASE}"
-    DESTINATION ${WARP_OPTIX_INSTALL_DIR}
-    RENAME "$<IF:$<PLATFORM_ID:Windows>,nvngx_dlssd.dll,libnvidia-ngx-dlssd.so>"
-  )
-endif()

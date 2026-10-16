@@ -94,10 +94,12 @@ entry per curve segment; `create_mesh` accepts the equivalent per-triangle
 array. Curves use the existing PBR material, lighting, alpha,
 transmission, guide-buffer, and shadow paths; USD curve import is not required.
 
-The basic path-tracing example automatically downloads its default A Beautiful
-Game scene into the platform cache on first use. On Linux this defaults to
-`~/.cache/warp_optix/assets/`. Pass `--scene-gltf PATH` to use a local `.gltf`
-or `.glb` scene instead.
+The basic path-tracing example generates a complete chess set with procedural
+light maple and dark walnut textures with brass accents. Wood grain uses a
+shared scale in scene units across the board and pieces. Its geometry and textures are created locally using
+NumPy, without downloading assets. The reusable geometry and texture helpers
+are in `example_warp_optix_chess_scene.py`. Pass `--scene-gltf PATH` to load
+your own `.gltf` or `.glb` scene instead.
 
 The USD path-tracing example loads a user-supplied composed USD stage and maps
 UsdPreviewSurface plus common NVIDIA OmniPBR/OmniGlass MDL inputs to the
@@ -135,13 +137,9 @@ frames transform-aware world-space geometry bounds. Use `--usd-camera PATH`
 to select a camera explicitly or `--no-usd-camera` to force bounds framing.
 Extreme flat ground planes are excluded from fallback camera fitting when
 other geometry is present, but remain loaded and rendered. Both examples
-capture the stable OptiX launch as a CUDA graph by default while keeping
-per-frame camera/jitter parameters and DLSS evaluation dynamic; use
-`--no-cuda-graphs` only for diagnostics. Frame-level capture is automatically
-skipped while DLSS-RR or temporal OptiX denoising is active. DLSS resource event
-bookkeeping is not legal during CUDA stream capture, and captured OptiX launches
-can freeze camera/sample parameters on the tested runtime. USD transform/TLAS device batches remain
-independently graph-capturable.
+submit OptiX launches asynchronously on the rendering stream. OptiX launch
+capture is unsupported; USD transform/TLAS device updates remain independently
+graph-capturable.
 The loader triangulates authored polygons but does not tessellate subdivision
 surfaces or import camera animation, curves, or point instancers. Other USD
 light types are not currently imported.
