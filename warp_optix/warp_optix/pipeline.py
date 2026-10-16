@@ -18,13 +18,13 @@ import warp as wp
 from warp_optix import native
 from warp_optix.accel import CAPTURE_ERROR
 from warp_optix.addon import build_options
-from warp_optix.enums import TraversableGraphFlags
+from warp_optix.context import Context, require_context
+from warp_optix.enums import ExceptionFlags, TraversableGraphFlags
 from warp_optix.program import ProgramKind, as_program, params_struct
 from warp_optix.sbt import SbtBuilder, SbtLayout
 
 _log = logging.getLogger(__name__)
 _PIPELINE_IDS = itertools.count()
-_LOG_LEVELS = {1: logging.CRITICAL, 2: logging.ERROR, 3: logging.WARNING, 4: logging.INFO}
 _BUILTIN_PRIMITIVE_FLAGS = {
     int(native.PRIMITIVE_TYPE_ROUND_LINEAR): int(native.PRIMITIVE_TYPE_FLAGS_ROUND_LINEAR),
     int(native.PRIMITIVE_TYPE_ROUND_QUADRATIC_BSPLINE): int(native.PRIMITIVE_TYPE_FLAGS_ROUND_QUADRATIC_BSPLINE),
@@ -35,30 +35,18 @@ _BUILTIN_PRIMITIVE_FLAGS = {
 }
 
 
-def _log_callback(level: int, tag: str, message: str) -> None:
-    _log.log(_LOG_LEVELS.get(level, logging.DEBUG), "[%s] %s", tag, message)
-
-
-def create_context(device=None, *, validation: bool = False):
-    """Create an OptiX device context on a Warp CUDA device; messages go to ``logging``."""
-    options = native.DeviceContextOptions(
-        logCallbackFunction=_log_callback,
-        logCallbackLevel=4,
-        validationMode=(
-            native.DEVICE_CONTEXT_VALIDATION_MODE_ALL if validation else native.DEVICE_CONTEXT_VALIDATION_MODE_OFF
-        ),
-    )
-    return native.deviceContextCreate(wp.get_device(device).context, options)
+def create_context(device=None, *, validation: bool = False, log_level: int = 4) -> Context:
+    """Create a managed context; use with ``with`` or call ``destroy_context()``."""
+    return Context(device, validation=validation, log_level=log_level)
 
 
 def destroy_context(ctx, device=None) -> None:
-    """Wait for ``device`` and destroy ``ctx`` with every pipeline and module created from it.
-
-    Keep acceleration structures and pipelines referenced until this returns; their
-    device buffers may be freed afterwards.
-    """
-    wp.synchronize_device(device)
-    ctx.destroy()
+    """Synchronize the owning device, then close the context and its resources."""
+    if not isinstance(ctx, Context):
+        raise TypeError("Use a context returned by warp_optix.create_context()")
+    if device is not None and wp.get_device(device) != ctx.device:
+        raise ValueError("Device and context must use the same CUDA device")
+    ctx.close()
 
 
 @dataclass(frozen=True)
@@ -89,6 +77,7 @@ class Pipeline:
     records: wp.array
     groups: tuple
     modules: tuple
+    context: Context
     sbt_layout: SbtLayout | None = None
 
 
@@ -103,6 +92,7 @@ def create_pipeline(
     callables: Sequence[wp.Kernel] = (),
     continuation_callables: Sequence[wp.Kernel] = (),
     exception: wp.Kernel | None = None,
+    exception_flags: int | None = None,
     payload_words: int = 0,
     attribute_words: int = 2,
     max_trace_depth: int = 1,
@@ -146,189 +136,202 @@ def create_pipeline(
         raise ValueError("ray_types must be an integer between 1 and 15")
     if len(hit_groups) % ray_types:
         raise ValueError("hit_groups must contain one group per geometry type and ray type")
-    device = wp.get_device(device)
+    ctx = require_context(ctx)
+    device = ctx._device(device)
     if wp.get_stream(device).is_capturing:
         raise RuntimeError(CAPTURE_ERROR)
 
-    # All programs compile into one Warp module that inherits the raygen module's options.
-    params = params_struct(raygen)
-    module_name = f"warp_optix_pipeline_{next(_PIPELINE_IDS)}"
+    with ctx._transaction():
+        # All programs compile into one Warp module that inherits the raygen module's options.
+        params = params_struct(raygen)
+        module_name = f"warp_optix_pipeline_{next(_PIPELINE_IDS)}"
 
-    def program(kernel, kind):
-        return None if kernel is None else as_program(kernel, kind, params, module_name)
+        def program(kernel, kind):
+            return None if kernel is None else as_program(kernel, kind, params, module_name)
 
-    raygen_program = program(raygen, ProgramKind.RAYGEN)
-    miss_programs = [program(k, ProgramKind.MISS) for k in miss]
-    hit_programs = [
-        (
-            program(g.closest_hit, ProgramKind.CLOSEST_HIT),
-            program(g.any_hit, ProgramKind.ANY_HIT),
-            program(g.intersection, ProgramKind.INTERSECTION),
+        raygen_program = program(raygen, ProgramKind.RAYGEN)
+        miss_programs = [program(k, ProgramKind.MISS) for k in miss]
+        hit_programs = [
+            (
+                program(g.closest_hit, ProgramKind.CLOSEST_HIT),
+                program(g.any_hit, ProgramKind.ANY_HIT),
+                program(g.intersection, ProgramKind.INTERSECTION),
+            )
+            for g in hit_groups
+        ]
+        callable_programs = [program(k, ProgramKind.DIRECT_CALLABLE) for k in callables]
+        continuation_programs = [program(k, ProgramKind.CONTINUATION_CALLABLE) for k in continuation_callables]
+        exception_program = program(exception, ProgramKind.EXCEPTION)
+
+        module = wp.get_module(module_name)
+        wp.set_module_options(
+            {**raygen.module.options, "enable_backward": False, "extra_build_options": build_options()}, module=module
         )
-        for g in hit_groups
-    ]
-    callable_programs = [program(k, ProgramKind.DIRECT_CALLABLE) for k in callables]
-    continuation_programs = [program(k, ProgramKind.CONTINUATION_CALLABLE) for k in continuation_callables]
-    exception_program = program(exception, ProgramKind.EXCEPTION)
+        module_dir = os.path.join(wp.config.kernel_cache_dir, "warp_optix", module_name)
+        ptx = wp.compile_aot_module(module, device=device, module_dir=module_dir, use_ptx=True)[0].read_bytes()
 
-    module = wp.get_module(module_name)
-    wp.set_module_options(
-        {**raygen.module.options, "enable_backward": False, "extra_build_options": build_options()}, module=module
-    )
-    module_dir = os.path.join(wp.config.kernel_cache_dir, "warp_optix", module_name)
-    ptx = wp.compile_aot_module(module, device=device, module_dir=module_dir, use_ptx=True)[0].read_bytes()
+        primitive_flags = 0
+        for group in hit_groups:
+            if group.builtin is not None:
+                primitive_flags |= _BUILTIN_PRIMITIVE_FLAGS[int(group.builtin)]
+            elif group.intersection is not None:
+                primitive_flags |= int(native.PRIMITIVE_TYPE_FLAGS_CUSTOM)
+            else:
+                primitive_flags |= int(native.PRIMITIVE_TYPE_FLAGS_TRIANGLE)
 
-    primitive_flags = 0
-    for group in hit_groups:
-        if group.builtin is not None:
-            primitive_flags |= _BUILTIN_PRIMITIVE_FLAGS[int(group.builtin)]
-        elif group.intersection is not None:
-            primitive_flags |= int(native.PRIMITIVE_TYPE_FLAGS_CUSTOM)
-        else:
-            primitive_flags |= int(native.PRIMITIVE_TYPE_FLAGS_TRIANGLE)
+        pipeline_options = native.PipelineCompileOptions(
+            usesMotionBlur=motion_blur,
+            traversableGraphFlags=int(graph_flags),
+            numPayloadValues=payload_words,
+            numAttributeValues=attribute_words,
+            exceptionFlags=int((ExceptionFlags.USER if exception else ExceptionFlags.NONE)
+                               if exception_flags is None else exception_flags),
+            pipelineLaunchParamsVariableName="params",
+            usesPrimitiveTypeFlags=primitive_flags or int(native.PRIMITIVE_TYPE_FLAGS_TRIANGLE),
+        )
+        module_options = native.ModuleCompileOptions(
+            maxRegisterCount=max_registers,
+            optLevel=native.COMPILE_OPTIMIZATION_DEFAULT,
+            debugLevel=native.COMPILE_DEBUG_LEVEL_DEFAULT,
+        )
+        optix_module, log = ctx.moduleCreate(module_options, pipeline_options, ptx)
+        if log:
+            _log.debug("module %s: %s", module_name, log)
+        builtin_modules = {
+            group.builtin: ctx.builtinISModuleGet(
+                module_options,
+                pipeline_options,
+                native.BuiltinISOptions(
+                    builtinISModuleType=native.PrimitiveType(int(group.builtin)), usesMotionBlur=motion_blur
+                ),
+            )
+            for group in hit_groups
+            if group.builtin is not None
+        }
 
-    pipeline_options = native.PipelineCompileOptions(
-        usesMotionBlur=motion_blur,
-        traversableGraphFlags=int(graph_flags),
-        numPayloadValues=payload_words,
-        numAttributeValues=attribute_words,
-        exceptionFlags=int(native.EXCEPTION_FLAG_USER if exception else native.EXCEPTION_FLAG_NONE),
-        pipelineLaunchParamsVariableName="params",
-        usesPrimitiveTypeFlags=primitive_flags or int(native.PRIMITIVE_TYPE_FLAGS_TRIANGLE),
-    )
-    module_options = native.ModuleCompileOptions(
-        maxRegisterCount=max_registers,
-        optLevel=native.COMPILE_OPTIMIZATION_DEFAULT,
-        debugLevel=native.COMPILE_DEBUG_LEVEL_DEFAULT,
-    )
-    optix_module, log = ctx.moduleCreate(module_options, pipeline_options, ptx)
-    if log:
-        _log.debug("module %s: %s", module_name, log)
-    builtin_modules = {
-        group.builtin: ctx.builtinISModuleGet(
-            module_options,
-            pipeline_options,
-            native.BuiltinISOptions(
-                builtinISModuleType=native.PrimitiveType(int(group.builtin)), usesMotionBlur=motion_blur
+        # Keyword arguments of one ProgramGroupDesc slot. OptiX treats an empty entry
+        # name without a module as "no program"; built-in intersections have a module only.
+        def slot(prefix: str, suffix: str, kernel, module=optix_module) -> dict:
+            if kernel is not None:
+                return {f"{prefix}Module{suffix}": module, f"{prefix}EntryFunctionName{suffix}": kernel.get_mangled_name()}
+            if module is not optix_module:
+                return {f"{prefix}Module{suffix}": module}
+            return {f"{prefix}EntryFunctionName{suffix}": ""}
+
+        raygen_desc = native.ProgramGroupDesc(**slot("raygen", "", raygen_program))
+        miss_descs = [native.ProgramGroupDesc(**slot("miss", "", k)) for k in miss_programs]
+        hit_descs = [
+            native.ProgramGroupDesc(
+                **slot("hitgroup", "CH", ch),
+                **slot("hitgroup", "AH", ah),
+                **(
+                    slot("hitgroup", "IS", None, builtin_modules[group.builtin])
+                    if group.builtin is not None
+                    else slot("hitgroup", "IS", is_)
+                ),
+            )
+            for group, (ch, ah, is_) in zip(hit_groups, hit_programs)
+        ]
+        callable_descs = [native.ProgramGroupDesc(**slot("callables", "DC", k)) for k in callable_programs]
+        callable_descs += [native.ProgramGroupDesc(**slot("callables", "CC", k)) for k in continuation_programs]
+        exception_descs = [native.ProgramGroupDesc(**slot("exception", "", exception_program))] if exception_program else []
+        descs = [raygen_desc, *exception_descs, *miss_descs, *hit_descs, *callable_descs]
+        groups, log = ctx.programGroupCreate(descs, native.ProgramGroupOptions())
+        if log:
+            _log.debug("program groups %s: %s", module_name, log)
+
+        link_options = native.PipelineLinkOptions()
+        link_options.maxTraceDepth = max_trace_depth
+        pipeline = ctx.pipelineCreate(pipeline_options, link_options, groups, "")
+        stack_sizes = native.StackSizes()
+        for group in groups:
+            native.util.accumulateStackSizes(group, stack_sizes, pipeline)
+        pipeline.setStackSize(
+            *native.util.computeStackSizes(
+                stack_sizes, max_trace_depth, 1 if continuation_callables else 0, 1 if callables else 0
             ),
+            max_traversable_depth,
         )
-        for group in hit_groups
-        if group.builtin is not None
-    }
 
-    # Keyword arguments of one ProgramGroupDesc slot. OptiX treats an empty entry
-    # name without a module as "no program"; built-in intersections have a module only.
-    def slot(prefix: str, suffix: str, kernel, module=optix_module) -> dict:
-        if kernel is not None:
-            return {f"{prefix}Module{suffix}": module, f"{prefix}EntryFunctionName{suffix}": kernel.get_mangled_name()}
-        if module is not optix_module:
-            return {f"{prefix}Module{suffix}": module}
-        return {f"{prefix}EntryFunctionName{suffix}": ""}
+        # One device buffer holds every header-only SBT record, in descriptor order.
+        stride = -(-native.SBT_RECORD_HEADER_SIZE // native.SBT_RECORD_ALIGNMENT) * native.SBT_RECORD_ALIGNMENT
+        host_records = np.zeros((len(groups), stride), dtype=np.uint8)
+        for group, record in zip(groups, host_records):
+            native.sbtRecordPackHeader(group, record)
+        records = wp.array(host_records.reshape(-1), dtype=wp.uint8, device=device)
 
-    raygen_desc = native.ProgramGroupDesc(**slot("raygen", "", raygen_program))
-    miss_descs = [native.ProgramGroupDesc(**slot("miss", "", k)) for k in miss_programs]
-    hit_descs = [
-        native.ProgramGroupDesc(
-            **slot("hitgroup", "CH", ch),
-            **slot("hitgroup", "AH", ah),
-            **(
-                slot("hitgroup", "IS", None, builtin_modules[group.builtin])
-                if group.builtin is not None
-                else slot("hitgroup", "IS", is_)
-            ),
+        first_miss = records.ptr + (1 + len(exception_descs)) * stride
+        first_hit = first_miss + len(miss_descs) * stride
+        first_callable = first_hit + len(hit_descs) * stride
+        sbt = native.ShaderBindingTable(
+            raygenRecord=records.ptr,
+            exceptionRecord=records.ptr + stride if exception_descs else 0,
+            missRecordBase=first_miss,
+            missRecordStrideInBytes=stride,
+            missRecordCount=len(miss_descs),
+            hitgroupRecordBase=first_hit if hit_descs else 0,
+            hitgroupRecordStrideInBytes=stride,
+            hitgroupRecordCount=len(hit_descs),
+            callablesRecordBase=first_callable if callable_descs else 0,
+            callablesRecordStrideInBytes=stride,
+            callablesRecordCount=len(callable_descs),
         )
-        for group, (ch, ah, is_) in zip(hit_groups, hit_programs)
-    ]
-    callable_descs = [native.ProgramGroupDesc(**slot("callables", "DC", k)) for k in callable_programs]
-    callable_descs += [native.ProgramGroupDesc(**slot("callables", "CC", k)) for k in continuation_programs]
-    exception_descs = [native.ProgramGroupDesc(**slot("exception", "", exception_program))] if exception_program else []
-    descs = [raygen_desc, *exception_descs, *miss_descs, *hit_descs, *callable_descs]
-    groups, log = ctx.programGroupCreate(descs, native.ProgramGroupOptions())
-    if log:
-        _log.debug("program groups %s: %s", module_name, log)
 
-    link_options = native.PipelineLinkOptions()
-    link_options.maxTraceDepth = max_trace_depth
-    pipeline = ctx.pipelineCreate(pipeline_options, link_options, groups, "")
-    stack_sizes = native.StackSizes()
-    for group in groups:
-        native.util.accumulateStackSizes(group, stack_sizes, pipeline)
-    pipeline.setStackSize(
-        *native.util.computeStackSizes(
-            stack_sizes, max_trace_depth, 1 if continuation_callables else 0, 1 if callables else 0
-        ),
-        max_traversable_depth,
-    )
+        # launch() stores the raygen arguments into the device params block with a
+        # generated kernel, so Warp checks and packs them exactly as for wp.launch.
+        names = [arg.label for arg in raygen.adj.args]
+        arguments = ", ".join(f"{n}: T{i}" for i, n in enumerate(names))
+        stores = "".join(f"    p.{n} = {n}\n" for n in names)
+        source = f"def write_params({arguments}, _wo_params: wp.array(dtype=Params)):\n    p = Params()\n{stores}    _wo_params[0] = p\n"
+        scope = {"wp": wp, "Params": params} | {f"T{i}": arg.type for i, arg in enumerate(raygen.adj.args)}
+        namespace: dict = {}
+        exec(compile(source, f"<warp_optix params {raygen.key}>", "exec"), scope, namespace)  # noqa: S102
+        writer = wp.Kernel(
+            namespace["write_params"], key="write_params", module=wp.get_module(f"{module_name}_params"), source=source
+        )
 
-    # One device buffer holds every header-only SBT record, in descriptor order.
-    stride = -(-native.SBT_RECORD_HEADER_SIZE // native.SBT_RECORD_ALIGNMENT) * native.SBT_RECORD_ALIGNMENT
-    host_records = np.zeros((len(groups), stride), dtype=np.uint8)
-    for group, record in zip(groups, host_records):
-        native.sbtRecordPackHeader(group, record)
-    records = wp.array(host_records.reshape(-1), dtype=wp.uint8, device=device)
-
-    first_miss = records.ptr + (1 + len(exception_descs)) * stride
-    first_hit = first_miss + len(miss_descs) * stride
-    first_callable = first_hit + len(hit_descs) * stride
-    sbt = native.ShaderBindingTable(
-        raygenRecord=records.ptr,
-        exceptionRecord=records.ptr + stride if exception_descs else 0,
-        missRecordBase=first_miss,
-        missRecordStrideInBytes=stride,
-        missRecordCount=len(miss_descs),
-        hitgroupRecordBase=first_hit if hit_descs else 0,
-        hitgroupRecordStrideInBytes=stride,
-        hitgroupRecordCount=len(hit_descs),
-        callablesRecordBase=first_callable if callable_descs else 0,
-        callablesRecordStrideInBytes=stride,
-        callablesRecordCount=len(callable_descs),
-    )
-
-    # launch() stores the raygen arguments into the device params block with a
-    # generated kernel, so Warp checks and packs them exactly as for wp.launch.
-    names = [arg.label for arg in raygen.adj.args]
-    arguments = ", ".join(f"{n}: T{i}" for i, n in enumerate(names))
-    stores = "".join(f"    p.{n} = {n}\n" for n in names)
-    source = f"def write_params({arguments}, _wo_params: wp.array(dtype=Params)):\n    p = Params()\n{stores}    _wo_params[0] = p\n"
-    scope = {"wp": wp, "Params": params} | {f"T{i}": arg.type for i, arg in enumerate(raygen.adj.args)}
-    namespace: dict = {}
-    exec(compile(source, f"<warp_optix params {raygen.key}>", "exec"), scope, namespace)  # noqa: S102
-    writer = wp.Kernel(
-        namespace["write_params"], key="write_params", module=wp.get_module(f"{module_name}_params"), source=source
-    )
-
-    return Pipeline(
-        pipeline=pipeline,
-        sbt=sbt,
-        params=wp.empty(1, dtype=params, device=device),
-        params_size=ctypes.sizeof(params.ctype),
-        writer=writer,
-        device=device,
-        records=records,
-        groups=tuple(groups),
-        modules=(optix_module, *builtin_modules.values()),
-        sbt_layout=layout,
-    )
+        result = Pipeline(
+            pipeline=pipeline,
+            sbt=sbt,
+            params=wp.empty(1, dtype=params, device=device),
+            params_size=ctypes.sizeof(params.ctype),
+            writer=writer,
+            device=device,
+            records=records,
+            groups=tuple(groups),
+            modules=(optix_module, *builtin_modules.values()),
+            context=ctx,
+            sbt_layout=layout,
+        )
+        ctx._pipelines.append(result)
+        return result
 
 
 def launch(pipeline: Pipeline, dim: Sequence[int], inputs: Sequence, stream: wp.Stream | None = None) -> None:
     """Launch ``pipeline`` like ``wp.launch(raygen, dim, inputs)``, on ``stream``.
 
     Parameters are written on the stream before the launch, so consecutive launches
-    may reuse the same pipeline without synchronizing.
+    may reuse the same pipeline without synchronizing. Input arrays are retained
+    until the recorded stream event completes (or the context closes).
     """
-    stream = stream or wp.get_stream(pipeline.device)
+    ctx = require_context(pipeline.context)
+    stream = ctx._stream(stream)
+    inputs = tuple(inputs)
+    ctx._check_arrays(inputs)
     if stream.is_capturing:
         raise RuntimeError(CAPTURE_ERROR)
-    wp.launch(pipeline.writer, dim=1, inputs=[*inputs, pipeline.params], device=pipeline.device, stream=stream)
-    width, height, depth = [*reversed(dim), 1, 1][:3]
-    native.launch(
-        pipeline.pipeline,
-        stream.cuda_stream,
-        pipeline.params.ptr,
-        pipeline.params_size,
-        pipeline.sbt,
-        width,
-        height,
-        depth,
-    )
+    with ctx._transaction(), wp.ScopedStream(stream):
+        wp.launch(pipeline.writer, dim=1, inputs=[*inputs, pipeline.params], device=pipeline.device, stream=stream)
+        width, height, depth = [*reversed(dim), 1, 1][:3]
+        native.launch(
+            pipeline.pipeline,
+            stream.cuda_stream,
+            pipeline.params.ptr,
+            pipeline.params_size,
+            pipeline.sbt,
+            width,
+            height,
+            depth,
+        )
+
+        ctx._retain_launch(stream, inputs)

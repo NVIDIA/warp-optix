@@ -34,6 +34,8 @@ from warp_optix.accel import make_instance as make_instance
 from warp_optix.accel import triangles as triangles
 from warp_optix.accel import update_accel as update_accel
 from warp_optix.enums import BuildFlags as BuildFlags
+from warp_optix.enums import ExceptionFlags as ExceptionFlags
+from warp_optix.context import Context as Context
 from warp_optix.enums import GeometryFlags as GeometryFlags
 from warp_optix.enums import InstanceFlags as InstanceFlags
 from warp_optix.enums import PrimitiveType as PrimitiveType
@@ -57,6 +59,8 @@ __all__ = [
     "MISS",
     "Accel",
     "BuildFlags",
+    "Context",
+    "ExceptionFlags",
     "GeometryFlags",
     "Hit",
     "HitGroup",

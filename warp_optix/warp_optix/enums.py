@@ -54,4 +54,11 @@ class TraversableGraphFlags(IntFlag):
     )
 
 
+class ExceptionFlags(IntFlag):
+    NONE = int(_backend.EXCEPTION_FLAG_NONE)
+    STACK_OVERFLOW = int(_backend.EXCEPTION_FLAG_STACK_OVERFLOW)
+    TRACE_DEPTH = int(_backend.EXCEPTION_FLAG_TRACE_DEPTH)
+    USER = int(_backend.EXCEPTION_FLAG_USER)
+
+
 del _backend

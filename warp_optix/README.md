@@ -41,6 +41,19 @@ pip install -e .
 
 ## Programs and pipelines
 
+`wo.create_context(device, validation=False, log_level=4)` returns a managed
+`wo.Context`. It supports `with`, has a `closed` property, and closes idempotently
+through `ctx.close()` or `wo.destroy_context(ctx)`. Closing synchronizes its own
+CUDA device before releasing native resources and retained buffers. Pipeline
+construction failures release only objects allocated by that failed operation.
+
+Pipelines and acceleration structures belong to their creating context. Public
+build, update, and launch calls reject a closed context, foreign acceleration
+structures, and arrays or streams on another device. Contexts retain their
+resources until closure; launch input arrays are retained until their stream
+event completes. `ctx.native_handle` is borrowed advanced access; direct native
+calls remain the caller's responsibility.
+
 Every OptiX program is a `@wp.kernel(module="unique")` kernel. The raygen kernel's arguments
 become the pipeline's launch parameters, and `wp.tid()` returns the launch index, so the same
 `dim` is used as with `wp.launch` (`dim=(height, width)` gives an OptiX launch of `width x
@@ -86,7 +99,7 @@ pipeline = wo.create_pipeline(
 wo.launch(pipeline, dim=image.shape, inputs=[gas.handle, wp.vec3(1.0, 0.5, 0.2), image])
 ```
 
-`wo.create_pipeline(ctx, raygen, *, miss, hit_groups, ray_types, sbt, callables, exception,
+`wo.create_pipeline(ctx, raygen, *, miss, hit_groups, ray_types, sbt, callables, exception, exception_flags,
 payload_words, attribute_words, max_trace_depth, max_traversable_depth, graph_flags, motion_blur,
 max_registers, device)` compiles all programs into one module and builds the shader binding table:
 
@@ -103,6 +116,11 @@ max_registers, device)` compiles all programs into one module and builds the sha
 - `exception` enables user exceptions. Raise one with `wp.optix_throw_exception(code, ...)` (up
   to eight `wp.uint32` details) and read it with `wp.optix_get_exception_code()` and
   `wp.optix_get_exception_detail_<i>()`.
+- `exception_flags` selects `wo.ExceptionFlags.NONE`, `STACK_OVERFLOW`,
+  `TRACE_DEPTH`, and `USER`, including bitwise combinations. When omitted,
+  the default is `USER` if an exception program is supplied, otherwise `NONE`.
+  For example, `exception_flags=wo.ExceptionFlags.STACK_OVERFLOW | wo.ExceptionFlags.TRACE_DEPTH`
+  enables those debugging checks. Include `USER` when using `optix_throw_exception`.
 
 `wo.launch(pipeline, dim, inputs, stream=None)` writes the launch parameters with a Warp kernel
 on `stream` and then launches OptiX on the same stream. Neither step synchronizes the host.
@@ -178,8 +196,8 @@ traversal.
 
 ## Acceleration structures
 
-Build inputs reference caller-owned Warp **device** arrays, which must outlive every
-acceleration structure built from them:
+Build inputs retain their Warp **device** arrays, and contexts retain acceleration
+structures and their inputs until closure:
 
 | Builder | Input |
 | --- | --- |
@@ -196,10 +214,13 @@ Keep those indices unchanged when reusing a build input; create a new input
 after changing topology. Vertex-only updates do not repeat this validation.
 
 `wo.build_accel(ctx, inputs, flags=, compact=, motion=, stream=, device=) -> wo.Accel` builds on a
-Warp stream without synchronizing. `compact=True` synchronizes once to shrink static structures.
+Warp stream. Initial instance builds read child handles back once to verify that
+every geometry belongs to `ctx`. `compact=True` also synchronizes to shrink static structures.
 `wo.update_accel(ctx, accel, rebuild=False, stream=)` refits a structure built with
 `BUILD_FLAG_ALLOW_UPDATE` to its inputs' current contents (or rebuilds it in place with
-`rebuild=True`) using the retained scratch buffer, so it neither allocates nor synchronizes.
+`rebuild=True`) using the retained scratch buffer, so it neither allocates nor synchronizes
+on success. Keep indices, primitive counts, and instance child handles unchanged
+when reusing an input; build a new input and acceleration structure for topology changes.
 
 `wo.Instance` is the 80-byte `OptixInstance` layout as a Warp struct, and the `wo.make_instance()`
 Warp function writes one from a rotation (with optional scale/shear), translation, traversable,

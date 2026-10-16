@@ -61,14 +61,13 @@ wo.launch(pipeline, dim=(480, 640), inputs=[gas.handle, image])
 wo.destroy_context(ctx)
 ```
 
-The raygen kernel's arguments are the launch parameters. Acceleration
-structures reference the caller's device arrays, which must outlive them;
-instances are written on the device with `wo.make_instance()` and refit with
-`wo.update_accel()`. Builds, refits, and launches are asynchronous on Warp's
-current stream or an explicitly supplied `wp.Stream`; only compaction
-synchronizes. `destroy_context()` synchronizes the device and destroys every
-pipeline and module created from the context; keep acceleration structures and
-pipelines referenced until it returns.
+The raygen kernel's arguments are the launch parameters. Managed contexts retain
+pipelines, acceleration structures, and their input buffers until closure.
+Use `with wo.create_context(...) as ctx:` or call `wo.destroy_context(ctx)` for
+synchronized cleanup. Instances are written with `wo.make_instance()` and refit
+with `wo.update_accel()`. Initial instance builds validate child handles with a
+host readback; compaction also synchronizes. Transform-only refits and launches
+remain asynchronous on the selected Warp stream.
 
 SBT records are built automatically. For named ray types and explicit hit-group
 layouts, pass a `wo.SbtBuilder` to `create_pipeline(..., sbt=builder)`.
@@ -106,9 +105,9 @@ print(native.dlss_rr_available(project_id))
 ```
 
 `native` exposes PyOptiX's API plus the supplemental bindings. Native
-objects use explicit destruction. `create_context()` returns a PyOptiX
-`DeviceContext`; destroy it with `destroy_context()`, which also destroys the
-pipelines and modules created from it.
+objects use explicit destruction. `create_context()` returns a managed
+`Context`; `ctx.native_handle` provides borrowed access to its PyOptiX
+`DeviceContext`. Do not destroy that borrowed handle separately.
 Standard objects are the dependency's actual `optix` types; both packages can
 be imported in either order. The supplement adds methods and fields to those
 types and repairs module-metadata and continuation-callable handling. Keep

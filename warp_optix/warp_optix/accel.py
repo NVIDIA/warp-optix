@@ -3,10 +3,10 @@
 
 """OptiX acceleration structures over Warp device arrays.
 
-Build inputs reference caller-owned device arrays, which must outlive every
-acceleration structure built from them. Builds and updates are ordered on a
-Warp stream and never synchronize the host, except for compaction, which must
-read the compacted size back. OptiX work cannot be captured into CUDA graphs.
+Build inputs retain their device arrays. Managed contexts retain acceleration
+structures until closure. Initial instance builds validate child handles with
+a host readback; compaction also synchronizes. Transform-only updates remain
+asynchronous. OptiX work cannot be captured into CUDA graphs.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from dataclasses import dataclass
 import warp as wp
 
 from warp_optix import native
+from warp_optix.context import Context, require_context
 from warp_optix.enums import BuildFlags, GeometryFlags, PrimitiveType
 
 # ---------------------------------------------------------------------------
@@ -78,6 +79,15 @@ def make_instance(
 # ---------------------------------------------------------------------------
 # Build inputs
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class BuildInput:
+    """A native descriptor together with the device arrays it borrows."""
+
+    native: object
+    arrays: tuple
+    instance_records: wp.array | None = None
 
 
 def _vertex_count(keys):
@@ -143,7 +153,7 @@ def triangles(
     build_input.indexBuffer = indices.ptr
     build_input.flags = [int(flags)]
     build_input.numSbtRecords = 1
-    return build_input
+    return BuildInput(build_input, (*keys, indices))
 
 
 def aabbs(
@@ -157,8 +167,16 @@ def aabbs(
     With ``sbt_indices`` (uint32 per primitive), primitive ``i`` uses hit record
     ``sbt_indices[i]`` and ``flags`` holds one geometry flag per record.
     """
+    if bounds.dtype != wp.float32 or bounds.size % 6 or not bounds.device.is_cuda or not bounds.is_contiguous:
+        raise ValueError("bounds must be a contiguous CUDA float32 array of AABB sextuplets")
     flags = [int(f) for f in flags] if isinstance(flags, Sequence) else [int(flags)]
-    return native.BuildInputCustomPrimitiveArray(
+    if not flags:
+        raise ValueError("flags must contain at least one SBT record flag")
+    if sbt_indices is not None:
+        if sbt_indices.dtype != wp.uint32 or sbt_indices.size != bounds.size // 6:
+            raise ValueError("sbt_indices must contain one uint32 value per AABB")
+        _validate_indices(sbt_indices, len(flags), bounds.device)
+    descriptor = native.BuildInputCustomPrimitiveArray(
         aabbBuffers=[bounds.ptr],
         numPrimitives=bounds.size * wp.types.type_size_in_bytes(bounds.dtype) // 24,
         strideInBytes=24,
@@ -168,6 +186,7 @@ def aabbs(
         sbtIndexOffsetSizeInBytes=0 if sbt_indices is None else 4,
         sbtIndexOffsetStrideInBytes=0 if sbt_indices is None else 4,
     )
+    return BuildInput(descriptor, (bounds,) if sbt_indices is None else (bounds, sbt_indices))
 
 
 def curves(
@@ -199,7 +218,7 @@ def curves(
         or key.device != vertex_keys[0].device for key in width_keys
     ):
         raise ValueError("widths must provide one float32 value per vertex on the vertex device")
-    return native.BuildInputCurveArray(
+    descriptor = native.BuildInputCurveArray(
         curveType=native.PrimitiveType(int(curve_type)),
         numPrimitives=indices.size,
         vertexBuffers=[key.ptr for key in vertex_keys],
@@ -212,11 +231,15 @@ def curves(
         indexStrideInBytes=4,
         flag=int(flags),
     )
+    return BuildInput(descriptor, (*vertex_keys, *width_keys, indices))
 
 
 def instances(records: wp.array):
-    """Instance build input from a device array of :class:`Instance`."""
-    return native.BuildInputInstanceArray(instances=records.ptr, numInstances=records.size)
+    """Instance input retaining its records; child handles must stay unchanged on updates."""
+    if records.dtype is not Instance or not records.device.is_cuda or not records.is_contiguous:
+        raise ValueError("records must be a contiguous CUDA array of Instance")
+    return BuildInput(native.BuildInputInstanceArray(instances=records.ptr, numInstances=records.size),
+                      (records,), instance_records=records)
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +258,8 @@ class Accel:
     flags: int
     motion: object | None
     device: wp.Device
+    context: Context
+    dependencies: tuple = ()
 
 
 def build_accel(
@@ -254,80 +279,110 @@ def build_accel(
     ``compact=True`` synchronizes ``stream`` once to shrink a static structure to
     its final size and release that memory.
     """
-    device = wp.get_device(device)
-    stream = stream or wp.get_stream(device)
+    ctx = require_context(ctx)
+    device = ctx._device(device)
+    stream = ctx._stream(stream)
     if stream.is_capturing:
         raise RuntimeError(CAPTURE_ERROR)
     flags = int(flags) | (BuildFlags.ALLOW_COMPACTION if compact else 0)
     if compact and flags & BuildFlags.ALLOW_UPDATE:
         raise ValueError("compacted acceleration structures cannot be updated")
 
-    options = native.AccelBuildOptions(buildFlags=flags, operation=native.BUILD_OPERATION_BUILD)
-    if motion is not None:
-        options.motionOptions = motion
-    inputs = tuple(inputs)
-    sizes = ctx.accelComputeMemoryUsage([options] * len(inputs), list(inputs))
-    scratch = wp.empty(max(sizes.tempSizeInBytes, sizes.tempUpdateSizeInBytes), dtype=wp.uint8, device=device)
-    buffer = wp.empty(sizes.outputSizeInBytes, dtype=wp.uint8, device=device)
-    compacted_size = wp.empty(1, dtype=wp.uint64, device=device) if compact else None
-    emitted = [native.AccelEmitDesc(compacted_size.ptr, native.PROPERTY_TYPE_COMPACTED_SIZE)] if compact else []
-    handle = ctx.accelBuild(
-        stream.cuda_stream,
-        [options] * len(inputs),
-        list(inputs),
-        scratch.ptr,
-        scratch.size,
-        buffer.ptr,
-        buffer.size,
-        emitted,
-    )
-    if compact:
-        size = int(compacted_size.numpy()[0])
-        if size < buffer.size:
-            output = wp.empty(size, dtype=wp.uint8, device=device)
-            handle = ctx.accelCompact(stream.cuda_stream, handle, output.ptr, size)
-            wp.synchronize_stream(stream)
-            buffer = output
-        scratch = None
+    with ctx._transaction(), wp.ScopedStream(stream):
+        options = native.AccelBuildOptions(buildFlags=flags, operation=native.BUILD_OPERATION_BUILD)
+        if motion is not None:
+            options.motionOptions = motion
+        inputs = tuple(inputs)
+        dependencies = []
+        for item in inputs:
+            if not isinstance(item, BuildInput):
+                raise TypeError("inputs must be created with triangles(), curves(), aabbs(), or instances()")
+            ctx._check_arrays(item.arrays)
+            if item.instance_records is not None:
+                # Validate GPU-written child handles once. Transform-only updates
+                # retain this topology and do not need another host readback.
+                wp.synchronize_stream(stream)
+                for handle in item.instance_records.numpy()["traversable"].reshape(-1):
+                    if int(handle) == 0:
+                        continue
+                    dependency = ctx._accels.get(int(handle))
+                    if dependency is None:
+                        raise ValueError("Instance geometry must belong to this context")
+                    dependencies.append(dependency)
+        native_inputs = [item.native for item in inputs]
+        sizes = ctx.accelComputeMemoryUsage([options] * len(inputs), native_inputs)
+        scratch = wp.empty(max(sizes.tempSizeInBytes, sizes.tempUpdateSizeInBytes), dtype=wp.uint8, device=device)
+        buffer = wp.empty(sizes.outputSizeInBytes, dtype=wp.uint8, device=device)
+        compacted_size = wp.empty(1, dtype=wp.uint64, device=device) if compact else None
+        emitted = [native.AccelEmitDesc(compacted_size.ptr, native.PROPERTY_TYPE_COMPACTED_SIZE)] if compact else []
+        handle = ctx.accelBuild(
+            stream.cuda_stream,
+            [options] * len(inputs),
+            native_inputs,
+            scratch.ptr,
+            scratch.size,
+            buffer.ptr,
+            buffer.size,
+            emitted,
+        )
+        if compact:
+            size = int(compacted_size.numpy()[0])
+            if size < buffer.size:
+                output = wp.empty(size, dtype=wp.uint8, device=device)
+                handle = ctx.accelCompact(stream.cuda_stream, handle, output.ptr, size)
+                wp.synchronize_stream(stream)
+                buffer = output
+            scratch = None
 
-    return Accel(
-        handle=int(handle),
-        buffer=buffer,
-        scratch=scratch,
-        inputs=inputs,
-        flags=flags,
-        motion=motion,
-        device=device,
-    )
+        result = Accel(
+            handle=int(handle),
+            buffer=buffer,
+            scratch=scratch,
+            inputs=inputs,
+            flags=flags,
+            motion=motion,
+            device=device,
+            context=ctx,
+            dependencies=tuple(dependencies),
+        )
+        ctx._accels[result.handle] = result
+        return result
 
 
 def update_accel(ctx, accel: Accel, *, rebuild: bool = False, stream: wp.Stream | None = None) -> Accel:
     """Refit ``accel`` to its inputs' current contents, or rebuild it in place.
 
-    Inputs must keep their primitive counts. Rebuilding restores trace quality
-    after many refits. Neither allocates or synchronizes the host.
+    Inputs must keep their primitive counts, indices, and instance child handles.
+    Rebuilding restores trace quality after many refits. Neither allocates nor
+    synchronizes the host on success.
     """
+    ctx = require_context(ctx)
+    if accel.context is not ctx:
+        raise ValueError("Acceleration structure must belong to this context")
     if not rebuild and not accel.flags & BuildFlags.ALLOW_UPDATE:
         raise ValueError("refitting requires an acceleration structure built with BuildFlags.ALLOW_UPDATE")
     if accel.scratch is None:
         raise ValueError("compacted acceleration structures cannot be updated")
-    stream = stream or wp.get_stream(accel.device)
+    stream = ctx._stream(stream)
     if stream.is_capturing:
         raise RuntimeError(CAPTURE_ERROR)
-    options = native.AccelBuildOptions(
-        buildFlags=accel.flags,
-        operation=native.BUILD_OPERATION_BUILD if rebuild else native.BUILD_OPERATION_UPDATE,
-    )
-    if accel.motion is not None:
-        options.motionOptions = accel.motion
-    handle = ctx.accelBuild(
-        stream.cuda_stream,
-        [options] * len(accel.inputs),
-        list(accel.inputs),
-        accel.scratch.ptr,
-        accel.scratch.size,
-        accel.buffer.ptr,
-        accel.buffer.size,
-        [],
-    )
-    return dataclasses.replace(accel, handle=int(handle))
+    with ctx._transaction(), wp.ScopedStream(stream):
+        options = native.AccelBuildOptions(
+            buildFlags=accel.flags,
+            operation=native.BUILD_OPERATION_BUILD if rebuild else native.BUILD_OPERATION_UPDATE,
+        )
+        if accel.motion is not None:
+            options.motionOptions = accel.motion
+        handle = ctx.accelBuild(
+            stream.cuda_stream,
+            [options] * len(accel.inputs),
+            [item.native for item in accel.inputs],
+            accel.scratch.ptr,
+            accel.scratch.size,
+            accel.buffer.ptr,
+            accel.buffer.size,
+            [],
+        )
+        result = dataclasses.replace(accel, handle=int(handle))
+        ctx._accels[result.handle] = result
+        return result
