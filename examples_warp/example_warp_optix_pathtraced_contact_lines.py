@@ -9,7 +9,6 @@ import time
 
 import numpy as np
 import warp as wp
-import warp_optix as woptix
 from example_warp_optix_basic_pathtracing import (
     FreeCameraController,
     _pack_display_rgba8,
@@ -20,6 +19,7 @@ from example_warp_optix_pathtraced_scene import (
     add_checker_ground,
     configure_demo_sky,
 )
+from warp_optix.gl import GLInteropViewer, GLLineOverlay
 from warp_optix.pathtracing import (
     DEFAULT_VIEWER_HEIGHT,
     DEFAULT_VIEWER_WIDTH,
@@ -52,9 +52,7 @@ def _animate_contacts(
 
 
 def _parse_args():
-    parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--contact-count", type=int, default=100_000)
     parser.add_argument("--ball-radius", type=float, default=0.8)
     parser.add_argument("--line-length", type=float, default=0.32)
@@ -93,8 +91,8 @@ def main():
         width=args.width,
         height=args.height,
         denoiser=args.denoiser,
-        enable_set=not args.no_set,
         enable_cuda_graphs=not args.no_cuda_graphs,
+        enable_set=not args.no_set,
     )
     if not api.initialize():
         raise RuntimeError("Failed to initialize pathtracing API.")
@@ -126,7 +124,7 @@ def main():
             overlay.set_depth_buffer(api.linear_depth_output)
         last_elapsed = 0.0
 
-    viewer = woptix.GLInteropViewer(
+    viewer = GLInteropViewer(
         width=args.width,
         height=args.height,
         device="cuda",
@@ -135,7 +133,7 @@ def main():
         on_resize=_on_resize,
         vsync=args.fps > 0,
     )
-    overlay = woptix.GLLineOverlay(
+    overlay = GLLineOverlay(
         viewer.gl,
         args.contact_count,
         device="cuda",
@@ -164,9 +162,7 @@ def main():
         drawn_frames += 1
 
     viewer.set_draw_overlay(_draw_overlay)
-    controller = FreeCameraController(
-        viewer, api, (0.0, 0.18, 3.55), 180.0, -3.0, 42.0, args.camera_speed
-    )
+    controller = FreeCameraController(viewer, api, (0.0, 0.18, 3.55), 180.0, -3.0, 42.0, args.camera_speed)
     update_seconds = 0.0
     measured_frames = 0
 
@@ -193,9 +189,7 @@ def main():
             outputs=[dynamic_starts, dynamic_ends, dynamic_colors],
             device="cuda",
         )
-        overlay.update_device(
-            dynamic_starts, dynamic_ends, dynamic_colors, count=active_count
-        )
+        overlay.update_device(dynamic_starts, dynamic_ends, dynamic_colors, count=active_count)
         update_seconds += time.perf_counter() - update_start
         measured_frames += 1
         api.render_frame()
@@ -212,8 +206,7 @@ def main():
         )
 
     print(
-        f"[opengl] dynamic contact overlay: capacity {args.contact_count:,} lines; "
-        "count and order change every frame"
+        f"[opengl] dynamic contact overlay: capacity {args.contact_count:,} lines; count and order change every frame"
     )
     print("[opengl] controls: left-drag look, WASD move, Q/E down/up, wheel zoom")
     try:
@@ -221,14 +214,10 @@ def main():
     finally:
         if measured_frames:
             print(
-                f"[opengl] average contact generation + VBO update: "
-                f"{1000.0 * update_seconds / measured_frames:.3f} ms"
+                f"[opengl] average contact generation + VBO update: {1000.0 * update_seconds / measured_frames:.3f} ms"
             )
         if drawn_frames:
-            print(
-                f"[opengl] average depth upload + GL draw: "
-                f"{1000.0 * draw_seconds / drawn_frames:.3f} ms"
-            )
+            print(f"[opengl] average depth upload + GL draw: {1000.0 * draw_seconds / drawn_frames:.3f} ms")
         overlay.destroy()
 
 

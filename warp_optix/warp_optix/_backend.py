@@ -41,9 +41,7 @@ def _get_optix_include_dir():
         include = root / "include"
         if (include / "optix.h").is_file() and (include / "optix_device.h").is_file():
             return str(include)
-    raise FileNotFoundError(
-        "Packaged OptiX SDK headers are missing or incomplete; reinstall warp-optix."
-    )
+    raise FileNotFoundError("Packaged OptiX SDK headers are missing or incomplete; reinstall warp-optix.")
 
 
 def _load_backend():
@@ -68,8 +66,7 @@ def _load_backend():
         for name in ("moduleCreate", "builtinISModuleGet"):
             original = getattr(upstream.DeviceContext, name)
 
-            def compile_module(self, moduleCompileOptions, pipelineCompileOptions, *args,
-                               _original=original, **kwargs):
+            def compile_module(self, moduleCompileOptions, pipelineCompileOptions, *args, _original=original, **kwargs):
                 _extensions.sync_module_options(moduleCompileOptions)
                 return _original(self, moduleCompileOptions, pipelineCompileOptions, *args, **kwargs)
 
@@ -99,7 +96,10 @@ def _load_backend():
     for module in (upstream, _extensions):
         for name in dir(module):
             if not name.startswith("_") and name not in (
-                "install_pyoptix_extensions", "sync_module_options", "coop_vec_property", "optix_version"
+                "install_pyoptix_extensions",
+                "sync_module_options",
+                "coop_vec_property",
+                "optix_version",
             ):
                 setattr(backend, name, getattr(module, name))
 

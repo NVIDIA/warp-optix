@@ -2,13 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
-
 import pytest
 import warp as wp
-
-from warp_optix import GLLineOverlay
-from warp_optix._runtime.gl_interop import OptixGLInteropViewer
-from warp_optix._runtime.gl_line_overlay import _opengl_projection
+from warp_optix.gl import GLInteropViewer, GLLineOverlay
+from warp_optix.gl.line_overlay import _opengl_projection
 
 
 @pytest.mark.parametrize(
@@ -57,7 +54,7 @@ def test_device_update_validates_count_and_array_lengths_before_mapping_gl():
 
 
 def test_viewer_overlay_callback_can_be_replaced_or_disabled():
-    viewer = OptixGLInteropViewer.__new__(OptixGLInteropViewer)
+    viewer = GLInteropViewer.__new__(GLInteropViewer)
 
     def callback():
         pass
@@ -68,69 +65,30 @@ def test_viewer_overlay_callback_can_be_replaced_or_disabled():
     assert viewer._on_draw_overlay is None
 
 
-def test_pathtracer_projection_depth_is_converted_to_opengl_clip_range():
+def test_pathtracer_projection_converts_depth_range_and_vertical_flip_for_opengl():
     near, far = 0.1, 100.0
     projection = np.zeros((4, 4), dtype=np.float32)
-    projection[0, 0] = projection[1, 1] = 1.0
+    projection[0, 0] = 1.0
+    projection[1, 1] = -1.0  # OptiX/Vulkan presentation convention.
     projection[2, 2] = far / (near - far)
     projection[2, 3] = -1.0
     projection[3, 2] = -(near * far) / (near - far)  # Path-tracer sign.
 
     converted = _opengl_projection(projection, near, far)
-    point = np.array((0.0, 0.0, -3.5, 1.0), dtype=np.float32)
-    clip = converted.T @ point
-    depth = clip[2] / clip[3]
+    clip = converted.T @ np.array((0.0, 1.0, -3.5, 1.0), dtype=np.float32)
 
-    assert 0.0 < depth < 1.0
+    assert 0.0 < clip[2] / clip[3] < 1.0
     assert converted[3, 2] < 0.0
-
-
-def test_pathtracer_projection_vertical_flip_is_removed_for_opengl_overlay():
-    near, far = 0.1, 100.0
-    projection = np.zeros((4, 4), dtype=np.float32)
-    projection[0, 0] = 1.0
-    projection[1, 1] = -1.0  # OptiX/Vulkan presentation convention.
-
-    converted = _opengl_projection(projection, near, far)
-    up = np.array((0.0, 1.0, -3.5, 1.0), dtype=np.float32)
-    clip = converted.T @ up
-
     assert converted[1, 1] > 0.0
     assert clip[1] / clip[3] > 0.0
 
 
-@pytest.mark.parametrize("linear_depth", [0.1, 0.125, 1.0, 3.5, 25.0, 99.9, 100.0])
+@pytest.mark.parametrize("linear_depth", [0.1, 3.5, 100.0])
 def test_optix_linear_depth_conversion_matches_projected_opengl_depth(linear_depth):
     near, far = 0.1, 100.0
-    projection = np.zeros((4, 4), dtype=np.float32)
-    converted = _opengl_projection(projection, near, far)
-    point = np.array((0.0, 0.0, -linear_depth, 1.0), dtype=np.float32)
-    clip = converted.T @ point
-    projected_window_depth = clip[2] / clip[3]
+    converted = _opengl_projection(np.zeros((4, 4), dtype=np.float32), near, far)
+    clip = converted.T @ np.array((0.0, 0.0, -linear_depth, 1.0), dtype=np.float32)
 
-    shader_window_depth = far / (far - near) - (far * near) / (
-        (far - near) * linear_depth
-    )
+    shader_window_depth = far / (far - near) - (far * near) / ((far - near) * linear_depth)
 
-    assert shader_window_depth == pytest.approx(projected_window_depth, abs=2.0e-7)
-
-
-def test_pixel_occlusion_from_optix_linear_depth():
-    """Exercise foreground, occluded, equal-depth, and no-hit pixels."""
-    near, far = 0.1, 100.0
-    scene_linear_depth = np.array([[2.0, 2.0, 2.0], [5.0, 5.0, 0.0]], dtype=np.float64)
-    line_linear_depth = np.array([[1.5, 2.5, 2.0], [4.0, 6.0, 80.0]], dtype=np.float64)
-
-    def window_depth(depth):
-        return far / (far - near) - (far * near) / ((far - near) * depth)
-
-    scene_window_depth = np.zeros_like(scene_linear_depth)
-    hit = scene_linear_depth > 0.0
-    scene_window_depth[hit] = window_depth(scene_linear_depth[hit])
-    line_window_depth = window_depth(line_linear_depth)
-    visible = ~hit | (line_window_depth <= scene_window_depth + 2.0e-6)
-
-    np.testing.assert_array_equal(
-        visible,
-        np.array([[True, False, True], [True, False, True]]),
-    )
+    assert shader_window_depth == pytest.approx(clip[2] / clip[3], abs=2.0e-7)

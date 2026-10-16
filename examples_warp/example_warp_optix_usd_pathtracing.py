@@ -11,14 +11,13 @@ from pathlib import Path
 
 import numpy as np
 import warp as wp
-import warp_optix as woptix
+from example_warp_optix_basic_pathtracing import FreeCameraController, _pack_display_rgba8
+from warp_optix.gl import GLInteropViewer
 from warp_optix.pathtracing import (
     DEFAULT_VIEWER_HEIGHT,
     DEFAULT_VIEWER_WIDTH,
     PathTracerAPI,
 )
-
-from example_warp_optix_basic_pathtracing import FreeCameraController, _pack_display_rgba8
 
 
 def _parse_args():
@@ -112,7 +111,7 @@ def _parse_args():
         "--debug-buffer-mode",
         type=int,
         default=0,
-        choices=range(0, 9),
+        choices=range(9),
         metavar="0..8",
         help="Initial debug view: 0 final, 1 radiance, 2 depth, 3 motion, 4 normal, "
         "5 roughness, 6 diffuse, 7 specular, 8 specular hit distance.",
@@ -195,7 +194,7 @@ def _camera_angles(position, direction):
 
 
 def _authored_camera(api: PathTracerAPI, requested_path: str | None = None):
-    from pxr import UsdGeom, UsdRender  # noqa: PLC0415
+    from pxr import UsdGeom, UsdRender
 
     usd_scene = api.usd_scene
     stage = usd_scene.stage
@@ -286,8 +285,8 @@ def main():
         width=args.width,
         height=args.height,
         denoiser=args.denoiser,
-        enable_set=not args.no_set,
         enable_cuda_graphs=not args.no_cuda_graphs,
+        enable_set=not args.no_set,
         backface_culling=not args.no_backface_culling,
     )
     if not api.initialize():
@@ -329,8 +328,7 @@ def main():
     if args.camera_position is not None:
         cam_pos, cam_yaw, cam_pitch = _camera_angles(
             args.camera_position,
-            np.asarray(args.camera_target, dtype=np.float32)
-            - np.asarray(args.camera_position, dtype=np.float32),
+            np.asarray(args.camera_target, dtype=np.float32) - np.asarray(args.camera_position, dtype=np.float32),
         )
         camera_path = None
     if args.camera_fov is not None:
@@ -338,11 +336,7 @@ def main():
     # Bounds can be expressed in meters and legitimately be only a few
     # centimeters across. Keep the automatic speed useful for those stages
     # while retaining proportional movement for room- and world-scale scenes.
-    camera_speed = (
-        args.camera_speed
-        if args.camera_speed is not None
-        else _default_camera_speed(scene_radius)
-    )
+    camera_speed = args.camera_speed if args.camera_speed is not None else _default_camera_speed(scene_radius)
     render_width, render_height = int(args.width), int(args.height)
     last_elapsed = 0.0
 
@@ -352,7 +346,7 @@ def main():
         api.resize(render_width, render_height)
         last_elapsed = 0.0
 
-    viewer = woptix.GLInteropViewer(
+    viewer = GLInteropViewer(
         width=args.width,
         height=args.height,
         device="cuda",
@@ -361,9 +355,7 @@ def main():
         on_resize=_on_resize,
         vsync=args.fps > 0,
     )
-    controller = FreeCameraController(
-        viewer, api, cam_pos, cam_yaw, cam_pitch, cam_fov, camera_speed
-    )
+    controller = FreeCameraController(viewer, api, cam_pos, cam_yaw, cam_pitch, cam_fov, camera_speed)
 
     def _render(mapped_image: wp.array, _frame_idx: int, elapsed_sec: float):
         nonlocal last_elapsed
@@ -392,20 +384,15 @@ def main():
     else:
         print("[optix] camera=world-space geometry bounds fallback")
     if args.load_usd_environment and api.scene.usd_environment_path is not None:
-        print(
-            f"[optix] USD environment={api.scene.usd_environment_path} "
-            f"scale={args.usd_environment_scale:g}"
-        )
+        print(f"[optix] USD environment={api.scene.usd_environment_path} scale={args.usd_environment_scale:g}")
     viewer.run(_render, max_frames=args.max_frames)
     if args.screenshot is not None:
-        from PIL import Image  # noqa: PLC0415
+        from PIL import Image
 
         screenshot = args.screenshot.expanduser().resolve()
         screenshot.parent.mkdir(parents=True, exist_ok=True)
         frame = np.clip(api.get_frame(), 0.0, 1.0)
-        Image.fromarray((frame[..., :3] * 255.0 + 0.5).astype(np.uint8), mode="RGB").save(
-            screenshot
-        )
+        Image.fromarray((frame[..., :3] * 255.0 + 0.5).astype(np.uint8), mode="RGB").save(screenshot)
         print(f"[optix] saved screenshot: {screenshot}")
 
 

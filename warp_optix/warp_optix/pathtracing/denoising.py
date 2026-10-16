@@ -10,6 +10,8 @@ from dataclasses import dataclass
 
 import warp as wp
 
+from warp_optix import native
+
 
 @dataclass(frozen=True)
 class DenoiserInputs:
@@ -61,18 +63,9 @@ class OptixDenoiser:
         stream=None,
         output_size=None,
     ):
-        from warp_optix._api import Context
-
-        if not isinstance(context, Context):
-            raise TypeError("context must be a warp_optix.Context")
-        self._context_owner = context
-        stream = context._stream(stream)
-        optix = context._backend
-        context = context.native_handle
-
         if width < 1 or height < 1:
             raise ValueError("Denoiser input dimensions must be positive")
-        self._optix = optix
+        self._optix = native
         self.stream = stream if stream is not None else wp.get_stream("cuda")
         self.width, self.height = int(width), int(height)
         scale = 2 if upscale else 1
@@ -95,20 +88,20 @@ class OptixDenoiser:
             if upscale
             else "DENOISER_MODEL_KIND_TEMPORAL_AOV"
         )
-        if not hasattr(optix, model_name) or not hasattr(
-            optix.DenoiserParams(), "temporalModeUsePreviousLayers"
+        if not hasattr(native, model_name) or not hasattr(
+            native.DenoiserParams(), "temporalModeUsePreviousLayers"
         ):
             raise RuntimeError(
                 "OptiX temporal denoising requires updated PyOptiX denoiser bindings"
             )
-        options = optix.DenoiserOptions()
+        options = native.DenoiserOptions()
         options.guideAlbedo = 1
         options.guideNormal = 1
         device = self.stream.device
         with wp.ScopedStream(self.stream):
             try:
                 self._denoiser = context.denoiserCreate(
-                    getattr(optix, model_name), options
+                    getattr(native, model_name), options
                 )
                 sizes = self._denoiser.computeMemoryResources(self.width, self.height)
                 self._state = wp.empty(
@@ -156,7 +149,6 @@ class OptixDenoiser:
             except Exception:
                 self.close()
                 raise
-        self._context_owner._resources.append(self)
 
     def _image(
         self, array, pixel_format, *, pixel_stride=None, width=None, height=None
@@ -176,7 +168,6 @@ class OptixDenoiser:
 
     def apply(self, inputs: DenoiserInputs, *, reset=False):
         """Queue denoising and return the owned float4 Warp output array."""
-        self._context_owner._check_open()
         if self._denoiser is None:
             raise RuntimeError("OptiX denoiser is closed")
         for name, dtype in (
@@ -301,6 +292,3 @@ class OptixDenoiser:
     def __del__(self):
         with suppress(Exception):
             self.close()
-
-    def _release(self):
-        self.close()

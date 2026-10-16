@@ -1,27 +1,33 @@
 # warp_optix
 
-Warp ray tracing using PyOptiX and a small supplemental native extension.
+OptiX ray tracing for [Warp](https://github.com/NVIDIA/warp), using PyOptiX and a small supplemental native extension.
 
-This package replaces the `warp.optix` Python module that used to live inside
-the `warp` source tree. It registers itself with warp on import:
+Acceleration structures are built directly from Warp device arrays, OptiX programs are ordinary
+Warp kernels, and launches mirror `wp.launch`:
 
 ```python
 import warp as wp
-import warp_optix as wo  # registers OptiX builtins, headers, and entry-point specs
+import warp_optix as wo
+
+
+@wp.kernel(module="unique")
+def render(scene: wp.uint64, depth: wp.array2d[float]):
+    y, x = wp.tid()
+    origin = wp.vec3(float(x) / 64.0 - 1.0, float(y) / 64.0 - 1.0, 5.0)
+    hit = wo.closest_hit(scene, origin, wp.vec3(0.0, 0.0, -1.0), 0.0, 100.0, wp.uint32(0xFF), wp.uint32(0))
+    depth[y, x] = hit.t  # wo.MISS when nothing was hit
+
+
+ctx = wo.create_context()
+gas = wo.build_accel(ctx, [wo.triangles(vertices, indices)], compact=True)
+pipeline = wo.create_pipeline(ctx, render)
+depth = wp.empty((128, 128), dtype=float)
+wo.launch(pipeline, dim=depth.shape, inputs=[gas.handle, depth])
+wo.destroy_context(ctx)  # synchronizes, then destroys the pipeline and modules
 ```
 
-Once imported, you can decorate kernels with the OptiX entry-point kinds:
-
-```python
-@wp.struct
-class LaunchParams:
-    value: wp.uint32
-
-@wo.optix_kernel(wo.OptixKernelType.RAYGEN)
-def raygen_program(params: LaunchParams):
-    idx = wp.optix_get_launch_index()
-    ...
-```
+Importing `warp_optix` registers the `wp.optix_*` device builtins with Warp. They are valid only
+inside kernels compiled into a pipeline by `wo.create_pipeline()`.
 
 ## Install
 
@@ -31,67 +37,288 @@ Install from the repository root; PyOptiX is installed as a dependency:
 pip install -e .
 ```
 
-See [migration notes](../docs/migration-0.2.md) for the owned API introduced in 0.2.
+`warp_optix` requires `warp-lang>=1.17`.
 
-`warp_optix` requires `warp-lang>=1.17` and uses Warp's supported addon
-registration, external-entry kernel, and AOT compilation APIs. A
-version-checked private compatibility adapter remains only for older development
-environments; it does not patch or overwrite the installed Warp package.
+## Programs and pipelines
 
+`wo.create_context(device, validation=False, log_level=4)` returns a managed
+`wo.Context`. It supports `with`, has a `closed` property, and closes idempotently
+through `ctx.close()` or `wo.destroy_context(ctx)`. Closing synchronizes its own
+CUDA device before releasing native resources and retained buffers. Pipeline
+construction failures release only objects allocated by that failed operation.
 
-## OptiX cooperative vectors
+Pipelines and acceleration structures belong to their creating context. Public
+build, update, and launch calls reject a closed context, foreign acceleration
+structures, and arrays or streams on another device. Contexts retain their
+resources until closure; launch input arrays are retained until their stream
+event completes. `ctx.native_handle` is borrowed advanced access; direct native
+calls remain the caller's responsibility.
 
-OptiX 9 cooperative vectors are native SDK facilities, not Warp operations.
-The Python extension exposes the host-side SDK pieces needed to prepare
-matrices:
-
-- `DEVICE_PROPERTY_COOP_VEC` and `DevicePropertyCoopVecFlags` for support
-  queries.
-- `CoopVecElemType`, `CoopVecMatrixLayout`, and
-  `CoopVecMatrixDescription`.
-- `DeviceContext.coopVecMatrixComputeSize()` and
-  `DeviceContext.coopVecMatrixConvert()`.
-
-The conversion call is asynchronous and follows OptiX's 64-byte alignment and
-allocation-lifetime requirements. The higher-level neural-texture uploader
-synchronizes before returning and owns all GPU allocations.
-
-Importing `warp_optix` also registers Warp spellings of the OptiX device
-intrinsics. They are available only inside `@warp_optix.optix_kernel`
-programs and use explicit output vectors, which is the convention required by
-Warp's public addon API:
+OptiX programs can use ordinary `@wp.kernel(module="unique")` kernels. By default, the raygen kernel's arguments
+become the pipeline's launch parameters, and `wp.tid()` returns the launch index, so the same
+`dim` is used as with `wp.launch` (`dim=(height, width)` gives an OptiX launch of `width x
+height`). Every other program — miss, closest-hit, any-hit, intersection, direct callable, and
+exception — declares any subset of the raygen arguments **by name with identical types**:
 
 ```python
-Vec32h = wp.types.vector(length=32, dtype=wp.float16)
-Vec16h = wp.types.vector(length=16, dtype=wp.float16)
+@wp.struct
+class Payload:
+    color: wp.vec3
 
-@wo.optix_kernel(wo.OptixKernelType.CLOSEST_HIT)
-def closest_hit(params: LaunchParams):
-    inputs = Vec32h(wp.float16(0.0))
-    outputs = Vec16h()
-    wp.optix_coop_vec_matmul_bias_fp8_e4m3(
-        inputs,
-        params.matrices,
-        params.weight_offset,
-        params.biases,
-        params.bias_offset,
-        wp.uint32(0),
-        outputs,
+
+@wp.kernel(module="unique")
+def raygen(scene: wp.uint64, tint: wp.vec3, image: wp.array2d[wp.vec3]):
+    y, x = wp.tid()
+    payload = Payload()
+    wp.optix_trace(
+        scene, wp.vec3(float(x), float(y), 5.0), wp.vec3(0.0, 0.0, -1.0), 0.0, 100.0, 0.0,
+        wp.uint32(0xFF), wp.uint32(0), wp.uint32(0), wp.uint32(1), wp.uint32(0), payload,
     )
+    image[y, x] = payload.color
+
+
+@wp.kernel(module="unique")
+def shade(tint: wp.vec3):  # binds raygen's `tint`
+    payload = Payload()
+    payload.color = tint * wp.optix_get_ray_tmax()
+    wp.optix_store_payload(payload)
+
+
+@wp.kernel(module="unique")
+def background():
+    wp.optix_set_payload_0(wp.float_to_uint32(0.0))
+
+
+pipeline = wo.create_pipeline(
+    ctx,
+    raygen,
+    miss=[background],
+    hit_groups=[wo.HitGroup(closest_hit=shade)],
+    payload_words=3,
+)
+wo.launch(pipeline, dim=image.shape, inputs=[gas.handle, wp.vec3(1.0, 0.5, 0.2), image])
 ```
 
-The registered family includes load, conversion, elementwise arithmetic,
-`exp2`, `log2`, `tanh`, fused multiply-add, reductions, outer products,
-matrix-size queries, and matrix multiply variants for FP16, FP8 E4M3/E5M2,
-signed int8, and unsigned int8. Named matrix variants use an
-inference-optimal, non-transposed matrix with the element interpretation in
-the function name.
+`wo.create_pipeline(ctx, raygen, *, miss, hit_groups, ray_types, sbt, callables, exception, exception_flags,
+payload_words, attribute_words, max_trace_depth, max_traversable_depth, graph_flags, motion_blur,
+max_registers, device)` compiles all programs into one module and builds the shader binding table:
 
-## Geometry and transform queries
+- `miss` lists one miss program per ray type; `None` is a record without a program.
+- `hit_groups` holds `wo.HitGroup(closest_hit=, any_hit=, intersection=, builtin=)` entries.
+  The hit record for geometry type `g` and ray type `r` is `hit_groups[g * ray_types + r]`;
+  trace with `sbt_offset=r` and `sbt_stride=ray_types`, and give instances `sbt_offset=g *
+  ray_types`. `builtin=wo.PrimitiveType.*` selects OptiX's built-in curve intersector; a
+  group with an `intersection` program serves custom primitives. Primitive-type flags are derived
+  from the groups.
+- `callables` are direct-callable programs, invoked with `wp.optix_direct_call(index)` in list
+  order. Callables use a no-argument, void interface: they read launch parameters and write
+  referenced Warp arrays.
+- `exception` enables user exceptions. Raise one with `wp.optix_throw_exception(code, ...)` (up
+  to eight `wp.uint32` details) and read it with `wp.optix_get_exception_code()` and
+  `wp.optix_get_exception_detail_<i>()`.
+- `exception_flags` selects `wo.ExceptionFlags.NONE`, `STACK_OVERFLOW`,
+  `TRACE_DEPTH`, and `USER`, including bitwise combinations. When omitted,
+  the default is `USER` if an exception program is supplied, otherwise `NONE`.
+  For example, `exception_flags=wo.ExceptionFlags.STACK_OVERFLOW | wo.ExceptionFlags.TRACE_DEPTH`
+  enables those debugging checks. Include `USER` when using `optix_throw_exception`.
 
-Current triangle hits expose barycentrics, object-space vertices, generic and
-triangle-specific face predicates. Built-in curve hits expose their object-space
-control points as fixed Warp matrices whose rows are `(x, y, z, radius)`:
+`wo.launch(pipeline, dim, inputs, stream=None)` writes the launch parameters with a Warp kernel
+on `stream` and then launches OptiX on the same stream. Neither step synchronizes the host.
+OptiX does not record its work into CUDA graphs, so `wo.launch`, `wo.build_accel`,
+`wo.update_accel`, and `wo.create_pipeline` raise `RuntimeError` during stream capture. Kernels written against a single launch-parameter struct
+(`def raygen(params: LaunchParams)`) work unchanged: launch them with `inputs=[params]`.
+
+Automatic parameter storage is separate for each CUDA stream. Sequential launches
+on one stream reuse its buffer. Operations on a shared context from multiple host
+threads require external synchronization.
+
+For a shared schema independent of raygen, pass `params_type=MyParams`, where
+`MyParams` is a `@wp.struct`. Each program declares any subset of the schema's
+fields by name and identical type. This lets a miss or hit program use fields
+that raygen does not declare. Launch with `inputs=[my_params_instance]`.
+The schema is the parameter block itself; to use a single `params: MyParams`
+argument in every shader, keep the default inferred schema instead.
+
+Advanced callers can own parameter storage explicitly:
+
+```python
+buffer = wo.create_launch_params_buffer(pipeline)
+wo.write_launch_params(buffer, my_params_instance, stream=stream)
+wo.launch(pipeline, dim=(height, width), params_buffer=buffer, stream=stream)
+```
+
+For inferred schemas, `write_launch_params` takes the argument sequence instead.
+A buffer belongs to the pipeline that created it and must be written before use.
+Supply either `inputs` or `params_buffer`, never both. Updates and launches on a
+shared buffer are ordered with CUDA events, including across streams. Separate
+buffers allow independent concurrent launches. Referenced arrays remain retained;
+callers must still order their own writes to those arrays. Directly modifying the
+buffer's device storage bypasses the API's ordering and validation.
+
+An optional `@wo.optix_kernel(wo.OptixKernelType.RAYGEN, module="unique")`
+decorator replaces `@wp.kernel` when a shader should declare its intended stage.
+It also accepts an existing Warp kernel. Pipeline construction rejects a declared
+stage that disagrees with its slot. Undecorated Warp kernels continue to get their
+stage from their pipeline slot.
+
+Compare `examples_warp/example_warp_optix_kernels.py` with
+`examples_warp/example_warp_optix_explicit_params.py`: both compute the same
+output; the latter uses a shared schema, stage declarations, named SBT layout,
+and separate buffers on separate streams.
+
+
+### Explicit SBT layouts
+
+The default pipeline API packs SBT records automatically. For explicit control
+over ray names, group ordering, and instance offsets, use `wo.SbtBuilder`:
+
+```python
+sbt = wo.SbtBuilder(ray_types=("radiance", "shadow"))
+sbt.set_miss("radiance", radiance_miss)
+sbt.set_miss("shadow", shadow_miss)
+glass = sbt.add_hit_group(
+    "glass",
+    radiance=wo.HitGroup(closest_hit=glass_hit),
+    shadow=wo.HitGroup(any_hit=glass_shadow),
+)
+metal = sbt.add_hit_group(
+    "metal",
+    radiance=wo.HitGroup(closest_hit=metal_hit),
+    shadow=wo.HitGroup(any_hit=metal_shadow),
+)
+print(sbt.describe())
+pipeline = wo.create_pipeline(ctx, raygen, sbt=sbt, payload_words=1)
+layout = pipeline.sbt_layout
+metal_offset = layout.get_sbt_offset(metal)  # 2 records; use in wo.make_instance()
+shadow_index = layout.ray_type_index("shadow")  # trace SBT offset and miss index
+trace_stride = layout.trace_stride  # 2 records
+```
+
+Programs are ordinary Warp kernels, with their kind determined by the assigned
+slot. Each group specifies every ray type, using the same geometry kind across
+those rays. `set_miss(name, None)` explicitly creates an empty miss slot;
+`HitGroup()` creates an empty hit group for hit-object traversal. Ray names must
+be unique, and the trace stride supports at most 15 ray types.
+
+Layouts use group-major, ray-type-minor order. Append groups to control their
+order; previously returned `HitGroupHandle` offsets remain stable. Pass offsets
+obtained from `layout.get_sbt_offset(handle)` to the Warp kernel that writes
+instances with `wo.make_instance()`. This lookup rejects handles from another
+builder or groups added after the snapshot. Offsets and trace strides count
+records, not bytes.
+
+`create_pipeline(..., sbt=builder)` takes an immutable snapshot. Later builder
+edits do not change existing pipelines. You may also pass `sbt=builder.snapshot()`
+to reuse a frozen layout. Builders own no native resources and can be reused
+across contexts; each pipeline owns its compiled programs and packed buffers.
+`pipeline.sbt_layout` exposes the named snapshot, while `pipeline.sbt` remains
+the native table. Automatic pipelines have `sbt_layout=None`.
+
+An explicit `sbt` cannot be combined with `miss`, `hit_groups`, or `ray_types`.
+Callables and exception programs remain independent pipeline options. See
+`examples_warp/example_warp_optix_mixed_geometry.py` for a complete example.
+
+`wo.ProgramKind` names the program kinds and their OptiX entry-name prefixes;
+`wo.constants` provides OptiX ray, instance, geometry, and build flag values usable both in kernels
+(via `wp.uint32(...)`) and on the host. Host-side arguments also accept the typed enums
+`wo.BuildFlags`, `wo.GeometryFlags`, `wo.InstanceFlags`, `wo.PrimitiveType`, and
+`wo.TraversableGraphFlags`.
+
+## Ray queries without hit programs
+
+`wo.closest_hit(traversable, origin, direction, tmin, tmax, visibility_mask, ray_flags) -> wo.Hit`
+and `wo.any_hit(traversable, origin, direction, tmin, tmax, visibility_mask) -> bool` traverse with
+`wp.optix_traverse()` and read the result from the OptiX hit object, so a raygen-only pipeline can
+query built-in geometry. `Hit.t` is `wo.MISS` when nothing was hit; after `closest_hit` the
+`wp.optix_hit_object_*` builtins expose barycentrics, attributes, and transforms until the next
+traversal.
+
+## Acceleration structures
+
+Build inputs retain their Warp **device** arrays, and contexts retain acceleration
+structures and their inputs until closure:
+
+| Builder | Input |
+| --- | --- |
+| `wo.triangles(vertices, indices, flags=)` | `vec3` (or `float32[N, 3]`) vertices, int32/uint32 index triplets; a list of vertex arrays gives motion keys |
+| `wo.aabbs(bounds, flags=, sbt_indices=)` | `float32[N, 6]` `(min, max)` boxes for custom primitives |
+| `wo.curves(vertices, widths, indices, curve_type=, flags=)` | control points, per-point radii, first control point of each segment |
+| `wo.instances(records)` | `wp.array(dtype=wo.Instance)` |
+
+Geometry defaults to `GeometryFlags.DISABLE_ANYHIT`; pass `flags=wo.GeometryFlags.NONE` when an
+any-hit program must run.
+
+`triangles()` and `curves()` read indices back once to validate their bounds.
+Keep those indices unchanged when reusing a build input; create a new input
+after changing topology. Vertex-only updates do not repeat this validation.
+
+`wo.build_accel(ctx, inputs, flags=, compact=, motion=, stream=, device=) -> wo.Accel` builds on a
+Warp stream. Initial instance builds read child handles back once to verify that
+every geometry belongs to `ctx`. `compact=True` also synchronizes to shrink static structures.
+`wo.update_accel(ctx, accel, rebuild=False, stream=)` refits a structure built with
+`BUILD_FLAG_ALLOW_UPDATE` to its inputs' current contents (or rebuilds it in place with
+`rebuild=True`) using the retained scratch buffer, so it neither allocates nor synchronizes
+on success. Keep indices, primitive counts, and instance child handles unchanged
+when reusing an input; build a new input and acceleration structure for topology changes.
+
+`wo.Instance` is the 80-byte `OptixInstance` layout as a Warp struct, and the `wo.make_instance()`
+Warp function writes one from a rotation (with optional scale/shear), translation, traversable,
+instance ID, SBT offset, visibility mask, and flags. Instance records are therefore written on the
+GPU, e.g. one per simulated world:
+
+```python
+@wp.kernel
+def write_instances(gas: wp.uint64, poses: wp.array[wp.transform], records: wp.array[wo.Instance]):
+    i = wp.tid()
+    pose = poses[i]
+    records[i] = wo.make_instance(
+        wp.quat_to_matrix(wp.transform_get_rotation(pose)), wp.transform_get_translation(pose),
+        gas, wp.uint32(i), wp.uint32(0), wp.uint32(0xFF), wp.uint32(0),
+    )
+
+
+records = wp.empty(world_count, dtype=wo.Instance)
+wp.launch(write_instances, dim=world_count, inputs=[gas.handle, poses, records])
+ias = wo.build_accel(ctx, [wo.instances(records)], flags=wo.BuildFlags.ALLOW_UPDATE)
+# Each step: rewrite the records, then refit.
+wp.launch(write_instances, dim=world_count, inputs=[gas.handle, poses, records])
+ias = wo.update_accel(ctx, ias)
+```
+
+For vertex motion blur, pass a list of vertex keys and OptiX motion options, then enable motion
+on the pipeline and trace with a ray time:
+
+```python
+from warp_optix import native
+
+motion = native.MotionOptions(numKeys=2, flags=native.MOTION_FLAG_NONE, timeBegin=0.0, timeEnd=1.0)
+gas = wo.build_accel(ctx, [wo.triangles([keys0, keys1], indices)], motion=motion)
+pipeline = wo.create_pipeline(ctx, raygen, ..., motion_blur=True)
+```
+
+## Device builtins
+
+Warp kernels expose the common OptiX hit context directly: ray origin/direction (world and
+object space), `tmin`/`tmax`, time, flags, and visibility mask; instance ID and index; primitive
+index, SBT GAS index, GAS handle, and primitive type; front/back-face tests; and
+point/vector/normal transforms in both directions. Names follow Warp's snake-case convention, for
+example `wp.optix_get_instance_index()` and
+`wp.optix_transform_point_from_world_to_object_space()`. Payloads are moved with
+`wp.optix_set_payload_<i>()`/`wp.optix_get_payload_<i>()` or as whole Warp structs with
+`wp.optix_load_payload()`/`wp.optix_store_payload()`.
+
+Inside an intersection program, use `wp.optix_get_object_ray_origin()`,
+`wp.optix_get_object_ray_direction()`, and `wp.optix_report_intersection()`, which accepts a hit
+distance, hit kind, and zero to eight `wp.uint32` attributes. Closest-hit and any-hit programs read
+them with `wp.optix_get_attribute_0()` through `wp.optix_get_attribute_7()`;
+`wp.float_to_uint32()` and `wp.uint32_to_float()` reinterpret floats.
+
+### Geometry and transform queries
+
+Triangle hits expose barycentrics, object-space vertices (`wp.optix_get_triangle_vertex_data()`
+returns a `wp.mat33` whose rows are the three vertices), and generic and triangle-specific face
+predicates. Built-in curve hits expose their object-space control points as fixed Warp matrices
+whose rows are `(x, y, z, radius)`, and `wp.optix_get_curve_parameter()`:
 
 | Query family | Return type |
 | --- | --- |
@@ -99,147 +326,61 @@ control points as fixed Warp matrices whose rows are `(x, y, z, radius)`:
 | Quadratic B-spline and ribbon | `3 x 4` float matrix |
 | Cubic B-spline, Catmull-Rom, and cubic Bezier | `wp.mat44` |
 
-Ribbons additionally expose their two intersection parameters and derived
-normal. Geometry current-hit queries are valid in any-hit and closest-hit
-programs for the corresponding primitive type.
+Ribbons additionally expose their two intersection parameters and derived normal. Geometry
+current-hit queries are valid in any-hit and closest-hit programs for the corresponding primitive
+type.
 
-The current transform list can be inspected with
-`wp.optix_get_transform_list_size()`,
+The current transform list can be inspected with `wp.optix_get_transform_list_size()`,
 `wp.optix_get_transform_list_handle(index)`, and
-`wp.optix_get_transform_type_from_handle(handle)`. Composite affine
-transforms are returned as ordinary homogeneous `wp.mat44` values:
+`wp.optix_get_transform_type_from_handle(handle)`. Composite affine transforms are returned as
+ordinary homogeneous `wp.mat44` values:
 
 ```python
 object_to_world = wp.optix_get_object_to_world_transform_matrix()
 world_to_object = wp.optix_get_world_to_object_transform_matrix()
 ```
 
-The current transform matrix and transform-list queries are valid in
-intersection, any-hit, and closest-hit programs.
+The current transform matrix and transform-list queries are valid in intersection, any-hit, and
+closest-hit programs. Random-access geometry fetches and raw SDK transform pointers are
+deliberately not exposed.
 
-Random-access geometry fetches and raw SDK transform pointers are deliberately
-not exposed.
+### Cooperative vectors
 
-## Neural textures
+OptiX 9 cooperative vectors are native SDK facilities, not Warp operations. The Python extension
+exposes the host-side SDK pieces needed to prepare matrices:
 
-`warp_optix.neural_texture` is a small, independent inference-on-sample
-pipeline inspired by NVIDIA's neural material texture research. It stores two
-4-bit latent grids and a fixed per-material `32 -> 32 -> 32 -> 16` decoder.
-Portable `.wnt` files contain memory-mappable packed latents, row-major FP16
-biases and FP8-representable weights, checksums, channel mappings, and JSON
-metadata. On upload, weights are converted once into OptiX's device-specific
-FP8 E4M3 inference-optimal layout.
+- `DEVICE_PROPERTY_COOP_VEC` and `DevicePropertyCoopVecFlags` for support queries.
+- `CoopVecElemType`, `CoopVecMatrixLayout`, and `CoopVecMatrixDescription`.
+- `DeviceContext.coopVecMatrixComputeSize()` and `DeviceContext.coopVecMatrixConvert()`.
 
-Only offline compression depends on `warp-nn`:
-
-```bash
-pip install -e ".[training]"
-python examples_warp/example_warp_optix_neural_texture.py \
-  --output material.wnt --reconstruction material-decoded.npy
-```
-
-The Python API is equally direct:
+The conversion call is asynchronous and follows OptiX's 64-byte alignment and allocation-lifetime
+requirements. Device-side intrinsics use explicit output vectors, the convention required by
+Warp's public addon API:
 
 ```python
-import numpy as np
-from warp_optix.neural_texture import (
-    compress_texture_set, load_asset, save_asset, upload_asset,
-)
+Vec32h = wp.types.vector(length=32, dtype=wp.float16)
+Vec16h = wp.types.vector(length=16, dtype=wp.float16)
 
-textures = {
-    "albedo": np.load("albedo.npy", allow_pickle=False),
-    "normal": np.load("normal.npy", allow_pickle=False),
-    "roughness": np.load("roughness.npy", allow_pickle=False),
-}
-result = compress_texture_set(
-    textures,
-    color_spaces={"albedo": "srgb"},
-    channel_weights={"normal": 2.0},
-)
-save_asset("material.wnt", result.asset)
-print(result.psnr, result.psnr_by_texture, result.selection_reason)
 
-# Loading, upload, and OptiX inference do not import warp-nn.
-asset = load_asset("material.wnt")
-runtime = upload_asset(asset, context)
+@wp.kernel(module="unique")
+def closest_hit(matrices: wp.uint64, weight_offset: wp.uint32, biases: wp.uint64, bias_offset: wp.uint32):
+    inputs = Vec32h(wp.float16(0.0))
+    outputs = Vec16h()
+    wp.optix_coop_vec_matmul_bias_fp8_e4m3(
+        inputs, matrices, weight_offset, biases, bias_offset, wp.uint32(0), outputs
+    )
 ```
 
-All maps must have the same resolution and may contain one to four channels;
-the set may contain at most 16 channels. Integer images are normalized
-automatically, while floating-point images must already be in `[0, 1]`.
-`color_spaces` records metadata and does not transform input values.
-`compress_texture()` remains the short single-image helper.
+The registered family includes load, conversion, elementwise arithmetic, `exp2`, `log2`, `tanh`,
+fused multiply-add, reductions, outer products, matrix-size queries, and matrix multiply variants
+for FP16, FP8 E4M3/E5M2, signed int8, and unsigned int8. Named matrix variants use an
+inference-optimal, non-transposed matrix with the element interpretation in the function name.
 
-Inference needs one device view and one Warp call:
+## OpenGL display
 
-```python
-from warp_optix.neural_texture import NeuralTextureView, neural_texture_sample
-
-@wp.struct
-class Params:
-    material: NeuralTextureView
-
-@woptix.optix_kernel(woptix.OptixKernelType.CLOSEST_HIT)
-def closest_hit(params: Params):
-    values = neural_texture_sample(params.material, wp.vec2(0.25, 0.75))
-    albedo = wp.vec3(values[0], values[1], values[2])
-
-params.material = runtime.device_view()
-```
-
-The device path is Warp-generated OptiX code plus cooperative-vector
-intrinsics and has no `warp-nn` dependency.
-
-By default, compression trains two candidates (latent scales 4 and 5) and keeps
-the smaller asset only if every named texture stays within 0.5 dB of the larger
-candidate. This is a bounded heuristic, not an exhaustive quality search. No
-settings are required: `compress_texture(image)` and
-`compress_texture_set(textures)` both select automatically. Both use exactly
-the same inference function and asset format.
-
-Training and quantization-aware refinement run in captured CUDA graphs.
-Source values are staged as FP16 for training and FP32 for quality scoring:
-allow six bytes per source channel per pixel plus model, scoring and training
-buffers. Training loss and scoring use `tile_sum` with one atomic add per tile.
-Refinement trains both decoder and latents through 4-bit quantization using
-straight-through gradients and projected FP8 E4M3 weights, without increasing
-storage or inference work.
-
-On CUDA, quality scoring calls the same OptiX texel sampler used by rendering.
-The candidates share a deterministic, stratified sample of up to 65,536 pixels;
-only per-channel error sums return to the CPU. `CompressionResult.psnr` and
-`psnr_by_texture` are therefore estimates when `evaluation_pixels` is smaller
-than the image pixel count. CPU compression uses the NumPy reference decoder.
-`selection_reason` explains the automatic choice.
-
-Advanced users can override `latent_scale` to train just one candidate;
-explicit-scale compression scores every pixel (with larger scoring buffers).
-Larger scales use smaller grids. For large images the latent rate is roughly
-`40 / latent_scale**2` bits per material texel, shared across all channels:
-
-| `latent_scale` | Latent bits/texel | Intended use |
-| --- | ---: | --- |
-| 3 | 4.44 | More detail |
-| 4 | 2.50 | Larger automatic candidate |
-| 5 | 1.60 | Smaller automatic candidate |
-
-All use the same decoder and number of latent samples; grid sizes can still
-affect cache behavior. Increasing `steps` can improve quality without changing
-asset size or device code. The default is 1,000 training steps followed by
-250 refinement steps per candidate.
-
-The format is deliberately safe to memory-map: it uses no pickle data and
-validates shapes, dtypes, bounds, alignment, and SHA-256 payload checksums.
-
-This is a research-informed, compact integration rather than a reimplementation
-of NVIDIA RTXNTC. Version 1 has one fixed architecture, two learned latent
-feature grids, base-level decoding, wrap addressing, no entropy coding, and no stochastic texture
-filtering or renderer material integration. Its `.wnt` format is not
-compatible with RTXNTC's `.ntc` format. For production compression, full mip
-pyramids, and filtering guidance, consult NVIDIA's
-[Random-Access Neural Compression of Material Textures](https://research.nvidia.com/publication/2023-08_random-access-neural-compression-material-textures),
-[RTXNTC SDK](https://github.com/NVIDIA-RTX/RTXNTC), and
-[inference-on-sample integration guide](https://github.com/NVIDIA-RTX/RTXNTC/blob/main/docs/integration/InferenceOnSample.md).
+`warp_optix.gl` provides optional pyglet-based helpers for interactive examples:
+`GLInteropViewer` presents a CUDA-mapped `uint32` RGBA pixel buffer each frame without a host
+copy, and `GLLineOverlay` draws depth-tested lines over it (see below).
 
 ## Path-tracing viewer
 
@@ -297,8 +438,7 @@ denoiser.close()
 ```
 
 The supplemental extension adds the temporal models and guide-layer fields
-to the PyOptiX dependency's denoiser bindings.
-The denoiser takes an owned `warp_optix.Context`.
+to the PyOptiX dependency's denoiser bindings. `context` is the context from `wo.create_context()`.
 
 ### Interactive viewer features
 
@@ -351,7 +491,6 @@ OptiX launch capture is unsupported; `enable_cuda_graphs` logs a diagnostic
 and uses asynchronous launches. USD transform/TLAS device updates remain
 independently graph-capturable.
 
-
 Large dynamic arrow sets use one fixed-capacity native-curve geometry rather
 than one OptiX instance per arrow. Each arrow is a constant-radius shaft plus
 a linearly tapered tip. Inactive slots have zero width, so a changing contact
@@ -402,9 +541,12 @@ view-space depth is transferred through a CUDA/OpenGL PBO to an R32F texture,
 so fragments behind path-traced geometry are discarded:
 
 ```python
-overlay = wo.GLLineOverlay(
+from warp_optix.gl import GLLineOverlay
+
+overlay = GLLineOverlay(
     gl_viewer.gl,
     capacity=max_contact_count,
+    device="cuda",
     depth_buffer=api.linear_depth_output,
     stream=gl_viewer.render_stream,
 )
@@ -486,10 +628,11 @@ lookup, `usd.get_prim(path)` accesses any prim on the retained OpenUSD stage,
 and the CUDA local/world `wp.mat44` arrays are exposed after scene build. A
 batch composes hierarchy levels, updates all affected OptiX instance and
 motion-vector transforms, and updates the TLAS on the selected CUDA stream.
-The device methods and allocation-free TLAS `UPDATE` path are CUDA graph
-capture compatible after one warm-up call (which compiles kernels and sizes
-the reusable TLAS buffers). Keep the device batch length and array addresses
-stable across graph replays; a batch length of one is supported. The NumPy
+With `rebuild_tlas=False`, the device methods launch only Warp kernels and
+are CUDA graph capture compatible after one warm-up call; call `update_tlas()`
+outside the capture, because OptiX acceleration builds and updates cannot be
+recorded into graphs. Keep the device batch length and array addresses stable
+across graph replays; a batch length of one is supported. The NumPy
 convenience method performs allocation/upload and is intentionally not the
 graph-capture path.
 
@@ -503,120 +646,22 @@ when direct registration is unavailable.
 
 ## Layout
 
-- `warp_optix/__init__.py` — public re-exports of the runtime API.
-- `warp_optix/_runtime/` — runtime helpers for OptiX integration.
-- `warp_optix/_builtins.py` — OptiX `add_builtin(...)` registrations.
-- `warp_optix/_codegen.py` — `OptixKernelType` enum and codegen entry-point specs.
-- `warp_optix/_compat.py` — vanilla Warp private-API fallback.
+- `warp_optix/__init__.py` — public API.
+- `warp_optix/accel.py` — build inputs, `build_accel`/`update_accel`, and `Instance`/`make_instance`.
+- `warp_optix/pipeline.py` — `create_context`, `destroy_context`, `create_pipeline`, `HitGroup`, and `launch`.
+- `warp_optix/program.py` — rewrites Warp kernels into OptiX programs (`ProgramKind`).
+- `warp_optix/rays.py` — `closest_hit`, `any_hit`, `Hit`, and `MISS`.
+- `warp_optix/constants.py` — OptiX flag constants for device code.
+- `warp_optix/enums.py` — host-side flag and primitive-type enums.
+- `warp_optix/builtins.py` — OptiX builtin registrations.
 - `warp_optix/_native/include/warp_optix_builtins.h` — device-side C++ wrappers.
-- `warp_optix/_addon.py` — runs on import; wires the above into warp.
+- `warp_optix/native.py` — PyOptiX plus the supplemental bindings (`_backend.py`, `_ext`).
+- `warp_optix/addon.py` — registers the builtins and provides the OptiX module build options.
+- `warp_optix/gl/` — optional OpenGL interop viewer and line overlay.
+- `warp_optix/pathtracing/` — the path tracer.
 
-## Custom primitives
-
-Custom geometry uses OptiX AABBs plus a Warp intersection program. The runtime
-helper accepts either `(N, 6)` AABBs or `(N, 2, 3)` min/max pairs:
-
-```python
-gas = context.create_custom_primitive_gas(
-    aabbs,
-)
-
-pipeline = context.create_pipeline(
-    ptx,
-    raygen_program,
-    miss_program,
-    closest_hit_program,
-    num_payload_values=2,
-    num_attribute_values=3,
-    intersection_entry=intersection_program,
-)
-```
-
-See `examples_warp/example_warp_optix_motion_blur.py` for temporal sampling
-across a two-key triangle deformation.
-
-Inside an `INTERSECTION` kernel, use `wp.optix_get_object_ray_origin()`,
-`wp.optix_get_object_ray_direction()`, and `wp.optix_report_intersection()`.
-The latter accepts a hit distance, hit kind, and zero to eight `wp.uint32`
-attributes. Closest-hit and any-hit kernels can retrieve them with
-`wp.optix_get_attribute_0()` through `wp.optix_get_attribute_7()`.
-
-The context retains geometry and pipeline allocations until it closes. Use
-`gas.handle` in device launch parameters and `gas.buffers` for geometry arrays.
-
-For mixed geometry, build one GAS per geometry type, place them under an IAS
-with `create_instance_acceleration_structure()`, and pass one `HitKernel` per
-SBT record through `hit_groups`. The pipeline helper infers combined primitive
-flags and stores all hit records contiguously. See
-`examples_warp/example_warp_optix_mixed_geometry.py` for triangle, native curve,
-and analytical custom geometry sharing one pipeline.
-
-`pipeline.hit_group_offsets` contains the SBT offsets in hit-group order.
-Use these when constructing `wo.Instance` descriptors.
-
-Warp kernels also expose the common OptiX hit context directly: ray time,
-flags and visibility mask; instance ID/index; primitive, SBT GAS and GAS
-handles; front/back-face tests; and point/vector/normal transforms in both
-directions. The names follow Warp's existing snake-case convention, for
-example `wp.optix_get_instance_index()` and
-`wp.optix_transform_point_from_world_to_object_space()`.
-
-Triangle any-hit and closest-hit kernels can call
-`wp.optix_get_triangle_vertex_data()`. It returns a `wp.mat33` whose rows are
-the three object-space vertices of the current triangle; this current-hit form
-does not require random vertex access or extra launch-parameter arrays.
-
-Acceleration-structure builders accept `compact=True` for static data and a
-normal OptiX `build_flags` value for advanced use. For dynamic geometry, build
-with `BUILD_FLAG_ALLOW_UPDATE`, update the retained Warp buffer, then refit in
-place:
-
-```python
-gas = context.create_triangle_gas(
-    vertices,
-    indices,
-    build_flags=wo.BuildFlags.ALLOW_UPDATE,
-)
-gas.buffers["d_vertices"].assign(updated_vertices)
-gas.refit()
-```
-
-Compaction and update are deliberately mutually exclusive in these helpers:
-compaction targets immutable geometry, while update retains the original output
-capacity required by OptiX refits.
-
-For vertex motion blur, pass triangle vertices as `(K, N, 3)` motion keys and
-enable motion on the pipeline:
-
-```python
-gas = context.create_triangle_gas(
-    vertex_keys, indices, motion_time_range=(0.0, 1.0)
-)
-pipeline = context.create_pipeline(
-    ...,
-    uses_motion_blur=True,
-)
-```
-
-`create_curve_gas()` builds native round linear, B-spline, Catmull-Rom, and
-Bezier curves. Associate its hit record with OptiX's built-in intersector by
-setting `HitKernel(builtin_intersection_type=curve_type)`. Curve shaders can
-read the current parameter with `wp.optix_get_curve_parameter()`. Curve vertex
-and width arrays may also contain motion keys.
-
-Exception, direct-callable, and continuation-callable programs use the same
-`optix_kernel()` decorator as other stages. Pass them through
-`exception_entry`, `direct_callable_entries`, or
-`continuation_callable_entries` when creating the pipeline. The helper packs
-their SBT records and computes the additional stack requirements. Callable
-indices are exposed by `pipeline.direct_callable_indices` and
-`pipeline.continuation_callable_indices`.
-
-Callables intentionally use a no-argument, void interface:
-`wp.optix_direct_call(index)` or `wp.optix_continuation_call(index)`. They can
-read launch parameters and write referenced Warp arrays. Arbitrary typed
-callable arguments and returns are outside Warp's current external entry ABI
-and are therefore not exposed. Exception programs can use
-`wp.optix_get_exception_code()` and detail accessors; user code can raise an
-exception with `wp.optix_throw_exception()` and up to eight `wp.uint32`
-details.
+See `examples_warp/` for complete programs: `example_warp_optix_kernels.py` (minimal pipeline),
+`example_warp_optix_curves.py` (built-in curves), `example_warp_optix_mixed_geometry.py`
+(triangles, curves, and custom primitives under GPU-written instances),
+`example_warp_optix_motion_blur.py` (vertex motion keys), and
+`example_warp_optix_tiny_raytracer.py` (interactive viewer).

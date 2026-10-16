@@ -22,14 +22,12 @@
 
 """
 Material management for path tracing viewer.
-Provides PBR material creation and GPU buffer management.
+Provides PBR material creation.
 """
 
 from __future__ import annotations
 
 import numpy as np
-
-import warp as wp
 
 # Alpha modes
 ALPHA_OPAQUE = 0
@@ -191,34 +189,16 @@ def _texture_info_from_gltf(info_dict: dict | None):
 
 
 class MaterialManager:
-    """Manages PBR materials and their GPU buffer."""
+    """Manages the host-side PBR material table."""
 
     def __init__(self):
         self._materials = []
-        self._gpu_buffer = None
-        self._dirty = True
         self._material_dtype = _create_material_dtype()
 
     @property
     def count(self) -> int:
         """Get the number of materials."""
         return len(self._materials)
-
-    @property
-    def gpu_buffer(self) -> wp.array:
-        """Get the GPU buffer containing all materials."""
-        if self._dirty:
-            self._update_gpu_buffer()
-        return self._gpu_buffer
-
-    @property
-    def gpu_address(self) -> int:
-        """Get the device address of the material buffer."""
-        if self._dirty:
-            self._update_gpu_buffer()
-        if self._gpu_buffer is None:
-            return 0
-        return self._gpu_buffer.ptr
 
     def get_material_entries(self):
         """Return the underlying material entry list for packing helpers."""
@@ -231,7 +211,6 @@ class MaterialManager:
         # Match Newton's neutral 0.7 display-sRGB ground color in linear space.
         mat["pbrBaseColorFactor"] = (0.4479884, 0.4479884, 0.4479884, 1.0)
         self._materials.append(mat)
-        self._dirty = True
         return len(self._materials) - 1
 
     def add_diffuse(self, color: tuple, roughness: float = 0.9) -> int:
@@ -241,7 +220,6 @@ class MaterialManager:
         mat["pbrMetallicFactor"] = 0.0
         mat["pbrRoughnessFactor"] = roughness
         self._materials.append(mat)
-        self._dirty = True
         return len(self._materials) - 1
 
     def add_metal(self, color: tuple, roughness: float = 0.1) -> int:
@@ -251,7 +229,6 @@ class MaterialManager:
         mat["pbrMetallicFactor"] = 1.0
         mat["pbrRoughnessFactor"] = roughness
         self._materials.append(mat)
-        self._dirty = True
         return len(self._materials) - 1
 
     def add_emissive(self, color: tuple, intensity: float = 10.0) -> int:
@@ -260,7 +237,6 @@ class MaterialManager:
         mat["pbrBaseColorFactor"] = (1.0, 1.0, 1.0, 1.0)
         mat["emissiveFactor"] = tuple(c * intensity for c in color)
         self._materials.append(mat)
-        self._dirty = True
         return len(self._materials) - 1
 
     def add_glass(
@@ -278,7 +254,6 @@ class MaterialManager:
         mat["ior"] = ior
         mat["thicknessFactor"] = 0.0  # thin-walled
         self._materials.append(mat)
-        self._dirty = True
         return len(self._materials) - 1
 
     def add_pbr(
@@ -307,7 +282,6 @@ class MaterialManager:
         mat["clearcoatRoughness"] = clearcoat_roughness
         self._set_checker_overlay(mat, u_subdiv, v_subdiv, base_color_scale)
         self._materials.append(mat)
-        self._dirty = True
         return len(self._materials) - 1
 
     def add_gltf_material(
@@ -370,9 +344,7 @@ class MaterialManager:
             mat["opacityFresnelFalloff"] = float(max(opacity_fresnel[2], 0.0))
         mat["transmissionFactor"] = float(np.clip(transmission, 0.0, 1.0))
         if transmission_color is not None:
-            mat["transmissionColorFactor"] = tuple(
-                float(channel) for channel in transmission_color
-            )
+            mat["transmissionColorFactor"] = tuple(float(channel) for channel in transmission_color)
         mat["ior"] = float(max(ior, 1.0))
         mat["specularFactor"] = float(max(specular, 0.0))
         mat["specularColorFactor"] = tuple(float(channel) for channel in specular_color)
@@ -410,13 +382,10 @@ class MaterialManager:
         _set_tex("occlusionTexture", occlusion_texture)
 
         self._materials.append(mat)
-        self._dirty = True
         return len(self._materials) - 1
 
     @staticmethod
-    def _set_checker_overlay(
-        mat, u_subdiv: float, v_subdiv: float, base_color_scale: float
-    ) -> None:
+    def _set_checker_overlay(mat, u_subdiv: float, v_subdiv: float, base_color_scale: float) -> None:
         """Configure the procedural UV checker overlay."""
         u_subdiv = float(u_subdiv)
         v_subdiv = float(v_subdiv)
@@ -432,8 +401,6 @@ class MaterialManager:
     def clear(self):
         """Remove all materials."""
         self._materials.clear()
-        self._gpu_buffer = None
-        self._dirty = True
 
     def _create_default_material(self):
         """Create a default PBR material."""
@@ -532,18 +499,3 @@ class MaterialManager:
             mat[tex_name] = default_tex
 
         return mat
-
-    def _update_gpu_buffer(self):
-        """Upload materials to GPU."""
-        if len(self._materials) == 0:
-            self._gpu_buffer = None
-            self._dirty = False
-            return
-
-        # Stack all materials into a single array
-        materials_array = np.array(self._materials, dtype=self._material_dtype)
-
-        # Upload to GPU as raw bytes
-        host_bytes = materials_array.view(np.uint8).reshape(-1)
-        self._gpu_buffer = wp.array(host_bytes, dtype=wp.uint8, device="cuda")
-        self._dirty = False

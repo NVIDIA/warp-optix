@@ -2,11 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import warp as wp
 from PIL import Image
 from warp_optix.pathtracing import usd_loader
+from warp_optix.pathtracing.scene import Scene
 from warp_optix.pathtracing.usd_loader import (
     _MIP_CHAIN_MEMORY_FACTOR,
     _ambient_light_from_custom_layer_data,
@@ -14,8 +17,8 @@ from warp_optix.pathtracing.usd_loader import (
     _decode_packed_base_opacity,
     _decode_packed_orm,
     _decode_udim,
-    _mdl_texture_inputs,
     _fit_textures_to_budget,
+    _mdl_texture_inputs,
     _normalize_mesh_uvs_for_udim_atlas,
     _rebase_missing_texture,
     _triangles_by_material,
@@ -33,9 +36,7 @@ def test_corner_compaction_preserves_exact_attribute_seams():
     used = np.asarray((0, 1, 2, 3, 4), dtype=np.int64)
     corner_remap = np.asarray((0, 1, 2, 1, 3, 4), dtype=np.int64)
 
-    selected, triangles = _compact_corners(
-        vertices, normals, texcoords, point_indices, used, corner_remap
-    )
+    selected, triangles = _compact_corners(vertices, normals, texcoords, point_indices, used, corner_remap)
 
     reconstructed = np.column_stack(
         (
@@ -84,36 +85,20 @@ def test_texture_budget_proportionally_downscales_large_atlas():
     assert _fit_textures_to_budget(textures, max_bytes=4096) is textures
 
 
-def test_texture_budget_uses_available_gpu_memory(monkeypatch):
-    """Preserve source textures when live free VRAM provides enough headroom."""
-    import warp as wp
-
-    class DeviceStub:
-        free_memory = 8192
-
+@pytest.mark.parametrize("free_memory", [8192, 1024])
+def test_texture_budget_keeps_gpu_headroom(monkeypatch, free_memory):
+    """Keep source textures when free VRAM leaves headroom; otherwise downscale."""
     textures = [np.zeros((16, 16, 4), dtype=np.uint8) for _ in range(2)]
-    monkeypatch.setattr(wp, "get_device", lambda _alias: DeviceStub())
-    monkeypatch.setattr(usd_loader, "_MIN_TEXTURE_MEMORY_BUDGET_BYTES", 256)
-    monkeypatch.setattr(usd_loader, "_TEXTURE_VRAM_RESERVE_BYTES", 128)
-
-    assert _fit_textures_to_budget(textures) is textures
-
-
-def test_texture_budget_retains_headroom_on_small_gpu(monkeypatch):
-    """Downscale textures when they would consume reserved GPU headroom."""
-    import warp as wp
-
-    class DeviceStub:
-        free_memory = 1024
-
-    textures = [np.zeros((16, 16, 4), dtype=np.uint8) for _ in range(2)]
-    monkeypatch.setattr(wp, "get_device", lambda _alias: DeviceStub())
+    monkeypatch.setattr(wp, "get_device", lambda _alias: SimpleNamespace(free_memory=free_memory))
     monkeypatch.setattr(usd_loader, "_MIN_TEXTURE_MEMORY_BUDGET_BYTES", 256)
     monkeypatch.setattr(usd_loader, "_TEXTURE_VRAM_RESERVE_BYTES", 128)
 
     resized = _fit_textures_to_budget(textures)
 
-    assert sum(texture.nbytes for texture in resized) <= 512
+    if free_memory == 8192:
+        assert resized is textures
+    else:
+        assert sum(texture.nbytes for texture in resized) <= 512
 
 
 def test_missing_texture_rebases_to_stage_local_texture_tree(tmp_path):
@@ -126,11 +111,10 @@ def test_missing_texture_rebases_to_stage_local_texture_tree(tmp_path):
 
     broken = tmp_path / "textures" / "kit" / "albedo.<UDIM>.png"
 
-    assert _rebase_missing_texture(stage_path, broken) == texture.with_name(
-        "albedo.<UDIM>.png"
-    )
+    assert _rebase_missing_texture(stage_path, broken) == texture.with_name("albedo.<UDIM>.png")
 
 
+@pytest.mark.usd
 def test_referenced_mdl_udim_resolves_from_authoring_layer(tmp_path):
     pytest.importorskip("pxr")
     from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
@@ -147,17 +131,13 @@ def test_referenced_mdl_udim_resolves_from_authoring_layer(tmp_path):
     asset_root = UsdGeom.Xform.Define(asset_stage, "/Asset")
     asset_stage.SetDefaultPrim(asset_root.GetPrim())
     mesh = UsdGeom.Mesh.Define(asset_stage, "/Asset/Mesh")
-    mesh.CreatePointsAttr(
-        [Gf.Vec3f(0.0, 0.0, 0.0), Gf.Vec3f(1.0, 0.0, 0.0), Gf.Vec3f(0.0, 1.0, 0.0)]
-    )
+    mesh.CreatePointsAttr([Gf.Vec3f(0.0, 0.0, 0.0), Gf.Vec3f(1.0, 0.0, 0.0), Gf.Vec3f(0.0, 1.0, 0.0)])
     mesh.CreateFaceVertexCountsAttr([3])
     mesh.CreateFaceVertexIndicesAttr([0, 1, 2])
     material = UsdShade.Material.Define(asset_stage, "/Asset/Looks/Material")
     shader = UsdShade.Shader.Define(asset_stage, "/Asset/Looks/Material/Shader")
     shader.CreateIdAttr("CustomMdl")
-    shader.CreateInput("diffuse_texture", Sdf.ValueTypeNames.Asset).Set(
-        Sdf.AssetPath("../textures/albedo.<UDIM>.png")
-    )
+    shader.CreateInput("diffuse_texture", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath("../textures/albedo.<UDIM>.png"))
     shader.CreateOutput("surface", Sdf.ValueTypeNames.Token)
     material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
     UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
@@ -169,12 +149,8 @@ def test_referenced_mdl_udim_resolves_from_authoring_layer(tmp_path):
     referenced_root.GetPrim().GetReferences().AddReference(str(asset_path))
     stage.GetRootLayer().Save()
 
-    from warp_optix.pathtracing.scene import Scene
-
     scene = Scene(None)
-    assert scene.load_from_usd(
-        scene_path, apply_stage_units=False, max_texture_memory_bytes=1 << 20
-    )
+    assert scene.load_from_usd(scene_path, apply_stage_units=False, max_texture_memory_bytes=1 << 20)
     assert scene.texture_count == 1
     np.testing.assert_array_equal(scene._gltf_textures[0][0, 0], (90, 48, 20, 255))
 
@@ -259,9 +235,7 @@ def test_collected_mdl_source_exposes_pbr_textures(monkeypatch, tmp_path):
     }
 
     requests = []
-    monkeypatch.setattr(
-        usd_loader, "_surface_shader", lambda material, UsdShade: shader
-    )
+    monkeypatch.setattr(usd_loader, "_surface_shader", lambda material, UsdShade: shader)
     material = type("Material", (), {"GetInputs": lambda self: []})()
     result = usd_loader._material_to_pbr(
         material,
@@ -335,9 +309,7 @@ def test_collected_mdl_source_preserves_literal_omnipbr_defaults(monkeypatch, tm
         source_asset=str(mdl_path),
         sub_identifier="handles",
     )
-    monkeypatch.setattr(
-        usd_loader, "_surface_shader", lambda material, UsdShade: shader
-    )
+    monkeypatch.setattr(usd_loader, "_surface_shader", lambda material, UsdShade: shader)
 
     result = usd_loader._material_to_pbr(None, object(), lambda path, srgb: -1)
 
@@ -362,9 +334,7 @@ def test_omnisurface_lite_input_aliases_are_preserved(monkeypatch):
         source_asset="OmniSurfaceLite.mdl",
         sub_identifier="OmniSurfaceLite",
     )
-    monkeypatch.setattr(
-        usd_loader, "_surface_shader", lambda material, UsdShade: shader
-    )
+    monkeypatch.setattr(usd_loader, "_surface_shader", lambda material, UsdShade: shader)
 
     result = usd_loader._material_to_pbr(None, object(), lambda path, srgb: -1)
 
@@ -373,20 +343,14 @@ def test_omnisurface_lite_input_aliases_are_preserved(monkeypatch):
     assert result["specular"] == 0.2
 
 
-def test_authored_mdl_inputs_infer_common_texture_parameter_names(
-    monkeypatch, tmp_path
-):
+def test_authored_mdl_inputs_infer_common_texture_parameter_names(monkeypatch, tmp_path):
     albedo = tmp_path / "albedo.png"
     albedo.touch()
     shader = _Shader({"Base_Color_Map": str(albedo)}, shader_id="CustomMdl")
-    monkeypatch.setattr(
-        usd_loader, "_surface_shader", lambda material, UsdShade: shader
-    )
+    monkeypatch.setattr(usd_loader, "_surface_shader", lambda material, UsdShade: shader)
     requests = []
 
-    result = usd_loader._material_to_pbr(
-        None, object(), lambda path, srgb: requests.append((path, srgb)) or 0
-    )
+    result = usd_loader._material_to_pbr(None, object(), lambda path, srgb: requests.append((path, srgb)) or 0)
 
     assert result["base_color_texture"]["index"] == 0
     assert requests == [(albedo, True)]
@@ -394,9 +358,7 @@ def test_authored_mdl_inputs_infer_common_texture_parameter_names(
 
 def test_separate_roughness_map_is_packed_with_metallic_constant(tmp_path):
     roughness_path = tmp_path / "roughness.png"
-    Image.fromarray(
-        np.asarray([[[64, 64, 64, 255]]], dtype=np.uint8), mode="RGBA"
-    ).save(roughness_path)
+    Image.fromarray(np.asarray([[[64, 64, 64, 255]]], dtype=np.uint8), mode="RGBA").save(roughness_path)
     spec = (
         "packed_orm",
         Path(roughness_path),
@@ -412,9 +374,7 @@ def test_separate_roughness_map_is_packed_with_metallic_constant(tmp_path):
     assert packed.shape == (1, 1, 4)
     assert packed.dtype == np.uint8
     np.testing.assert_allclose(packed[0, 0, 0], 255)
-    np.testing.assert_allclose(
-        packed[0, 0, 1], round((0.1 * 0.2 + (64.0 / 255.0) * 0.8) * 255.0)
-    )
+    np.testing.assert_allclose(packed[0, 0, 1], round((0.1 * 0.2 + (64.0 / 255.0) * 0.8) * 255.0))
     np.testing.assert_allclose(packed[0, 0, 2], 255)
 
 
@@ -430,9 +390,7 @@ def test_omnipbr_separate_maps_select_packed_gltf_workflow(monkeypatch, tmp_path
             "metallic_constant": 1.0,
         }
     )
-    monkeypatch.setattr(
-        usd_loader, "_surface_shader", lambda material, UsdShade: shader
-    )
+    monkeypatch.setattr(usd_loader, "_surface_shader", lambda material, UsdShade: shader)
     requests = []
 
     material = type("Material", (), {"GetInputs": lambda self: []})()
@@ -458,9 +416,7 @@ def test_fresnel_emissive_mdl_inputs_are_preserved(monkeypatch):
             "reflection_roughness": 0.05,
         }
     )
-    monkeypatch.setattr(
-        usd_loader, "_surface_shader", lambda material, UsdShade: shader
-    )
+    monkeypatch.setattr(usd_loader, "_surface_shader", lambda material, UsdShade: shader)
     material = type("Material", (), {"GetInputs": lambda self: []})()
 
     result = usd_loader._material_to_pbr(material, object(), lambda path, srgb: -1)
@@ -479,9 +435,7 @@ def test_omniglass_source_asset_selects_transmission_without_authored_inputs(
         source_asset="OmniGlass.mdl",
         sub_identifier="OmniGlass",
     )
-    monkeypatch.setattr(
-        usd_loader, "_surface_shader", lambda material, UsdShade: shader
-    )
+    monkeypatch.setattr(usd_loader, "_surface_shader", lambda material, UsdShade: shader)
     material = type("Material", (), {"GetInputs": lambda self: []})()
 
     result = usd_loader._material_to_pbr(material, object(), lambda path, srgb: -1)
@@ -518,9 +472,7 @@ def test_collected_omni_ue4_translucent_wrapper_preserves_glass(monkeypatch, tmp
         source_asset=str(mdl_path),
         sub_identifier="custom_material",
     )
-    monkeypatch.setattr(
-        usd_loader, "_surface_shader", lambda material, UsdShade: shader
-    )
+    monkeypatch.setattr(usd_loader, "_surface_shader", lambda material, UsdShade: shader)
     requests = []
 
     result = usd_loader._material_to_pbr(
@@ -547,9 +499,7 @@ def test_collected_omni_ue4_translucent_wrapper_preserves_glass(monkeypatch, tmp
     ]
 
 
-def test_collected_omni_ue4_translucent_wool_uses_surface_coverage(
-    monkeypatch, tmp_path
-):
+def test_collected_omni_ue4_translucent_wool_uses_surface_coverage(monkeypatch, tmp_path):
     """Interpret the authored wool shell as coverage instead of glass."""
     for name in ("color.png", "normal.png", "mask.png"):
         (tmp_path / name).touch()
@@ -572,9 +522,7 @@ def test_collected_omni_ue4_translucent_wool_uses_surface_coverage(
         """
     )
     shader = _Shader({}, source_asset=str(mdl_path), sub_identifier="wool_glass")
-    monkeypatch.setattr(
-        usd_loader, "_surface_shader", lambda material, UsdShade: shader
-    )
+    monkeypatch.setattr(usd_loader, "_surface_shader", lambda material, UsdShade: shader)
 
     result = usd_loader._material_to_pbr(None, object(), lambda path, srgb: 1)
 
@@ -605,9 +553,7 @@ def test_collected_translucent_wrapper_packs_authored_opacity(monkeypatch, tmp_p
         """
     )
     shader = _Shader({}, source_asset=str(mdl_path), sub_identifier="custom_material")
-    monkeypatch.setattr(
-        usd_loader, "_surface_shader", lambda material, UsdShade: shader
-    )
+    monkeypatch.setattr(usd_loader, "_surface_shader", lambda material, UsdShade: shader)
     packed_requests = []
 
     result = usd_loader._material_to_pbr(
@@ -684,9 +630,7 @@ def test_collected_omni_ue4_base_preserves_surface_controls(monkeypatch, tmp_pat
         source_asset=str(mdl_path),
         sub_identifier="custom_material",
     )
-    monkeypatch.setattr(
-        usd_loader, "_surface_shader", lambda material, UsdShade: shader
-    )
+    monkeypatch.setattr(usd_loader, "_surface_shader", lambda material, UsdShade: shader)
 
     result = usd_loader._material_to_pbr(
         None,
@@ -716,9 +660,7 @@ def test_collected_mdl_honors_authored_srgb_orm(monkeypatch, tmp_path):
         """
     )
     shader = _Shader({}, source_asset=str(mdl_path), sub_identifier="custom_material")
-    monkeypatch.setattr(
-        usd_loader, "_surface_shader", lambda material, UsdShade: shader
-    )
+    monkeypatch.setattr(usd_loader, "_surface_shader", lambda material, UsdShade: shader)
     requests = []
 
     usd_loader._material_to_pbr(
@@ -743,9 +685,7 @@ def test_collected_mdl_ignores_unconnected_clearcoat_locals(monkeypatch, tmp_pat
         """
     )
     shader = _Shader({}, source_asset=str(mdl_path), sub_identifier="wood")
-    monkeypatch.setattr(
-        usd_loader, "_surface_shader", lambda material, UsdShade: shader
-    )
+    monkeypatch.setattr(usd_loader, "_surface_shader", lambda material, UsdShade: shader)
 
     result = usd_loader._material_to_pbr(None, object(), lambda path, srgb: -1)
 
@@ -753,9 +693,7 @@ def test_collected_mdl_ignores_unconnected_clearcoat_locals(monkeypatch, tmp_pat
     assert result["clearcoat_roughness"] == pytest.approx(0.1)
 
 
-def test_collected_ue4_emissive_texture_uses_isaac_radiance_scale(
-    monkeypatch, tmp_path
-):
+def test_collected_ue4_emissive_texture_uses_isaac_radiance_scale(monkeypatch, tmp_path):
     """Match Isaac Sim's OmniUe4Base emission multiplier in renderer units."""
     (tmp_path / "emissive.png").touch()
     mdl_path = tmp_path / "emissive.mdl"
@@ -769,9 +707,7 @@ def test_collected_ue4_emissive_texture_uses_isaac_radiance_scale(
         """
     )
     shader = _Shader({}, source_asset=str(mdl_path), sub_identifier="emissive")
-    monkeypatch.setattr(
-        usd_loader, "_surface_shader", lambda material, UsdShade: shader
-    )
+    monkeypatch.setattr(usd_loader, "_surface_shader", lambda material, UsdShade: shader)
 
     result = usd_loader._material_to_pbr(None, object(), lambda path, srgb: 3)
 
@@ -789,9 +725,7 @@ def test_omniglass_uses_authored_color_texture(monkeypatch, tmp_path):
         source_asset="OmniGlass.mdl",
         sub_identifier="OmniGlass",
     )
-    monkeypatch.setattr(
-        usd_loader, "_surface_shader", lambda material, UsdShade: shader
-    )
+    monkeypatch.setattr(usd_loader, "_surface_shader", lambda material, UsdShade: shader)
     requests = []
 
     result = usd_loader._material_to_pbr(
@@ -818,9 +752,7 @@ def test_omnipbr_preserves_normal_axis_flips(monkeypatch, tmp_path):
             "flip_tangent_v": True,
         }
     )
-    monkeypatch.setattr(
-        usd_loader, "_surface_shader", lambda material, UsdShade: shader
-    )
+    monkeypatch.setattr(usd_loader, "_surface_shader", lambda material, UsdShade: shader)
 
     result = usd_loader._material_to_pbr(None, object(), lambda path, srgb: 2)
 
@@ -838,9 +770,7 @@ def test_omnipbr_uses_its_authored_normal_green_channel_default(monkeypatch, tmp
         source_asset="OmniPBR.mdl",
         sub_identifier="OmniPBR",
     )
-    monkeypatch.setattr(
-        usd_loader, "_surface_shader", lambda material, UsdShade: shader
-    )
+    monkeypatch.setattr(usd_loader, "_surface_shader", lambda material, UsdShade: shader)
 
     result = usd_loader._material_to_pbr(None, object(), lambda path, srgb: 2)
 
@@ -865,9 +795,7 @@ def test_omnipbr_honors_disabled_orm_and_surface_controls(monkeypatch, tmp_path)
         source_asset="OmniPBR.mdl",
         sub_identifier="OmniPBR",
     )
-    monkeypatch.setattr(
-        usd_loader, "_surface_shader", lambda material, UsdShade: shader
-    )
+    monkeypatch.setattr(usd_loader, "_surface_shader", lambda material, UsdShade: shader)
     material = type("Material", (), {"GetInputs": lambda self: []})()
 
     result = usd_loader._material_to_pbr(material, object(), lambda path, srgb: 3)
@@ -879,56 +807,30 @@ def test_omnipbr_honors_disabled_orm_and_surface_controls(monkeypatch, tmp_path)
     assert result["base_color_desaturation"] == 0.3
     assert result["base_color_texture"]["transform"]["scale"] == (2.0, 3.0)
     assert result["base_color_texture"]["transform"]["offset"] == (0.1, 0.25)
-    assert result["base_color_texture"]["transform"]["rotation"] == pytest.approx(
-        np.pi / 2.0
-    )
+    assert result["base_color_texture"]["transform"]["rotation"] == pytest.approx(np.pi / 2.0)
 
 
-def test_udim_tiles_decode_to_horizontal_atlas(tmp_path):
+def test_udim_tiles_decode_to_horizontal_atlas_with_per_tile_size_limit(tmp_path):
     paths = []
-    for tile, color in (
-        (1001, (255, 0, 0, 255)),
-        (1002, (0, 255, 0, 255)),
-        (1003, (0, 0, 255, 255)),
-    ):
+    for tile, color in ((1001, (255, 0, 0, 255)), (1002, (0, 255, 0, 255)), (1003, (0, 0, 255, 255))):
         tile_path = tmp_path / f"color.{tile}.png"
-        Image.fromarray(np.full((2, 2, 4), color, dtype=np.uint8), mode="RGBA").save(
-            tile_path
-        )
+        Image.fromarray(np.full((8, 8, 4), color, dtype=np.uint8), mode="RGBA").save(tile_path)
         paths.append((tile, tile_path))
 
     atlas = _decode_udim(tuple(paths))
-
-    assert atlas.shape == (2, 6, 4)
+    assert atlas.shape == (8, 24, 4)
     assert atlas.dtype == np.uint8
-    np.testing.assert_array_equal(
-        atlas[0, (0, 2, 4), :3], np.eye(3, dtype=np.uint8) * 255
-    )
+    np.testing.assert_array_equal(atlas[0, (0, 8, 16), :3], np.eye(3, dtype=np.uint8) * 255)
+    assert _decode_udim(tuple(paths), max_size=4).shape == (4, 12, 4)
 
 
-def test_udim_size_limit_applies_per_tile_not_to_completed_atlas(tmp_path):
-    paths = []
-    for tile in (1001, 1002, 1003):
-        tile_path = tmp_path / f"tile.{tile}.png"
-        Image.new("RGBA", (8, 8), (tile - 1000, 0, 0, 255)).save(tile_path)
-        paths.append((tile, tile_path))
-
-    atlas = _decode_udim(tuple(paths), max_size=4)
-
-    assert atlas.shape == (4, 12, 4)
-
-
-def test_local_uv_mesh_maps_to_first_cell_of_udim_atlas():
-    texcoords = np.asarray(((0.0, 0.25), (0.5, 0.75), (1.0, 1.0)), dtype=np.float32)
-
-    adjusted = _normalize_mesh_uvs_for_udim_atlas(texcoords, 3, 1)
-
-    np.testing.assert_allclose(adjusted, texcoords / (3.0, 1.0))
-
-
-def test_multitile_uv_mesh_uses_material_atlas_dimensions():
-    texcoords = np.asarray(((0.0, 0.0), (1.5, 0.5), (2.9, 1.0)), dtype=np.float32)
-
-    adjusted = _normalize_mesh_uvs_for_udim_atlas(texcoords, 4, 1)
-
-    np.testing.assert_allclose(adjusted, texcoords / (4.0, 1.0))
+@pytest.mark.parametrize(
+    "texcoords",
+    [
+        ((0.0, 0.25), (0.5, 0.75), (1.0, 1.0)),  # local UVs map to the first atlas cell
+        ((0.0, 0.0), (1.5, 0.5), (2.9, 1.0)),  # multi-tile UVs use the material atlas dimensions
+    ],
+)
+def test_udim_mesh_uvs_scale_to_atlas(texcoords):
+    texcoords = np.asarray(texcoords, dtype=np.float32)
+    np.testing.assert_allclose(_normalize_mesh_uvs_for_udim_atlas(texcoords, 4, 1), texcoords / (4.0, 1.0))

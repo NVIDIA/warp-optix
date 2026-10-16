@@ -4,7 +4,7 @@ Warp ray tracing with PyOptiX 9.1.
 Write ray-generation, hit, miss, and callable programs as Warp kernels, or use
 the included path tracer. Applications import `warp_optix`. Installation brings
 in `pyoptix==9.1.0` for the standard OptiX bindings and builds a small extension
-for cooperative vectors, and missing binding fields and fixes.
+for cooperative vectors and missing binding fields and fixes.
 
 ## Installation
 
@@ -42,28 +42,36 @@ import warp_optix as wo
 from warp_optix.pathtracing import PathTracerAPI
 ```
 
-For custom ray tracers, a context owns geometry and pipelines:
+For custom ray tracers, OptiX programs are ordinary Warp kernels and launches
+mirror `wp.launch`:
 
 ```python
-# Geometry arrays, PTX, entry kernels, and launch parameters are application inputs.
-with wo.Context(device="cuda:0") as context:
-    geometry = context.create_triangle_gas(vertices, indices)
-    pipeline = context.create_pipeline(
-        ptx, raygen, miss, closest_hit,
-        num_payload_values=3, num_attribute_values=2,
-    )
-    # Store geometry.handle in your Warp launch parameters.
-    pipeline.launch(params_buffer, width=640, height=480)
+@wp.kernel(module="unique")
+def render(scene: wp.uint64, image: wp.array2d[float]):
+    y, x = wp.tid()
+    origin = wp.vec3(float(x), float(y), 10.0)
+    hit = wo.closest_hit(scene, origin, wp.vec3(0.0, 0.0, -1.0), 0.0, 100.0, wp.uint32(0xFF), wp.uint32(0))
+    image[y, x] = hit.t
+
+ctx = wo.create_context("cuda:0")
+gas = wo.build_accel(ctx, [wo.triangles(vertices, indices)])  # Warp device arrays
+pipeline = wo.create_pipeline(ctx, render)
+wo.launch(pipeline, dim=(480, 640), inputs=[gas.handle, image])
+wo.destroy_context(ctx)
 ```
 
-The context retains geometry buffers, modules, SBTs, and pipelines. Closing
-it synchronizes the CUDA device and releases resources. Keep arrays referenced
-by launch parameters alive until GPU work completes. Launches are asynchronous
-on Warp's current stream, or on an explicitly supplied `wp.Stream`; geometry
-builds and refits are synchronous.
+The raygen kernel's arguments are the launch parameters. Managed contexts retain
+pipelines, acceleration structures, and their input buffers until closure.
+Use `with wo.create_context(...) as ctx:` or call `wo.destroy_context(ctx)` for
+synchronized cleanup. Instances are written with `wo.make_instance()` and refit
+with `wo.update_accel()`. Initial instance builds validate child handles with a
+host readback; compaction also synchronizes. Transform-only refits and launches
+remain asynchronous on the selected Warp stream.
 
-See the [API guide](warp_optix/README.md), [migration notes](docs/migration-0.2.md),
-and runnable [examples](examples_warp/README.md).
+SBT records are built automatically. For named ray types and explicit hit-group
+layouts, pass a `wo.SbtBuilder` to `create_pipeline(..., sbt=builder)`.
+
+See the [API guide](warp_optix/README.md) and runnable [examples](examples_warp/README.md).
 
 ## Advanced native interface
 
@@ -72,8 +80,9 @@ from warp_optix import native
 ```
 
 `native` exposes PyOptiX's API plus the supplemental bindings. Native
-objects use explicit destruction; `Context.native_handle` and
-`Pipeline.native_handle` are borrowed and must not be destroyed by callers.
+objects use explicit destruction. `create_context()` returns a managed
+`Context`; `ctx.native_handle` provides borrowed access to its PyOptiX
+`DeviceContext`. Do not destroy that borrowed handle separately.
 Standard objects are the dependency's actual `optix` types; both packages can
 be imported in either order. The supplement adds methods and fields to those
 types and repairs module-metadata and continuation-callable handling. Keep
@@ -95,7 +104,11 @@ Install feature extras and pytest, then run the test suite:
 
 ```powershell
 python -m pytest warp_optix/tests
+python -m pytest examples_warp/neural_texture
 ```
+
+Tests can be selected with the markers registered in `pyproject.toml`
+(`gpu`, `slow`, `usd`, `render`, `training`), for example `-m "not slow"`.
 
 The suite includes regression coverage for the dependency and supplemental
 bindings. The dependency is maintained in
@@ -121,9 +134,9 @@ We plan to accept outside contributions in the future. See
 
 OptiX launch capture is currently unsupported. Tests on the RTX 3080 with
 driver 610.74 reproduced illegal memory access during graph replay and invalid
-resource events during context destruction. `Pipeline.launch` rejects an
-active capture before submitting native work. Capture ordinary Warp work in
-graphs and submit OptiX launches between those graphs on the same stream.
-
-When `enable_cuda_graphs` is requested for OptiX rendering, the renderer uses
-direct asynchronous launches and logs an explanation. CUDA stream ordering is supported.
+resource events during context destruction; on Blackwell with driver 595.99,
+OptiX launches and acceleration-structure builds are not recorded into the
+captured graph at all. `launch()`, `build_accel()`, `update_accel()`, and
+`create_pipeline()` reject an active capture before submitting native work.
+Capture ordinary Warp work in graphs and submit OptiX work between those
+graphs on the same stream. CUDA stream ordering is supported.
