@@ -10,7 +10,7 @@ import itertools
 import logging
 import os
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import warp as wp
@@ -78,6 +78,9 @@ class Pipeline:
     groups: tuple
     modules: tuple
     context: Context
+    params_type: object
+    explicit_params: bool
+    buffers: dict = field(default_factory=dict, compare=False)
     sbt_layout: SbtLayout | None = None
 
 
@@ -93,6 +96,7 @@ def create_pipeline(
     continuation_callables: Sequence[wp.Kernel] = (),
     exception: wp.Kernel | None = None,
     exception_flags: int | None = None,
+    params_type=None,
     payload_words: int = 0,
     attribute_words: int = 2,
     max_trace_depth: int = 1,
@@ -107,7 +111,9 @@ def create_pipeline(
     ``raygen`` is an ordinary Warp kernel; its arguments become the launch
     parameters passed to :func:`launch`, and ``wp.tid()`` is the launch index.
     Every other program is a Warp kernel whose arguments are a subset of the
-    raygen arguments, bound by name. ``None`` in ``miss`` is a miss record
+    raygen arguments, bound by name. With params_type=MyStruct, all stages
+    instead bind any subset of that struct's fields, and launch takes
+    inputs=[my_struct_instance]. ``None`` in ``miss`` is a miss record
     without a program.
 
     The hit record of geometry ``g`` and ray type ``r`` is
@@ -143,7 +149,9 @@ def create_pipeline(
 
     with ctx._transaction():
         # All programs compile into one Warp module that inherits the raygen module's options.
-        params = params_struct(raygen)
+        if params_type is not None and not all(hasattr(params_type, name) for name in ("vars", "ctype")):
+            raise TypeError("params_type must be a Warp struct type")
+        params = params_struct(raygen) if params_type is None else params_type
         module_name = f"warp_optix_pipeline_{next(_PIPELINE_IDS)}"
 
         def program(kernel, kind):
@@ -282,7 +290,10 @@ def create_pipeline(
         names = [arg.label for arg in raygen.adj.args]
         arguments = ", ".join(f"{n}: T{i}" for i, n in enumerate(names))
         stores = "".join(f"    p.{n} = {n}\n" for n in names)
-        source = f"def write_params({arguments}, _wo_params: wp.array(dtype=Params)):\n    p = Params()\n{stores}    _wo_params[0] = p\n"
+        arguments = f"{arguments}, " if arguments else ""
+        source = f"def write_params({arguments}_wo_params: wp.array(dtype=Params)):\n    p = Params()\n{stores}    _wo_params[0] = p\n"
+        if params_type is not None:
+            source = "def write_params(value: Params, _wo_params: wp.array(dtype=Params)):\n    _wo_params[0] = value\n"
         scope = {"wp": wp, "Params": params} | {f"T{i}": arg.type for i, arg in enumerate(raygen.adj.args)}
         namespace: dict = {}
         exec(compile(source, f"<warp_optix params {raygen.key}>", "exec"), scope, namespace)  # noqa: S102
@@ -295,6 +306,8 @@ def create_pipeline(
             sbt=sbt,
             params=wp.empty(1, dtype=params, device=device),
             params_size=ctypes.sizeof(params.ctype),
+            params_type=params,
+            explicit_params=params_type is not None,
             writer=writer,
             device=device,
             records=records,
@@ -307,31 +320,100 @@ def create_pipeline(
         return result
 
 
-def launch(pipeline: Pipeline, dim: Sequence[int], inputs: Sequence, stream: wp.Stream | None = None) -> None:
-    """Launch ``pipeline`` like ``wp.launch(raygen, dim, inputs)``, on ``stream``.
+@dataclass
+class LaunchParamsBuffer:
+    """Parameter storage for one pipeline; use write_launch_params() to update it.
 
-    Parameters are written on the stream before the launch, so consecutive launches
-    may reuse the same pipeline without synchronizing. Input arrays are retained
-    until the recorded stream event completes (or the context closes).
+    Reuse across streams is ordered with CUDA events. Use separate buffers for
+    independent concurrent launches. Direct mutation of data bypasses ordering.
+    """
+
+    pipeline: Pipeline
+    data: wp.array
+    _event: object = None
+    _inputs: tuple = ()
+    _initialized: bool = False
+
+
+def create_launch_params_buffer(pipeline: Pipeline) -> LaunchParamsBuffer:
+    """Allocate caller-owned parameter storage for a pipeline."""
+    ctx = require_context(pipeline.context)
+    if wp.get_stream(ctx.device).is_capturing:
+        raise RuntimeError(CAPTURE_ERROR)
+    return LaunchParamsBuffer(pipeline, wp.empty(1, dtype=pipeline.params_type, device=ctx.device))
+
+
+def write_launch_params(buffer: LaunchParamsBuffer, values, stream=None) -> None:
+    """Write a schema instance, or an argument sequence for an inferred schema.
+
+    Updates wait on prior uses of this buffer without synchronizing the CPU.
+    Arrays referenced by the parameters remain owned until replaced; submitted
+    launches retain their own references until completion.
+    """
+    pipeline = buffer.pipeline
+    ctx = require_context(pipeline.context)
+    stream = ctx._stream(stream)
+    if stream.is_capturing:
+        raise RuntimeError(CAPTURE_ERROR)
+    if pipeline.explicit_params:
+        if getattr(values, "_cls", None) is not pipeline.params_type:
+            raise TypeError("values must be an instance of the pipeline params_type")
+        inputs = (values,)
+    else:
+        inputs = tuple(values)
+    ctx._check_arrays(inputs)
+    with ctx._transaction(), wp.ScopedStream(stream):
+        if buffer._event is not None:
+            stream.wait_event(buffer._event)
+        wp.launch(pipeline.writer, dim=1, inputs=[*inputs, buffer.data], device=pipeline.device, stream=stream)
+        buffer._inputs = tuple(ctx._arrays(inputs))
+        buffer._initialized = True
+        buffer._event = stream.record_event()
+        ctx._retain_launch(stream, [buffer.data, *buffer._inputs])
+
+
+def launch(pipeline: Pipeline, dim: Sequence[int], inputs: Sequence | None = None,
+           stream: wp.Stream | None = None, *, params_buffer: LaunchParamsBuffer | None = None) -> None:
+    """Launch with automatic inputs or an explicitly populated parameter buffer.
+
+    An explicit schema takes inputs=[schema_instance]. Automatic storage is
+    separate for each CUDA stream. Calls from multiple host threads require
+    external synchronization, as do other operations on a shared context.
     """
     ctx = require_context(pipeline.context)
     stream = ctx._stream(stream)
-    inputs = tuple(inputs)
-    ctx._check_arrays(inputs)
     if stream.is_capturing:
         raise RuntimeError(CAPTURE_ERROR)
+    dim = tuple(dim)
+    if not 1 <= len(dim) <= 3 or any(not isinstance(n, int) or n <= 0 for n in dim):
+        raise ValueError("dim must contain one to three positive integers")
+    if (inputs is None) == (params_buffer is None):
+        raise ValueError("Provide exactly one of inputs or params_buffer")
+    if params_buffer is not None:
+        if not isinstance(params_buffer, LaunchParamsBuffer) or params_buffer.pipeline is not pipeline:
+            raise ValueError("Parameter buffer must belong to this pipeline")
+        buffer = params_buffer
+        if not buffer._initialized:
+            raise ValueError("Write launch parameters before using the buffer")
+    else:
+        inputs = tuple(inputs)
+        key = stream.cuda_stream
+        if key not in pipeline.buffers:
+            data = pipeline.params if not pipeline.buffers else wp.empty(1, dtype=pipeline.params_type, device=ctx.device)
+            pipeline.buffers[key] = LaunchParamsBuffer(pipeline, data)
+        buffer = pipeline.buffers[key]
+        if pipeline.explicit_params:
+            if len(inputs) != 1:
+                raise ValueError("Explicit params_type requires inputs=[schema_instance]")
+            values = inputs[0]
+        else:
+            values = inputs
+        write_launch_params(buffer, values, stream)
     with ctx._transaction(), wp.ScopedStream(stream):
-        wp.launch(pipeline.writer, dim=1, inputs=[*inputs, pipeline.params], device=pipeline.device, stream=stream)
+        if buffer._event is not None:
+            stream.wait_event(buffer._event)
         width, height, depth = [*reversed(dim), 1, 1][:3]
-        native.launch(
-            pipeline.pipeline,
-            stream.cuda_stream,
-            pipeline.params.ptr,
-            pipeline.params_size,
-            pipeline.sbt,
-            width,
-            height,
-            depth,
-        )
-
-        ctx._retain_launch(stream, inputs)
+        native.launch(pipeline.pipeline, stream.cuda_stream, buffer.data.ptr,
+                      pipeline.params_size, pipeline.sbt, width, height, depth)
+        buffer._event = stream.record_event()
+        ctx._retain_launch(stream, [buffer.data, *buffer._inputs])

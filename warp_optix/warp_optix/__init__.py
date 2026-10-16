@@ -55,7 +55,18 @@ from warp_optix.rays import Hit as Hit
 from warp_optix.rays import any_hit as any_hit
 from warp_optix.rays import closest_hit as closest_hit
 
+from warp_optix.pipeline import LaunchParamsBuffer as LaunchParamsBuffer
+from warp_optix.pipeline import create_launch_params_buffer as create_launch_params_buffer
+from warp_optix.pipeline import write_launch_params as write_launch_params
+from warp_optix.program import OptixKernelType as OptixKernelType
+from warp_optix.program import optix_kernel as optix_kernel
+
 __all__ = [
+    "optix_kernel",
+    "OptixKernelType",
+    "write_launch_params",
+    "create_launch_params_buffer",
+    "LaunchParamsBuffer",
     "MISS",
     "Accel",
     "BuildFlags",

@@ -54,7 +54,7 @@ resources until closure; launch input arrays are retained until their stream
 event completes. `ctx.native_handle` is borrowed advanced access; direct native
 calls remain the caller's responsibility.
 
-Every OptiX program is a `@wp.kernel(module="unique")` kernel. The raygen kernel's arguments
+OptiX programs can use ordinary `@wp.kernel(module="unique")` kernels. By default, the raygen kernel's arguments
 become the pipeline's launch parameters, and `wp.tid()` returns the launch index, so the same
 `dim` is used as with `wp.launch` (`dim=(height, width)` gives an OptiX launch of `width x
 height`). Every other program — miss, closest-hit, any-hit, intersection, direct callable, and
@@ -127,6 +127,45 @@ on `stream` and then launches OptiX on the same stream. Neither step synchronize
 OptiX does not record its work into CUDA graphs, so `wo.launch`, `wo.build_accel`,
 `wo.update_accel`, and `wo.create_pipeline` raise `RuntimeError` during stream capture. Kernels written against a single launch-parameter struct
 (`def raygen(params: LaunchParams)`) work unchanged: launch them with `inputs=[params]`.
+
+Automatic parameter storage is separate for each CUDA stream. Sequential launches
+on one stream reuse its buffer. Operations on a shared context from multiple host
+threads require external synchronization.
+
+For a shared schema independent of raygen, pass `params_type=MyParams`, where
+`MyParams` is a `@wp.struct`. Each program declares any subset of the schema's
+fields by name and identical type. This lets a miss or hit program use fields
+that raygen does not declare. Launch with `inputs=[my_params_instance]`.
+The schema is the parameter block itself; to use a single `params: MyParams`
+argument in every shader, keep the default inferred schema instead.
+
+Advanced callers can own parameter storage explicitly:
+
+```python
+buffer = wo.create_launch_params_buffer(pipeline)
+wo.write_launch_params(buffer, my_params_instance, stream=stream)
+wo.launch(pipeline, dim=(height, width), params_buffer=buffer, stream=stream)
+```
+
+For inferred schemas, `write_launch_params` takes the argument sequence instead.
+A buffer belongs to the pipeline that created it and must be written before use.
+Supply either `inputs` or `params_buffer`, never both. Updates and launches on a
+shared buffer are ordered with CUDA events, including across streams. Separate
+buffers allow independent concurrent launches. Referenced arrays remain retained;
+callers must still order their own writes to those arrays. Directly modifying the
+buffer's device storage bypasses the API's ordering and validation.
+
+An optional `@wo.optix_kernel(wo.OptixKernelType.RAYGEN, module="unique")`
+decorator replaces `@wp.kernel` when a shader should declare its intended stage.
+It also accepts an existing Warp kernel. Pipeline construction rejects a declared
+stage that disagrees with its slot. Undecorated Warp kernels continue to get their
+stage from their pipeline slot.
+
+Compare `examples_warp/example_warp_optix_kernels.py` with
+`examples_warp/example_warp_optix_explicit_params.py`: both compute the same
+output; the latter uses a shared schema, stage declarations, named SBT layout,
+and separate buffers on separate streams.
+
 
 ### Explicit SBT layouts
 

@@ -12,10 +12,10 @@ exactly that shape, so a kernel ``k(a: A, b: B)`` is rewritten into
         b = _wo_params.b
         <body of k>
 
-where ``Params`` is a Warp struct derived from the raygen kernel's signature.
+where ``Params`` is an explicit Warp struct or is derived from the raygen signature.
 ``wp.tid()`` is mapped onto the OptiX launch index, so the same kernel source
 runs under ``wp.launch`` and under :func:`warp_optix.launch` with equal ``dim``.
-Programs other than raygen bind any subset of the raygen arguments by name.
+Programs bind fields of the shared parameter schema by name.
 """
 
 from __future__ import annotations
@@ -44,6 +44,25 @@ class ProgramKind(enum.Enum):
     CONTINUATION_CALLABLE = "__continuation_callable__"
 
 
+# Public stage-declaration enum.
+OptixKernelType = ProgramKind
+
+
+def optix_kernel(kind: ProgramKind, **options):
+    """Declare a stage on a Warp kernel; pipeline construction validates it."""
+    if not isinstance(kind, ProgramKind):
+        raise TypeError("kind must be an OptixKernelType")
+
+    def decorate(func):
+        if isinstance(func, wp.Kernel) and options:
+            raise TypeError("Set Warp kernel options on @wp.kernel when decorating an existing kernel")
+        kernel = func if isinstance(func, wp.Kernel) else wp.kernel(func, **options)
+        kernel._optix_kind = kind
+        return kernel
+
+    return decorate
+
+
 def kernel_signature(kernel: wp.Kernel) -> dict[str, type]:
     """Return a kernel's argument names and Warp types in declaration order."""
     return {arg.label: arg.type for arg in kernel.adj.args}
@@ -63,12 +82,15 @@ def as_program(kernel: wp.Kernel, kind: ProgramKind, params, module: str) -> wp.
     ``params`` is the launch-parameter struct shared by the pipeline. Every
     argument of ``kernel`` must be a field of ``params`` with the same type.
     """
+    declared = getattr(kernel, "_optix_kind", None)
+    if declared is not None and declared is not kind:
+        raise TypeError(f"Kernel {kernel.key!r} declares {declared.name}, but occupies {kind.name}")
     fields = params.vars
     for name, arg_type in kernel_signature(kernel).items():
         if name not in fields:
-            raise TypeError(f"{kind.name.lower()} kernel '{kernel.key}' argument '{name}' is not a raygen argument")
+            raise TypeError(f"{kind.name.lower()} kernel '{kernel.key}' argument '{name}' is not a launch parameter")
         if not wp.types.types_equal(fields[name].type, arg_type):
-            raise TypeError(f"{kind.name.lower()} kernel '{kernel.key}' argument '{name}' type differs from raygen")
+            raise TypeError(f"{kind.name.lower()} kernel '{kernel.key}' argument '{name}' type differs from launch parameters")
 
     tree = ast.parse(kernel.adj.source)
     fn = tree.body[0]

@@ -472,8 +472,8 @@ def test_higher_order_curve_vertex_data_on_gpu(curve_type, control_points):
 @pytest.mark.parametrize(
     ("miss", "message"),
     [
-        (unbound_miss, "is not a raygen argument"),
-        (retyped_miss, "type differs from raygen"),
+        (unbound_miss, "is not a launch parameter"),
+        (retyped_miss, "type differs from launch parameters"),
         (tid_miss, "only available in raygen"),
     ],
 )

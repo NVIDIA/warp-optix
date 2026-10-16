@@ -146,3 +146,10 @@ other geometry is present, but remain loaded and rendered.
 The loader triangulates authored polygons but does not tessellate subdivision
 surfaces or import camera animation, curves, or point instancers. Other USD
 light types are not currently imported.
+
+### Explicit launch parameters
+
+`example_warp_optix_explicit_params.py` produces the same result as
+`example_warp_optix_kernels.py` using an explicit shared schema, optional shader
+stage declarations, `SbtBuilder`, and independently managed launch buffers on
+two CUDA streams. Run it with `python examples_warp/example_warp_optix_explicit_params.py`.
