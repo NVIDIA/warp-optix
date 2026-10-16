@@ -94,10 +94,12 @@ entry per curve segment; `create_mesh` accepts the equivalent per-triangle
 array. Curves use the existing PBR material, lighting, alpha,
 transmission, guide-buffer, and shadow paths; USD curve import is not required.
 
-The basic path-tracing example automatically downloads its default A Beautiful
-Game scene into the platform cache on first use. On Linux this defaults to
-`~/.cache/warp_optix/assets/`. Pass `--scene-gltf PATH` to use a local `.gltf`
-or `.glb` scene instead.
+The basic path-tracing example generates a complete chess set with procedural
+light maple and dark walnut textures with brass accents. Wood grain uses a
+shared scale in scene units across the board and pieces. Its geometry and textures are created locally using
+NumPy, without downloading assets. The reusable geometry and texture helpers
+are in `example_warp_optix_chess_scene.py`. Pass `--scene-gltf PATH` to load
+your own `.gltf` or `.glb` scene instead.
 
 The USD path-tracing example loads a user-supplied composed USD stage and maps
 UsdPreviewSurface plus common NVIDIA OmniPBR/OmniGlass MDL inputs to the
