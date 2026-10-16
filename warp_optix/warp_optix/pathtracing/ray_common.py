@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import warp as wp
 
-DLSS_INF_DISTANCE = float(65504.0)
+MISS_DISTANCE = float(65504.0)
 
 
 @wp.struct
@@ -45,7 +45,7 @@ class RayPayload:
 @wp.func
 def init_ray_payload() -> RayPayload:
     p = RayPayload()
-    p.hitT = DLSS_INF_DISTANCE
+    p.hitT = MISS_DISTANCE
     p.normal_x = 0.0
     p.normal_y = 0.0
     p.normal_z = 1.0

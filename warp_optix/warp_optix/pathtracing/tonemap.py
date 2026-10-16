@@ -88,7 +88,7 @@ def _read_hdr(
 def _read_hdr(
     image: wp.Texture2D, x: int, y: int, width: int, height: int
 ) -> wp.vec4:
-    # DLSS output textures use point filtering and normalized coordinates.
+    # Input textures use point filtering and normalized coordinates.
     uv = wp.vec2((float(x) + 0.5) / float(width), (float(y) + 0.5) / float(height))
     return wp.texture_sample(image, uv, dtype=wp.vec4)
 
@@ -463,7 +463,7 @@ class Tonemapper:
         src_height: int,
         max_depth: float = 100.0,
     ):
-        """Debug visualization from DLSS input buffers."""
+        """Debug visualization from render-guide buffers."""
         wp.launch(
             debug_visualize_kernel,
             dim=(self.height, self.width),

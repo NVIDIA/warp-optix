@@ -94,10 +94,9 @@ def _parse_args():
     parser.add_argument("--exposure", type=float, default=0.68, help="Linear display exposure multiplier.")
     parser.add_argument("--contrast", type=float, default=1.08, help="Display contrast multiplier.")
     parser.add_argument("--saturation", type=float, default=1.1, help="Display saturation multiplier.")
-    parser.add_argument("--no-dlss-rr", action="store_true", help="Disable DLSS Ray Reconstruction.")
     parser.add_argument(
-        "--denoiser", choices=("auto", "dlss", "optix", "none"), default=None,
-        help="Select the denoiser backend (overrides --no-dlss-rr).",
+        "--denoiser", choices=("auto", "optix", "none"), default=None,
+        help="Select the denoiser backend.",
     )
     parser.add_argument("--optix-upscale", action="store_true", help="Enable OptiX temporal 2x upscaling.")
     parser.add_argument("--no-cuda-graphs", action="store_true", help="Disable OptiX CUDA graph replay.")
@@ -329,7 +328,6 @@ def main():
     api = PathTracerAPI(
         width=args.width,
         height=args.height,
-        enable_dlss_rr=not args.no_dlss_rr,
         denoiser=args.denoiser,
         optix_upscale=args.optix_upscale,
         enable_set=not args.no_set,

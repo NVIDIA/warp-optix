@@ -250,8 +250,8 @@ its windowing and image extras with:
 pip install -e ".[pathtracing]"
 ```
 
-`PathTracingViewer` is a standalone OptiX path-tracing viewer with DLSS Ray
-Reconstruction. `PathTracingViewerBackend` exposes a renderer-facing `log_*`
+`PathTracingViewer` is a standalone OptiX path-tracing viewer with OptiX temporal
+denoising. `PathTracingViewerBackend` exposes a renderer-facing `log_*`
 API without importing a simulation framework.
 
 ### Denoising and upscaling
@@ -262,29 +262,24 @@ selector and support switching without rebuilding the scene:
 ```python
 from warp_optix.pathtracing import PathTracerAPI
 
-api = PathTracerAPI(denoiser="dlss", dlss_quality="quality", optix_upscale=True)
+api = PathTracerAPI(denoiser="auto", optix_upscale=True)
 api.initialize()
-api.set_denoiser("optix")
-api.set_denoiser("dlss")  # Retains the DLSS quality setting.
+api.set_denoiser("none")  # Raw rendering.
 api.set_denoiser("optix", optix_upscale=False)  # Native-resolution denoising.
 ```
 
-`denoiser="auto"` prefers DLSS RR, then OptiX, then raw rendering. Explicit
-`"dlss"` and `"optix"` selections require successful initialization;
-`"none"` disables denoising. Inspect `active_denoiser` and `denoiser_error`
-to see the selected backend and automatic fallback diagnostics. Omitting
-`denoiser` preserves the existing `enable_dlss_rr` behavior, including its
-raw-rendering fallback. An explicit selector takes precedence over that flag.
+The default `denoiser="auto"` selects OptiX, with raw rendering as a fallback.
+Explicit `"optix"` selection requires successful initialization; `"none"`
+disables denoising. Inspect `active_denoiser` and `denoiser_error` for the active
+backend and fallback diagnostics.
 
-DLSS queries NGX for input dimensions using the existing `dlss_quality` modes.
 OptiX uses temporal denoising at native resolution by default;
 `optix_upscale=True` selects its temporal 2x upscaling model. Odd output sizes
 use rounded-up input dimensions and crop the extra output row or column.
 Switches and resizes reset reconstruction history and affected CUDA graphs.
-Use `reset_temporal_history()` after a discontinuous scene change. OptiX
-respects `samples_per_frame`; DLSS continues to render one sample per frame.
-Both backends share the renderer's guide buffers and final tonemapping path.
-The rendering panel exposes backend selection and their quality settings.
+Use `reset_temporal_history()` after a discontinuous scene change.
+Rendering respects `samples_per_frame`. The rendering panel exposes denoiser
+selection and upscaling controls.
 
 For custom Warp renderers, `warp_optix.pathtracing` also exports
 `DenoiserInputs` and `OptixDenoiser`. Pass float4 HDR color, float4 world-space
@@ -322,7 +317,7 @@ The viewer follows the earlier hybrid viewer controls:
 - P saves a screenshot.
 
 `register_ui_callback()` adds application controls to the optional ImGui panel.
-The panel also exposes rendering statistics, DLSS state, visualization flags,
+The panel also exposes rendering statistics, denoiser state, visualization flags,
 camera state, debug buffers, picking, pause, and screenshot controls. Picking
 uses an optional `picking_factory` supplied by the application when constructing
 the viewer.
@@ -351,15 +346,11 @@ HDR textures can be enabled explicitly with
 `log_mesh` adapter currently maps vertex colors and PBR values but does not
 ingest its optional texture argument.
 
-`PathTracerAPI` submits ray-tracing launches directly when DLSS RR or the
-temporal OptiX denoiser is active. DLSS resource event queries are forbidden
-during CUDA stream capture, and replaying a captured OptiX launch on the tested
-runtime snapshots camera/sample parameters, freezing temporal inputs.
-Raw rendering retains the CUDA graph option; USD transform/TLAS device updates
-remain independently graph-capturable.
-Pass `enable_cuda_graphs=False` to diagnose a driver or
-capture compatibility issue; `api.cuda_graph_active` reports successful
-capture after the first rendered sample.
+`PathTracerAPI` submits ray-tracing launches directly on its rendering stream.
+OptiX launch capture is unsupported; `enable_cuda_graphs` logs a diagnostic
+and uses asynchronous launches. USD transform/TLAS device updates remain
+independently graph-capturable.
+
 
 Large dynamic arrow sets use one fixed-capacity native-curve geometry rather
 than one OptiX instance per arrow. Each arrow is a constant-radius shaft plus

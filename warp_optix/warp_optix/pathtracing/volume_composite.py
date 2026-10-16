@@ -4,7 +4,7 @@
 import warp as wp
 
 from .pathtracing_warp_kernels import (
-    DLSS_INF_DISTANCE,
+    MISS_DISTANCE,
     PathtraceLaunchParams,
     _compute_ray_dir,
     _compute_ray_origin,
@@ -161,7 +161,7 @@ def composite_volume(params: PathtraceLaunchParams, volume_params: VolumeParams)
     direction = _compute_ray_dir(params, x, y)
     depth = params.depth_output[y, x]
     surface_t = wp.float32(1.0e32)
-    if depth < DLSS_INF_DISTANCE:
+    if depth < MISS_DISTANCE:
         view_direction = _mul_mat3x3_cm(params.view, direction)
         surface_t = depth / wp.max(-view_direction[2], 1.0e-5)
     rng = _xxhash32(wp.uint32(x), wp.uint32(y), params.frame_index)

@@ -46,23 +46,6 @@ def _get_optix_include_dir():
     )
 
 
-def _dlss_support_available():
-    return hasattr(_extensions, "DlssRRContext")
-
-
-def _dlss_rr_available():
-    if not _dlss_support_available():
-        return False
-    context = _extensions.DlssRRContext()
-    try:
-        context.init(featureSearchPath=str(_get_package_dir()))
-        return context.isDlssRRAvailable()
-    except RuntimeError:
-        return False
-    finally:
-        context.deinit()
-
-
 def _load_backend():
     if version("pyoptix") != "9.1.0":
         raise ImportError("warp-optix requires pyoptix==9.1.0; reinstall its dependencies")
@@ -112,7 +95,6 @@ def _load_backend():
         upstream._warp_optix_extensions_installed = True
 
     backend = ModuleType("warp_optix._backend_api")
-    # The renderer uses __file__ to find the packaged DLSS runtime.
     backend.__file__ = _extensions.__file__
     for module in (upstream, _extensions):
         for name in dir(module):
@@ -139,16 +121,7 @@ def _load_backend():
                 if not hasattr(enum, name):
                     setattr(enum, name, value)
 
-    if not _dlss_support_available():
-        stub = import_module("warp_optix._dlss_stub")
-        for name in stub.__all__:
-            setattr(backend, name, getattr(stub, name))
-        for enum in (stub.DlssPerfQuality, stub.RayReconstructionHintRenderPreset, stub.DlssRRResource):
-            for member in enum:
-                setattr(backend, member.name, member)
     backend.get_optix_include_dir = _get_optix_include_dir
-    backend.dlss_support_available = _dlss_support_available
-    backend.dlss_rr_available = _dlss_rr_available
     return backend
 
 

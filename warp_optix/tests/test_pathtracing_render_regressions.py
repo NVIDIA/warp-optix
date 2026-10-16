@@ -23,7 +23,7 @@ def _new_gpu_api(width=64, height=48):
     api = PathTracerAPI(
         width=width,
         height=height,
-        enable_dlss_rr=False,
+        denoiser="none",
         enable_set=False,
         enable_cuda_graphs=True,
         backface_culling=False,

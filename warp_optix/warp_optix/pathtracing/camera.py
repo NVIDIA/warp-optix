@@ -71,7 +71,7 @@ class Camera:
         """
         Get the projection matrix.
         Uses RIGHT-HANDED perspective with 0-1 depth range (GLM perspectiveRH_ZO).
-        Apply Vulkan-style Y-flip to match the MinimalDlssRRViewer camera path.
+        Apply the Y-flip used by the renderer projection convention.
         """
         proj = self._perspective_rh_zo(math.radians(self.fov), self.aspect_ratio, self.near, self.far)
         proj[1, 1] *= -1.0

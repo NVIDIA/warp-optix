@@ -135,13 +135,9 @@ frames transform-aware world-space geometry bounds. Use `--usd-camera PATH`
 to select a camera explicitly or `--no-usd-camera` to force bounds framing.
 Extreme flat ground planes are excluded from fallback camera fitting when
 other geometry is present, but remain loaded and rendered. Both examples
-capture the stable OptiX launch as a CUDA graph by default while keeping
-per-frame camera/jitter parameters and DLSS evaluation dynamic; use
-`--no-cuda-graphs` only for diagnostics. Frame-level capture is automatically
-skipped while DLSS-RR or temporal OptiX denoising is active. DLSS resource event
-bookkeeping is not legal during CUDA stream capture, and captured OptiX launches
-can freeze camera/sample parameters on the tested runtime. USD transform/TLAS device batches remain
-independently graph-capturable.
+submit OptiX launches asynchronously on the rendering stream. OptiX launch
+capture is unsupported; USD transform/TLAS device updates remain independently
+graph-capturable.
 The loader triangulates authored polygons but does not tessellate subdivision
 surfaces or import camera animation, curves, or point instancers. Other USD
 light types are not currently imported.
