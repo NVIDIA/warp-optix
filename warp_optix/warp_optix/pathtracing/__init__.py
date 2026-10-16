@@ -24,7 +24,7 @@ Components:
     - materials: PBR material management
     - scene: Mesh and acceleration structure management
     - tonemap: HDR to LDR tonemapping
-    - pathtracing_viewer: OptiX/DLSS rendering engine
+    - pathtracing_viewer: OptiX rendering engine
     - viewer: Standalone and framework-compatible viewer API
 """
 

@@ -62,9 +62,8 @@ class PathTracerAPI:
         self,
         width: int = DEFAULT_VIEWER_WIDTH,
         height: int = DEFAULT_VIEWER_HEIGHT,
-        enable_dlss_rr: bool = True,
         enable_set: bool = True,
-        dlss_quality: str = "quality",
+        enable_cuda_graphs: bool = True,
         samples_per_frame: int = 1,
         max_bounces: int = 4,
         direct_light_samples: int = 1,
@@ -80,10 +79,9 @@ class PathTracerAPI:
             width=self.width,
             height=self.height,
             scene_setup=lambda _scene: None,
-            enable_dlss_rr=bool(enable_dlss_rr),
             enable_set=bool(enable_set),
+            enable_cuda_graphs=bool(enable_cuda_graphs),
             accumulate_samples=False,
-            dlss_quality=dlss_quality,
             samples_per_frame=samples_per_frame,
             max_bounces=max_bounces,
             direct_light_samples=direct_light_samples,
@@ -126,13 +124,8 @@ class PathTracerAPI:
         return None if scene is None else scene.usd_scene
 
     @property
-    def dlss_enabled(self) -> bool:
-        """Return whether DLSS Ray Reconstruction initialized successfully."""
-        return bool(self._viewer._dlss_enabled)
-
-    @property
     def denoiser(self) -> str:
-        """Requested backend: 'auto', 'dlss', 'optix', or 'none'."""
+        """Requested backend: 'auto', 'optix', or 'none'."""
         return self._viewer.denoiser
 
     @property
@@ -160,14 +153,9 @@ class PathTracerAPI:
         return bool(self._viewer.enable_texture_mipmaps)
 
     @property
-    def dlss_init_error(self) -> str | None:
-        """Return the DLSS initialization error, if Ray Reconstruction fell back."""
-        return self._viewer._dlss_init_error
-
-    @property
-    def dlss_quality(self) -> str:
-        """Return the active DLSS quality-mode selection."""
-        return self._viewer.dlss_quality
+    def cuda_graph_active(self) -> bool:
+        """Whether the stable OptiX launch has been captured for replay."""
+        return self._viewer._optix_launch_graph is not None
 
     @property
     def max_bounces(self) -> int:
@@ -191,7 +179,6 @@ class PathTracerAPI:
 
     @property
     def samples_per_frame(self) -> int:
-        """Return the samples rendered per frame when DLSS is disabled."""
         return int(self._viewer.samples_per_frame)
 
     @property
@@ -202,10 +189,6 @@ class PathTracerAPI:
     def set_backface_culling(self, enabled: bool) -> None:
         """Globally enable or disable triangle backface culling at runtime."""
         self._viewer.set_backface_culling(enabled)
-
-    def set_dlss_quality(self, quality: str) -> None:
-        """Select a DLSS quality mode and recreate DLSS resources if needed."""
-        self._viewer.set_dlss_quality(quality)
 
     def set_ray_budget(
         self,
@@ -364,7 +347,7 @@ class PathTracerAPI:
         scene.build(self._viewer._optix)
         self._viewer.sample_index = 0
         self._viewer.frame_index = 0
-        self._viewer._dlss_reset_history = True
+        self._viewer._denoiser_reset_history = True
         self._viewer._prev_instance_transforms_valid = False
         self._viewer._sync_prev_camera_matrices_to_current()
 
@@ -380,7 +363,7 @@ class PathTracerAPI:
 
     def reset_temporal_history(self):
         """Discard reconstruction history before a discontinuous scene change."""
-        self._viewer._dlss_reset_history = True
+        self._viewer._denoiser_reset_history = True
 
     def rebuild_tlas(self):
         scene = self._require_scene()

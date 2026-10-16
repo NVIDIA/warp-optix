@@ -15,7 +15,7 @@
 
 """
 OptiX Path Tracing Viewer.
-Python/OptiX path tracing viewer with DLSS RR support.
+Python/OptiX path tracing viewer with temporal denoising.
 
 This viewer renders a scene using OptiX ray tracing with PBR materials,
 displaying raw buffers (radiance, normals, depth, etc.) for debugging.
@@ -35,8 +35,8 @@ from warp_optix import native
 
 from . import pathtracing_warp_kernels as pwk
 from .camera import Camera
-from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH, DLSS_PROJECT_ID
-from .denoising import DLSS_INPUTS, DenoiserInputs, OptixDenoiser
+from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH
+from .denoising import DenoiserInputs, OptixDenoiser
 from .environment_map import EnvironmentMap
 from .lighting import RENDERER_RADIANCE_PER_NIT
 from .scene import Scene
@@ -146,14 +146,6 @@ class PathTracingViewer:
     OUTPUT_SPECULAR = 7
     OUTPUT_SPEC_HITDIST = 8
 
-    DLSS_QUALITY_MODES = {
-        "performance": "MAX_PERF",
-        "balanced": "BALANCED",
-        "quality": "MAX_QUALITY",
-        "ultra_performance": "ULTRA_PERFORMANCE",
-        "native": "DLAA",
-    }
-
     def __init__(
         self,
         width: int = DEFAULT_VIEWER_WIDTH,
@@ -166,9 +158,8 @@ class PathTracingViewer:
         direct_light_samples: int = 1,
         russian_roulette_start_bounce: int = 3,
         use_halton_jitter: bool = True,
-        enable_dlss_rr: bool = True,
         enable_set: bool = True,
-        dlss_quality: str = "quality",
+        enable_cuda_graphs: bool = True,
         enable_texture_mipmaps: bool = False,
         backface_culling: bool = True,
         denoiser: str | None = None,
@@ -194,18 +185,16 @@ class PathTracingViewer:
         self.direct_light_samples = max(1, int(direct_light_samples))
         self.russian_roulette_start_bounce = max(1, int(russian_roulette_start_bounce))
         self.use_halton_jitter = bool(use_halton_jitter)
-        self.enable_dlss_rr = bool(enable_dlss_rr)
         self._denoiser_explicit = denoiser is not None
-        self.denoiser = self._normalize_denoiser(
-            denoiser if denoiser is not None else ("dlss" if enable_dlss_rr else "none")
-        )
+        self.denoiser = self._normalize_denoiser(denoiser if denoiser is not None else "auto")
         self.optix_upscale = bool(optix_upscale)
         self._optix_denoiser = None
         self.denoiser_error: str | None = None
         self.enable_set = bool(enable_set)
+        self.enable_cuda_graphs = bool(enable_cuda_graphs)
+        self._cuda_graph_error: str | None = None
         self.backface_culling = bool(backface_culling)
         self.enable_texture_mipmaps = bool(enable_texture_mipmaps)
-        self.dlss_quality = self._normalize_dlss_quality(dlss_quality)
         self._set_active = False
         self._render_stream = wp.get_stream("cuda")
 
@@ -285,21 +274,8 @@ class PathTracingViewer:
 
         # CUDA surface objects
         self._color_surface = None
-        self._dlss_context = None
-        self._dlss_denoiser = None
-        self._dlss_color_in_tex = None
-        self._dlss_normal_roughness_tex = None
-        self._dlss_motion_tex = None
-        self._dlss_depth_tex = None
-        self._dlss_diffuse_tex = None
-        self._dlss_specular_tex = None
-        self._dlss_spec_hit_dist_tex = None
-        self._dlss_color_out_tex = None
-        self._dlss_output_surface = 0
-        self._dlss_enabled = False
-        self._dlss_reset_history = True
-        self._dlss_init_error: str | None = None
-        self._dlss_status_reported = False
+        self._denoiser_reset_history = True
+        self._denoiser_status_reported = False
         self._last_jitter = (0.0, 0.0)
 
         # Previous-frame camera matrices for motion vectors.
@@ -311,7 +287,7 @@ class PathTracingViewer:
         self._sync_prev_camera_matrices_to_current()
         self._last_output_mode = self.output_mode
 
-        # Physical sky defaults aligned with the upstream DLSS-RR sample behavior.
+        # Physical sky defaults.
         self.sky_rgb_unit_conversion = (
             RENDERER_RADIANCE_PER_NIT,
             RENDERER_RADIANCE_PER_NIT,
@@ -326,7 +302,7 @@ class PathTracingViewer:
         self.sky_horizon_blur = 1.0
         self.sky_night_color = (0.0, 0.0, 0.0)
         self.sky_sun_disk_intensity = 1.0
-        # MinimalDlssRR PhysicalSky.Afternoon: 45-degree elevation,
+        # Afternoon sky: 45-degree elevation,
         # 240-degree azimuth (west-southwest).
         self.sky_sun_direction = (-0.6123724, 0.7071068, -0.3535534)
         self.sky_sun_disk_scale = 1.0
@@ -346,41 +322,21 @@ class PathTracingViewer:
         # Optional HDR environment map (lat-long, RGBA32F).
         self._env_map: EnvironmentMap | None = None
 
-    @classmethod
-    def _normalize_dlss_quality(cls, quality: str) -> str:
-        value = str(quality).strip().lower().replace("-", "_")
-        if value not in cls.DLSS_QUALITY_MODES:
-            choices = ", ".join(cls.DLSS_QUALITY_MODES)
-            raise ValueError(f"dlss_quality must be one of: {choices}")
-        return value
-
-    def set_dlss_quality(self, quality: str) -> None:
-        """Select the DLSS input-resolution/quality mode."""
-        value = self._normalize_dlss_quality(quality)
-        if value == self.dlss_quality:
-            return
-        self.dlss_quality = value
-        if self._optix is not None and self.denoiser in ("dlss", "auto"):
-            wp.synchronize_stream(self._render_stream)
-            self._init_denoiser()
-
     @staticmethod
     def _normalize_denoiser(value: str) -> str:
         value = str(value).strip().lower()
-        if value not in ("auto", "dlss", "optix", "none"):
-            raise ValueError("denoiser must be 'auto', 'dlss', 'optix', or 'none'")
+        if value not in ("auto", "optix", "none"):
+            raise ValueError("denoiser must be 'auto', 'optix', or 'none'")
         return value
 
     @property
     def active_denoiser(self) -> str:
-        if self._dlss_enabled:
-            return "dlss"
         return "optix" if self._optix_denoiser is not None else "none"
 
     def set_denoiser(self, denoiser: str, *, optix_upscale: bool | None = None):
         """Switch reconstruction backends without rebuilding the scene.
 
-        Explicit selections require the backend; 'auto' tries DLSS, OptiX,
+        Explicit selections require the backend; 'auto' tries OptiX,
         then raw rendering. Backend-specific resolution settings are retained.
         """
         mode = self._normalize_denoiser(denoiser)
@@ -408,24 +364,18 @@ class PathTracingViewer:
         # Release old reconstruction resources before replacing render targets
         # to avoid retaining two generations of allocations during large resizes.
         self._destroy_optix_denoiser()
-        self._destroy_dlss_rr(restore_resolution=False)
         self.denoiser_error = None
+        self._denoiser_status_reported = False
         self.sample_index = 0
         self.frame_index = 0
-        self._dlss_reset_history = True
+        self._denoiser_reset_history = True
+        self._optix_launch_graph = None
+        self._optix_graph_warmed = False
         self._prev_instance_transforms_valid = False
         self._sync_prev_camera_matrices_to_current()
         if self._optix is None:
             self._set_render_resolution(self.width, self.height)
             return
-        self.enable_dlss_rr = self.denoiser in ("dlss", "auto")
-        if self.enable_dlss_rr:
-            self._init_dlss_rr()
-            if self._dlss_enabled:
-                return
-            self.denoiser_error = self._dlss_init_error
-            if self.denoiser == "dlss" and self._denoiser_explicit:
-                raise RuntimeError(f"DLSS initialization failed: {self.denoiser_error}")
         if self.denoiser in ("optix", "auto"):
             try:
                 scale = 2 if self.optix_upscale else 1
@@ -444,7 +394,7 @@ class PathTracingViewer:
             except Exception as exc:
                 if self.denoiser == "optix":
                     raise
-                self.denoiser_error = f"{self.denoiser_error}; OptiX initialization failed: {exc}"
+                self.denoiser_error = f"OptiX initialization failed: {exc}"
                 logger.warning("Denoiser fallback: %s", self.denoiser_error)
                 self._set_render_resolution(self.width, self.height)
         else:
@@ -503,7 +453,9 @@ class PathTracingViewer:
         self.backface_culling = value
         self.sample_index = 0
         self.frame_index = 0
-        self._dlss_reset_history = True
+        self._optix_launch_graph = None
+        self._optix_graph_warmed = False
+        self._denoiser_reset_history = True
 
     def set_volume(
         self,
@@ -556,7 +508,7 @@ class PathTracingViewer:
             self._volume_transfer_table = wp.array(table, dtype=wp.vec4, device="cuda")
         self.sample_index = 0
         self.frame_index = 0
-        self._dlss_reset_history = True
+        self._denoiser_reset_history = True
 
     def set_environment_hdr(self, hdr_path: str, scaling: float = 1.0):
         """
@@ -636,30 +588,6 @@ class PathTracingViewer:
             self.close()
             raise
 
-    @staticmethod
-    def _create_cuda_texture_2d(
-        height: int, width: int, channels: int, *, surface_access: bool = False
-    ) -> wp.Texture2D:
-        if channels == 1:
-            data = np.zeros((height, width), dtype=np.float32)
-        else:
-            data = np.zeros((height, width, channels), dtype=np.float32)
-        return wp.Texture2D(
-            data,
-            filter_mode=wp.TextureFilterMode.CLOSEST,
-            address_mode=wp.TextureAddressMode.CLAMP,
-            device="cuda",
-            surface_access=surface_access,
-        )
-
-    @staticmethod
-    def _half_res(value: int) -> int:
-        # Keep dimensions even (where possible) to match common DLSS input expectations.
-        v = max(1, int(value) // 2)
-        if v > 1 and (v % 2) != 0:
-            v -= 1
-        return max(1, v)
-
     def _set_render_resolution(self, render_width: int, render_height: int):
         rw = max(1, int(render_width))
         rh = max(1, int(render_height))
@@ -670,7 +598,7 @@ class PathTracingViewer:
         self._create_buffers()
         self.frame_index = 0
         self.sample_index = 0
-        self._dlss_reset_history = True
+        self._denoiser_reset_history = True
 
     def _sync_prev_camera_matrices_to_current(self):
         """Initialize previous-frame camera transforms from the current camera pose.
@@ -685,176 +613,6 @@ class PathTracingViewer:
         self._prev_mvp = (view @ proj).astype(np.float32)
         self._last_accum_view = view.copy()
         self._last_accum_proj = proj.copy()
-
-    def _destroy_dlss_rr(self, *, restore_resolution: bool = True):
-        if self._dlss_denoiser is not None:
-            try:
-                self._dlss_denoiser.deinit()
-            except Exception as exc:
-                logger.warning("Failed to deinitialize DLSS denoiser: %s", exc)
-        self._dlss_denoiser = None
-
-        if self._dlss_context is not None:
-            try:
-                self._dlss_context.deinit()
-            except Exception as exc:
-                logger.warning("Failed to deinitialize DLSS context: %s", exc)
-        self._dlss_context = None
-        # Release textures only after NGX has stopped using their CUDA handles.
-        self._dlss_output_surface = 0
-        for _, attribute, _, _ in DLSS_INPUTS:
-            setattr(self, attribute, None)
-        self._dlss_color_out_tex = None
-        self._dlss_enabled = False
-        self._dlss_status_reported = False
-        # If DLSS gets disabled at runtime, restore full-resolution rendering.
-        if restore_resolution:
-            self._set_render_resolution(self.width, self.height)
-
-    def _init_dlss_rr(self):
-        self._dlss_init_error = None
-        if not self.enable_dlss_rr or self._optix is None:
-            self._set_render_resolution(self.width, self.height)
-            return
-
-        support_query = getattr(self._optix, "dlss_support_available", None)
-        if support_query is None or not support_query():
-            self._dlss_init_error = "DLSS support is not compiled into this optix build"
-            logger.info("DLSS RR is not compiled into this optix build.")
-            self._set_render_resolution(self.width, self.height)
-            return
-
-        try:
-            context = self._optix.DlssRRContext()
-            self._dlss_context = context
-            context.init(DLSS_PROJECT_ID)
-            if not context.isDlssRRAvailable():
-                self._dlss_init_error = "not available on this system"
-                logger.info("DLSS RR not available on this system.")
-                context.deinit()
-                self._dlss_context = None
-                self._set_render_resolution(self.width, self.height)
-                return
-
-            init_info = self._optix.DlssRRInitInfo()
-            render_width = self._half_res(self.width)
-            render_height = self._half_res(self.height)
-            init_info.inputWidth = int(render_width)
-            init_info.inputHeight = int(render_height)
-            init_info.outputWidth = int(self.width)
-            init_info.outputHeight = int(self.height)
-            quality_enum = self._optix.DlssPerfQuality
-            quality_name = self.DLSS_QUALITY_MODES[self.dlss_quality]
-            if not hasattr(quality_enum, quality_name):
-                quality_name = (
-                    "MAX_QUALITY"
-                    if hasattr(quality_enum, "MAX_QUALITY")
-                    else "BALANCED"
-                    if hasattr(quality_enum, "BALANCED")
-                    else "DLAA"
-                )
-            init_info.quality = getattr(quality_enum, quality_name)
-            preset_enum = self._optix.RayReconstructionHintRenderPreset
-            # Preset F selects the DLSS 4.5 Ray Reconstruction transformer
-            # (RR2), introduced by SDK 310.9.1.
-            init_info.preset = getattr(preset_enum, "F", getattr(preset_enum, "E", preset_enum.DEFAULT))
-            # Match reference behavior:
-            # - MVJittered=false while still passing per-frame jitter to denoise()
-            # - lowResolutionMotionVectors=true (motion vectors provided at render resolution)
-            init_info.mvJittered = False
-            init_info.lowResolutionMotionVectors = True
-            init_info.isContentHDR = True
-            init_info.depthInverted = False
-            init_info.autoExposure = False
-            init_info.useHWDepth = False
-
-            # Ask NGX for the optimal input size for the chosen quality mode,
-            # for the selected quality mode, and only fallback to half-res on failure.
-            if hasattr(context, "querySupportedDlssInputSizes"):
-                try:
-                    sizes = context.querySupportedDlssInputSizes(int(self.width), int(self.height), init_info.quality)
-                    ow = int(getattr(sizes, "optimalWidth", 0))
-                    oh = int(getattr(sizes, "optimalHeight", 0))
-                    if ow > 0 and oh > 0:
-                        render_width = ow
-                        render_height = oh
-                        init_info.inputWidth = int(render_width)
-                        init_info.inputHeight = int(render_height)
-                except Exception as exc:
-                    logger.warning(
-                        "Failed to query optimal DLSS input size; using half-res fallback: %s",
-                        exc,
-                    )
-
-            denoiser = context.initDlssRR(init_info, int(self._render_stream.cuda_stream))
-            self._set_render_resolution(render_width, render_height)
-
-            self._dlss_context = context
-            self._dlss_denoiser = denoiser
-            inputs = self._denoiser_inputs()
-            for name, attribute, channels, resource in DLSS_INPUTS:
-                buffer = getattr(inputs, name)
-                texture = self._create_cuda_texture_2d(*buffer.shape, channels)
-                setattr(self, attribute, texture)
-                denoiser.setResource(getattr(self._optix.DlssRRResource, resource), texture.cuda_texture)
-            self._dlss_color_out_tex = self._create_cuda_texture_2d(self.height, self.width, 4, surface_access=True)
-            self._dlss_output_surface = self._dlss_color_out_tex.cuda_surface
-
-            denoiser.setResource(self._optix.DlssRRResource.RESOURCE_COLOR_OUT, self._dlss_output_surface)
-
-            self._dlss_context = context
-            self._dlss_denoiser = denoiser
-            self._dlss_enabled = True
-            self._dlss_reset_history = True
-            self._dlss_status_reported = False
-            logger.info(
-                "DLSS Ray Reconstruction enabled (render=%dx%d, output=%dx%d).",
-                self._render_width,
-                self._render_height,
-                self.width,
-                self.height,
-            )
-        except Exception as exc:
-            self._dlss_init_error = str(exc)
-            logger.warning("Failed to initialize DLSS RR: %s", exc)
-            self._destroy_dlss_rr()
-
-    def _copy_linear_to_dlss_textures(self):
-        if not self._dlss_enabled:
-            return
-        inputs = self._denoiser_inputs()
-        for name, attribute, _, _ in DLSS_INPUTS:
-            getattr(self, attribute).copy_from(getattr(inputs, name))
-
-    def _run_dlss_rr(self, reset: bool):
-        if not self._dlss_enabled or self._dlss_denoiser is None:
-            return False
-        try:
-            # Match upstream matrix packing in the Vulkan DLSS-RR sample:
-            # output in column-major memory order (m11,m21,m31,m41,...).
-            view_m = self.camera.get_view_matrix().astype(np.float32)
-            proj_m = self.camera.get_projection_matrix().astype(np.float32)
-            view = view_m.T.reshape(-1).tolist()
-            proj = proj_m.T.reshape(-1).tolist()
-            self._dlss_denoiser.denoise(
-                int(self._render_width),
-                int(self._render_height),
-                float(-self._last_jitter[0]),
-                float(-self._last_jitter[1]),
-                view,
-                proj,
-                bool(reset or self._dlss_reset_history),
-                0,
-                0,
-                1.0,
-                1.0,
-            )
-            self._dlss_reset_history = False
-            return True
-        except Exception as exc:
-            logger.warning("DLSS denoise failed; disabling DLSS RR: %s", exc)
-            self._destroy_dlss_rr()
-            return False
 
     def _create_buffers(self):
         """Create output buffers."""
@@ -1280,7 +1038,7 @@ class PathTracingViewer:
         use_external_accum: bool,
     ) -> bool:
         """Update accumulation state and return whether temporal history resets."""
-        if self._dlss_enabled or self._optix_denoiser is not None:
+        if self._optix_denoiser is not None:
             return False
 
         reset_temporal = (
@@ -1364,20 +1122,22 @@ class PathTracingViewer:
                     stream=self._render_stream,
                 )
 
-            if not self._dlss_enabled:
-                accum_sample_index = int(self.frame_index if use_external_accum else s)
-                wp.launch(
-                    _accumulate_sample,
-                    dim=(self._render_width, self._render_height),
-                    inputs=[self._color_buffer, self._accum_buffer, accum_sample_index],
-                    device="cuda",
-                    stream=self._render_stream,
-                )
+            accum_sample_index = int(self.frame_index if use_external_accum else s)
+            wp.launch(
+                _accumulate_sample,
+                dim=(self._render_width, self._render_height),
+                inputs=[self._color_buffer, self._accum_buffer, accum_sample_index],
+                device="cuda",
+                stream=self._render_stream,
+            )
 
-                if use_external_accum:
-                    self.frame_index += 1
+            if use_external_accum:
+                self.frame_index += 1
 
     def _launch_optix(self):
+        if self.enable_cuda_graphs and self._cuda_graph_error is None:
+            self._cuda_graph_error = "OptiX graph capture is unsupported; using direct asynchronous launches"
+            logger.warning(self._cuda_graph_error)
         wo.launch(
             self._pipeline,
             dim=(self._render_height, self._render_width),
@@ -1416,7 +1176,7 @@ class PathTracingViewer:
     def render(self):
         """Render a frame."""
         # Texture transfers and tone mapping use Warp's current stream.
-        # Order them with OptiX/DLSS, including calls from another stream.
+        # Order them with OptiX and denoising, including calls from another stream.
         with wp.ScopedStream(self._render_stream):
             self._render_frame()
 
@@ -1425,7 +1185,7 @@ class PathTracingViewer:
             logger.error("Pipeline not built. Call build() first.")
             return
 
-        if not self._dlss_status_reported:
+        if not self._denoiser_status_reported:
             logger.info(
                 "Denoiser active: %s (requested: %s).",
                 self.active_denoiser,
@@ -1433,7 +1193,7 @@ class PathTracingViewer:
             )
             if self.denoiser_error:
                 logger.warning("Denoiser fallback: %s", self.denoiser_error)
-            self._dlss_status_reported = True
+            self._denoiser_status_reported = True
         self._update_device_camera()
 
         current_view = self.camera.get_view_matrix().copy()
@@ -1441,12 +1201,9 @@ class PathTracingViewer:
         current_view_inv = np.linalg.inv(current_view)
         current_proj_inv = np.linalg.inv(current_proj)
         use_external_accum = (
-            self.accumulate_samples
-            and not self._dlss_enabled
-            and self._optix_denoiser is None
-            and self._device_camera_state is None
+            self.accumulate_samples and self._optix_denoiser is None and self._device_camera_state is None
         )
-        samples_this_frame = 1 if self._dlss_enabled else self.samples_per_frame
+        samples_this_frame = self.samples_per_frame
         reset_temporal = self._update_temporal_state(current_view, current_proj, use_external_accum)
         self._update_instance_transform_buffers()
         self._launch_samples(
@@ -1469,20 +1226,12 @@ class PathTracingViewer:
         self._last_accum_proj = current_proj.copy()
         self._last_output_mode = self.output_mode
 
-        if self._dlss_enabled:
-            # OptiX, texture copies, DLSS, and tone mapping share one stream;
-            # stream ordering publishes every producer to its consumer.
-            self._copy_linear_to_dlss_textures()
-            if self._run_dlss_rr(reset_temporal):
-                self._process_output(self._dlss_color_out_tex, resize_final_to_render=False)
-            else:
-                self._process_output(self._color_buffer, resize_final_to_render=True)
-        elif self._optix_denoiser is not None:
+        if self._optix_denoiser is not None:
             output = self._optix_denoiser.apply(
                 self._denoiser_inputs(self._accum_buffer),
-                reset=reset_temporal or self._dlss_reset_history,
+                reset=reset_temporal or self._denoiser_reset_history,
             )
-            self._dlss_reset_history = False
+            self._denoiser_reset_history = False
             self._process_output(output, resize_final_to_render=False)
         else:
             self._process_output(self._accum_buffer, resize_final_to_render=True)
@@ -1500,7 +1249,6 @@ class PathTracingViewer:
             # Tear down resources tied to the old dimensions first.  Native
             # window/output resolution remains uncapped; this only avoids a
             # transient old+new allocation spike during resize.
-            self._destroy_dlss_rr(restore_resolution=False)
             self._destroy_optix_denoiser()
             self.width = width
             self.height = height
@@ -1513,7 +1261,7 @@ class PathTracingViewer:
     def close(self):
         """Wait for rendering and release reconstruction resources."""
         wp.synchronize_stream(self._render_stream)
-        self._destroy_dlss_rr(restore_resolution=False)
+        self._optix_graph_warmed = False
         self._destroy_optix_denoiser()
         # Destroying the context releases its pipelines and modules. GPU buffers
         # are dropped afterwards so OptiX never sees them freed while in use.

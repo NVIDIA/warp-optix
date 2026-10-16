@@ -18,7 +18,7 @@ be 9.1.0. Mismatches raise `ImportError` before upstream types are modified.
 An isolated build does not inspect the user's installed PyOptiX binary; the
 import check catches dependency binaries built with different headers.
 
-`src/extension.cpp` registers only additional cooperative-vector and DLSS types
+`src/extension.cpp` registers only additional cooperative-vector types
 and operations. `_backend.py` composes these with the dependency and repairs
 two upstream 9.1.0 bugs: ignored module compile metadata and a missing module
 in continuation-only callable descriptors. Temporal denoiser properties are
@@ -39,11 +39,11 @@ When updating PyOptiX:
 1. Compare those four wrapper definitions with the released dependency and
    align the pinned version, OptiX headers, and supported build ABI.
 2. Remove supplemental operations or repairs that upstream now provides.
-3. Run `python -m pytest warp_optix/tests`, build the DLSS-enabled wheel, and test
+3. Run `python -m pytest warp_optix/tests`, build the wheel, and test
    clean wheel and editable installs.
 4. Verify both import orders, upstream type identity, module metadata,
    continuation callables, temporal denoising, cooperative-vector conversion,
-   and a DLSS frame on a supported GPU.
+   and an OptiX-denoised frame on a supported GPU.
 5. Inspect wheels: `warp_optix/_ext` is expected; `warp_optix/_bindings`,
    `optix/_optix`, and a top-level replacement `optix` package are not.
 

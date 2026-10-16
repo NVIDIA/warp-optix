@@ -13,21 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Basic OptiX pathtracing example (glTF-only scene path).
-
-This reproduces the glTF scene flow used by Newton's basic OptiX example,
-without any Newton dependency.
-"""
+"""Pathtrace a procedural chess set or a user-supplied glTF/GLB scene."""
 
 from __future__ import annotations
 
 import argparse
 import math
-import os
-import shutil
-import struct
-import tempfile
-import urllib.request
 from pathlib import Path
 
 import numpy as np
@@ -38,13 +29,6 @@ from warp_optix.pathtracing import (
     DEFAULT_VIEWER_WIDTH,
     PathTracerAPI,
 )
-
-_ABEAUTIFULGAME_URL = (
-    "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/"
-    "2bac6f8c57bf471df0d2a1e8a8ec023c7801dddf/"
-    "Models/ABeautifulGame/glTF-Binary/ABeautifulGame.glb"
-)
-_ABEAUTIFULGAME_FILENAME = "ABeautifulGame.glb"
 
 
 @wp.kernel
@@ -72,7 +56,7 @@ def _parse_args():
         "--scene-gltf",
         type=str,
         default=None,
-        help="Optional path to a glTF/GLB scene. If omitted, finds or downloads A Beautiful Game.",
+        help="Optional path to a glTF/GLB scene. If omitted, generates a procedural chess scene.",
     )
     parser.add_argument("--width", type=int, default=DEFAULT_VIEWER_WIDTH)
     parser.add_argument("--height", type=int, default=DEFAULT_VIEWER_HEIGHT)
@@ -85,19 +69,18 @@ def _parse_args():
         help="Save the final tone-mapped frame as a PNG (use with --max-frames).",
     )
     parser.add_argument("--title", type=str, default="Warp OptiX Basic Pathtracing")
-    parser.add_argument("--camera-speed", type=float, default=0.5, help="Camera movement speed in scene units/second.")
+    parser.add_argument("--camera-speed", type=float, default=2.0, help="Camera movement speed in scene units/second.")
     parser.add_argument("--camera-position", type=float, nargs=3, default=None)
     parser.add_argument("--camera-target", type=float, nargs=3, default=None)
     parser.add_argument("--camera-fov", type=float, default=None)
     parser.add_argument("--exposure", type=float, default=0.68, help="Linear display exposure multiplier.")
     parser.add_argument("--contrast", type=float, default=1.08, help="Display contrast multiplier.")
     parser.add_argument("--saturation", type=float, default=1.1, help="Display saturation multiplier.")
-    parser.add_argument("--no-dlss-rr", action="store_true", help="Disable DLSS Ray Reconstruction.")
     parser.add_argument(
         "--denoiser",
-        choices=("auto", "dlss", "optix", "none"),
+        choices=("auto", "optix", "none"),
         default=None,
-        help="Select the denoiser backend (overrides --no-dlss-rr).",
+        help="Select the denoiser backend.",
     )
     parser.add_argument("--optix-upscale", action="store_true", help="Enable OptiX temporal 2x upscaling.")
     parser.add_argument("--no-set", action="store_true", help="Disable Shader Execution Reordering.")
@@ -109,13 +92,6 @@ def _parse_args():
     return parser.parse_args()
 
 
-def _default_asset_cache_dir() -> Path:
-    """Return the platform-appropriate persistent cache for downloaded example assets."""
-    if cache_home := os.environ.get("XDG_CACHE_HOME"):
-        return Path(cache_home).expanduser() / "warp_optix" / "assets"
-    return Path.home() / ".cache" / "warp_optix" / "assets"
-
-
 def _camera_angles(position, target):
     direction = np.asarray(target, dtype=np.float64) - np.asarray(position, dtype=np.float64)
     direction /= max(float(np.linalg.norm(direction)), 1.0e-20)
@@ -124,83 +100,13 @@ def _camera_angles(position, target):
     return tuple(position), yaw, pitch
 
 
-def _validate_glb(path: Path) -> None:
-    """Reject incomplete or non-GLB downloads before they enter the persistent cache."""
-    size = path.stat().st_size
-    if size < 20:
-        raise ValueError(f"GLB is too small ({size} bytes)")
-
-    with path.open("rb") as stream:
-        header = stream.read(12)
-    magic, version, declared_size = struct.unpack("<4sII", header)
-    if magic != b"glTF" or version != 2 or declared_size != size:
-        raise ValueError(
-            f"invalid GLB header (magic={magic!r}, version={version}, "
-            f"declared size={declared_size}, actual size={size})"
-        )
-
-
-def _download_default_scene(destination: Path) -> Path:
-    """Download A Beautiful Game atomically and return its cached path."""
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temp_path: Path | None = None
-    print(f"[optix] downloading A Beautiful Game from {_ABEAUTIFULGAME_URL}")
-    print(f"[optix] asset cache: {destination}")
-
-    try:
-        request = urllib.request.Request(_ABEAUTIFULGAME_URL, headers={"User-Agent": "warp-optix-example"})
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            prefix=f".{destination.name}.",
-            suffix=".tmp",
-            dir=destination.parent,
-            delete=False,
-        ) as temp_file:
-            temp_path = Path(temp_file.name)
-            with urllib.request.urlopen(request, timeout=60) as response:
-                shutil.copyfileobj(response, temp_file)
-
-        _validate_glb(temp_path)
-        temp_path.replace(destination)
-        temp_path = None
-    except (OSError, ValueError) as exc:
-        raise RuntimeError(
-            "Failed to download the default A Beautiful Game scene. "
-            "Check the network connection or pass --scene-gltf explicitly. "
-            f"Source: {_ABEAUTIFULGAME_URL}"
-        ) from exc
-    finally:
-        if temp_path is not None:
-            temp_path.unlink(missing_ok=True)
-
-    return destination.resolve()
-
-
-def _resolve_scene_gltf(scene_gltf_arg: str | None) -> Path:
-    if scene_gltf_arg:
-        scene_gltf = Path(scene_gltf_arg).expanduser().resolve()
-        if scene_gltf.is_file():
-            return scene_gltf
+def _resolve_scene_gltf(scene_gltf_arg: str | None) -> Path | None:
+    if scene_gltf_arg is None:
+        return None
+    scene_gltf = Path(scene_gltf_arg).expanduser().resolve()
+    if not scene_gltf.is_file():
         raise FileNotFoundError(f"--scene-gltf does not exist: {scene_gltf}")
-
-    repo_root = Path(__file__).resolve().parents[1]
-    candidates = [
-        repo_root / "downloaded_resources" / "ABeautifulGame" / "glTF" / "ABeautifulGame.gltf",
-        repo_root / "examples_warp" / "assets" / "ABeautifulGame" / "glTF" / "ABeautifulGame.gltf",
-    ]
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate.resolve()
-
-    cached_scene = _default_asset_cache_dir() / _ABEAUTIFULGAME_FILENAME
-    if cached_scene.is_file():
-        try:
-            _validate_glb(cached_scene)
-            return cached_scene.resolve()
-        except (OSError, ValueError) as exc:
-            print(f"[optix] cached scene is invalid; downloading it again: {exc}")
-
-    return _download_default_scene(cached_scene)
+    return scene_gltf
 
 
 class FreeCameraController:
@@ -328,7 +234,6 @@ def main():
     api = PathTracerAPI(
         width=args.width,
         height=args.height,
-        enable_dlss_rr=not args.no_dlss_rr,
         denoiser=args.denoiser,
         optix_upscale=args.optix_upscale,
         enable_set=not args.no_set,
@@ -341,7 +246,7 @@ def main():
     api.tonemap_contrast = args.contrast
     api.tonemap_saturation = args.saturation
 
-    if not api.load_scene_from_gltf(str(scene_gltf), build_scene=True):
+    if scene_gltf is not None and not api.load_scene_from_gltf(str(scene_gltf), build_scene=True):
         raise RuntimeError(f"Failed to load glTF scene: {scene_gltf}")
 
     # Camera preset mirrored from Newton basic OptiX pathtracing example.
@@ -349,6 +254,18 @@ def main():
     cam_yaw = 115.2
     cam_pitch = -21.8
     cam_fov = 45.0
+    if scene_gltf is None:
+        from example_warp_optix_chess_scene import (
+            CAMERA_FOV,
+            CAMERA_POSITION,
+            CAMERA_TARGET,
+            build_chess_scene,
+        )
+
+        build_chess_scene(api)
+        api.build_scene()
+        cam_pos, cam_yaw, cam_pitch = _camera_angles(CAMERA_POSITION, CAMERA_TARGET)
+        cam_fov = CAMERA_FOV
     if (args.camera_position is None) != (args.camera_target is None):
         raise ValueError("--camera-position and --camera-target must be supplied together")
     if args.camera_position is not None:
@@ -392,7 +309,7 @@ def main():
             device="cuda",
         )
 
-    print(f"[optix] loaded glTF scene: {scene_gltf}")
+    print(f"[optix] scene: {scene_gltf if scene_gltf is not None else 'procedural chess'}")
     print(
         f"[optix] denoiser: {api.active_denoiser}, "
         f"render: {api.viewer._render_width}x{api.viewer._render_height}, "
@@ -404,7 +321,8 @@ def main():
 
         screenshot = args.screenshot.expanduser().resolve()
         screenshot.parent.mkdir(parents=True, exist_ok=True)
-        frame = np.clip(api.get_frame(), 0.0, 1.0)
+        # The render buffer uses OpenGL's bottom-left origin.
+        frame = np.flipud(np.clip(api.get_frame(), 0.0, 1.0))
         Image.fromarray((frame[..., :3] * 255.0 + 0.5).astype(np.uint8), mode="RGB").save(screenshot)
         print(f"[optix] saved screenshot: {screenshot}")
 

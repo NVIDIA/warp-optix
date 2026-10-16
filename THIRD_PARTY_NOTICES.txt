@@ -16,18 +16,6 @@ alongside the headers. The headers remain under NVIDIA SDK terms, not Apache-2.0
 Redistribution of these unmodified headers in the public warp-optix pip package
 has been approved.
 
-DLSS
-----
-NVIDIA DLSS SDK 310.9.1: https://github.com/NVIDIA/DLSS/tree/v310.9.1
-Copyright NVIDIA Corporation. License: NVIDIA RTX SDKs LICENSE, identified
-here as LicenseRef-NVIDIA-RTX-SDK; full terms are in DLSS_LICENSE.txt.
-warp-optix links NGX SDK code and includes the DLSS Ray Reconstruction runtime:
-nvngx_dlssd.dll on Windows or libnvidia-ngx-dlssd.so on Linux. The bundled
-runtime is the SDK's Release version.
-This software contains source code provided by NVIDIA Corporation.
-The SDK terms apply to SDK material, not to independently licensed Python code.
-SDK-owner approval for public pip redistribution is pending.
-
 pybind11
 --------
 https://github.com/pybind/pybind11
@@ -53,7 +41,7 @@ vk_denoise_dlssrr adaptation
 https://github.com/nvpro-samples/vk_denoise_dlssrr
 Copyright (c) 2024-2025, NVIDIA CORPORATION. All rights reserved.
 License: Apache-2.0; full terms are in LICENSE-APACHE.txt.
-The Warp/OptiX path tracer adapts the sample's rendering and DLSS guide-buffer
+The Warp/OptiX path tracer adapts the sample's rendering and render-guide
 approach. Local modifications translate shader operations to Python/Warp,
 replace Vulkan execution with OptiX/CUDA, and extend scene/material handling.
 The adaptation used AI assistance.
@@ -61,7 +49,7 @@ The adaptation used AI assistance.
 File-level source mapping under warp_optix/warp_optix/pathtracing:
   pathtracing_warp_kernels.py: dlss_rr/shaders/primary.rgen, primary.rchit,
     primary.rmiss, secondary.rahit, secondary.rchit, secondary.rmiss, and
-    get_hit.glsl (path tracing, hit processing, and DLSS guide buffers);
+    get_hit.glsl (path tracing, hit processing, and render guides);
     intermediate optix_programs.h (instance transforms) and primary.rgen
     motion vectors.
   tonemap.py: intermediate debug_visualize.h (debug buffer visualization).
