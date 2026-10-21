@@ -84,10 +84,15 @@ def main() -> None:
             print(f"Installing {relative_path}")
             _extract(_download(relative_path, sha256, Path(temp)), prefix, Path(temp))
 
-    # Point CMake's FindCUDAToolkit at the assembled Toolkit in later steps.
+    # Point CMake's FindCUDAToolkit at the assembled Toolkit in later steps. The
+    # GPU runners have no CUDA runtime library, so builds can link it statically.
+    cudart_static = prefix / (
+        "lib/x64/cudart_static.lib" if args.platform.startswith("windows") else "lib/libcudart_static.a"
+    )
     if github_env := os.environ.get("GITHUB_ENV"):
         with open(github_env, "a", encoding="utf-8") as file:
             file.write(f"CUDA_PATH={prefix}\nCUDAToolkit_ROOT={prefix}\n")
+            file.write(f"CUDART_STATIC_LIBRARY={cudart_static.as_posix()}\n")
     if github_path := os.environ.get("GITHUB_PATH"):
         with open(github_path, "a", encoding="utf-8") as file:
             file.write(f"{prefix / 'bin'}\n")
