@@ -50,8 +50,9 @@ jobs:
           # The GPU runners have no CUDA runtime library to load at import time.
           SKBUILD_CMAKE_DEFINE: CUDA_cudart_LIBRARY=${{ env.CUDART_STATIC_LIBRARY }}
           # MSVC reads extra options from CL. PyOptiX's single pybind11 source
-          # exceeds the default COFF section limit without /bigobj.
-          CL: ${{ startsWith(inputs.platform, 'windows') && '/bigobj' || '' }}
+          # exceeds the default COFF section limit without /bigobj. Use the dash
+          # form: Git Bash rewrites "/bigobj" into a Windows path.
+          CL: ${{ startsWith(inputs.platform, 'windows') && '-bigobj' || '' }}
         run: |
           uv build --wheel --out-dir dist
           # PyPI publishes PyOptiX only as an sdist; build the locked one here.
