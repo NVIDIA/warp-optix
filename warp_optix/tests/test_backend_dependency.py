@@ -27,6 +27,14 @@ def test_optix_headers_are_available_without_separate_sdk(monkeypatch):
     assert str(include) in build_options().extra_cuda_include_dirs
 
 
+def test_kernels_need_no_cuda_toolkit_headers():
+    # The packaged OptiX headers and warp_optix_builtins.h must be enough for
+    # NVRTC, so every GPU test also covers kernels compiling without a Toolkit.
+    from warp_optix.addon import _HEADER_DIR, build_options
+
+    assert build_options().extra_cuda_include_dirs == [str(_HEADER_DIR), native.get_optix_include_dir()]
+
+
 def test_optix_headers_editable_install_fallback(monkeypatch, tmp_path):
     backend = import_module("warp_optix._backend")
     monkeypatch.setattr(backend, "_package_dir", tmp_path / "source")

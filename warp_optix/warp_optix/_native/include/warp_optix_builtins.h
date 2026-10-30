@@ -14,6 +14,23 @@
 #define WP_NO_CRT
 #endif
 
+// OptiX's cooperative-vector headers include CUDA's cuda_fp16.h, which Warp's
+// bundled NVRTC does not provide, so kernels would need a CUDA Toolkit at run
+// time. They only reinterpret half bitwise, so define the 16-bit type and the
+// bit casts used below instead, as Warp does for its own half.
+#define OPTIX_DONT_INCLUDE_CUDA
+struct __half {
+    unsigned short __x;
+};
+typedef __half half;
+static inline __device__ half __ushort_as_half(unsigned short value)
+{
+    half result;
+    result.__x = value;
+    return result;
+}
+static inline __device__ unsigned short __half_as_ushort(half value) { return value.__x; }
+
 #include "optix_device.h"
 #include "builtin.h"
 
