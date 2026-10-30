@@ -6,8 +6,6 @@
 from __future__ import annotations
 
 import functools
-import os
-import shutil
 from pathlib import Path
 
 import warp as wp
@@ -29,24 +27,13 @@ _PREAMBLE = (
 )
 
 
-def _cuda_include_dir() -> str | None:
-    """Return the CUDA Toolkit include directory required by some OptiX headers."""
-    roots = [Path(os.environ[v]) for v in ("CUDA_PATH", "CUDA_HOME") if os.environ.get(v)]
-    if nvcc := shutil.which("nvcc"):
-        roots.append(Path(nvcc).resolve().parent.parent)
-    roots.append(Path("/usr/local/cuda"))
-    candidates = [path for root in roots for path in (root / "include", *sorted(root.glob("targets/*/include")))]
-    return next((str(path) for path in candidates if (path / "cuda_fp16.h").is_file()), None)
-
-
 @functools.cache
 def build_options() -> wp.ModuleBuildOptions:
     """Return the build options that make the OptiX builtins available to a module."""
-    include_dirs = [str(_HEADER_DIR), native.get_optix_include_dir()]
-    if cuda_include_dir := _cuda_include_dir():
-        include_dirs.append(cuda_include_dir)
+    # No CUDA Toolkit include directory: warp_optix_builtins.h supplies the only
+    # CUDA type the OptiX device headers need.
     return wp.ModuleBuildOptions(
-        extra_cuda_include_dirs=include_dirs,
+        extra_cuda_include_dirs=[str(_HEADER_DIR), native.get_optix_include_dir()],
         extra_cuda_preamble=_PREAMBLE,
         extra_build_dependencies=[str(_HEADER_DIR / "warp_optix_builtins.h")],
     )
