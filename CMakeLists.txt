@@ -96,6 +96,12 @@ target_link_libraries(_ext PRIVATE
 
 target_compile_features(_ext PRIVATE cxx_std_17)
 
+# MSVC 17.10+ constructs std::mutex constexpr, which crashes on lock when an
+# msvcp140.dll older than 14.40 is loaded. Keep the wheel safe on such systems.
+if(MSVC)
+  target_compile_definitions(_ext PRIVATE _DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR)
+endif()
+
 # The dependency owns optix._optix. Install only our supplemental extension,
 # and shader headers under warp_optix.
 set(WARP_OPTIX_INSTALL_DIR "${SKBUILD_PLATLIB_DIR}/warp_optix")
