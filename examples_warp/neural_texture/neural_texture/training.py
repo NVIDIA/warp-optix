@@ -506,7 +506,8 @@ def _compress_channels(
                     wp.capture_end(device=device)
                     raise
                 graph = wp.capture_end(device=device)
-                for _ in range(count - 2):
+                # Capture records the step without running it.
+                for _ in range(count - 1):
                     wp.capture_launch(graph)
             else:
                 for _ in range(count - 1):

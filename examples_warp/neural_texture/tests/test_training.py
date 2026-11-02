@@ -62,7 +62,6 @@ def test_fp8_projection_uses_optix_tie_to_even_rounding():
     )
 
 
-@pytest.mark.xfail(reason="compress_texture is not deterministic for a fixed seed", strict=False)
 def test_compression_seed_is_repeatable_and_preserves_numpy_rng():
     image = np.linspace(0.0, 1.0, 4 * 4 * 3, dtype=np.float32).reshape(4, 4, 3)
     state = np.random.get_state()
@@ -96,6 +95,17 @@ def test_compression_seed_is_repeatable_and_preserves_numpy_rng():
         np.testing.assert_array_equal(first_mip, second_mip)
     for first_layer, second_layer in zip(first.asset.layers, second.asset.layers):
         np.testing.assert_array_equal(first_layer.weights, second_layer.weights)
+
+
+def test_graph_replayed_training_matches_eager_cpu_training():
+    image = np.linspace(0.0, 1.0, 4 * 4 * 3, dtype=np.float32).reshape(4, 4, 3)
+    options = dict(steps=4, refinement_steps=3, batch_size=8, seed=17)
+
+    # CUDA captures each phase into a graph after its first step; CPU runs every step eagerly.
+    cuda = compress_texture(image, device="cuda:0", **options)
+    cpu = compress_texture(image, device="cpu", **options)
+
+    np.testing.assert_allclose(cuda.losses, cpu.losses, rtol=1e-5)
 
 
 def test_compress_texture_maps_more_than_four_outputs():
