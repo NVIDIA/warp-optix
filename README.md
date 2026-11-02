@@ -123,12 +123,18 @@ Runnable samples are in `examples_warp/`.
 
 See [third-party notices](THIRD_PARTY_NOTICES.txt) for component licenses and
 source provenance. `src/extension.cpp`, `src/pyoptix_compat.h`, and
-`CMakeLists.txt` use BSD-3-Clause; NVIDIA-authored Warp integration uses
-Apache-2.0. The aggregate package metadata also identifies the OptiX SDK terms.
+`CMakeLists.txt` use [BSD-3-Clause](LICENSE.txt); NVIDIA-authored Warp integration uses
+[Apache-2.0](LICENSE.md). OptiX headers retain their [NVIDIA SDK terms](OptiX_LICENSE.txt).
+The aggregate package metadata identifies all three licenses.
 
 This project is currently not accepting contributions.
 We plan to accept outside contributions in the future. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for updates.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for instructions on privately reporting potential
+security vulnerabilities to NVIDIA PSIRT.
 
 ## CUDA graph limitation
 

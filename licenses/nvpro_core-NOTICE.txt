@@ -2,7 +2,7 @@ nvpro_core notices for adapted path-tracer code
 
 Source: https://github.com/nvpro-samples/nvpro_core
 Comparison reference: bc19d6ac3ef62938d0ea0e099735878457ce1b6e
-Full Apache-2.0 terms: LICENSE-APACHE.txt
+Full Apache-2.0 terms: LICENSE.md
 
 nvvkhl/hdr_env.cpp
 nvvkhl/shaders/dh_sky.h

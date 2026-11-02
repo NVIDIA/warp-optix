@@ -40,7 +40,7 @@ vk_denoise_dlssrr adaptation
 ---------------------------
 https://github.com/nvpro-samples/vk_denoise_dlssrr
 Copyright (c) 2024-2025, NVIDIA CORPORATION. All rights reserved.
-License: Apache-2.0; full terms are in LICENSE-APACHE.txt.
+License: Apache-2.0; full terms are in LICENSE.md.
 The Warp/OptiX path tracer adapts the sample's rendering and render-guide
 approach. Local modifications translate shader operations to Python/Warp,
 replace Vulkan execution with OptiX/CUDA, and extend scene/material handling.
@@ -65,7 +65,7 @@ used to start the port was not recorded.
 nvpro_core adaptations used by the path tracer
 ---------------------------------------------
 https://github.com/nvpro-samples/nvpro_core
-License: Apache-2.0; full terms are in LICENSE-APACHE.txt.
+License: Apache-2.0; full terms are in LICENSE.md.
 Original file-specific NVIDIA copyright and license notices are reproduced
 in licenses/nvpro_core-NOTICE.txt and identified in adapted source headers.
 Comparison reference: bc19d6ac3ef62938d0ea0e099735878457ce1b6e.
