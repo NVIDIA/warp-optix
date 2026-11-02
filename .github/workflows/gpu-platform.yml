@@ -21,6 +21,14 @@ on:
         description: NVIDIA self-hosted GPU runner that tests the wheels
         required: true
         type: string
+      release:
+        description: Build release wheels without restoring or saving caches
+        default: false
+        type: boolean
+    outputs:
+      wheel-sha256:
+        description: SHA-256 of the warp-optix wheel from the GitHub-hosted build
+        value: ${{ jobs.build.outputs.wheel-sha256 }}
 
 permissions:
   contents: read
@@ -32,6 +40,8 @@ jobs:
     name: Build wheels
     runs-on: ${{ inputs.build-os }}
     timeout-minutes: 20
+    outputs:
+      wheel-sha256: ${{ steps.wheel-hash.outputs.sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,7 +50,7 @@ jobs:
         with:
           version: "0.12.2"
           python-version: "3.12"
-          enable-cache: true
+          enable-cache: ${{ !inputs.release }}
       - name: Install CUDA Toolkit components
         shell: bash
         run: uv run --no-project python .github/scripts/install_cuda.py --platform ${{ inputs.platform }} --prefix "$RUNNER_TEMP/cuda"
@@ -51,6 +61,7 @@ jobs:
       # PyOptiX only changes with its locked source, the CUDA version, or the
       # build settings in this workflow, so reuse its wheel across runs.
       - name: Restore PyOptiX wheel
+        if: ${{ !inputs.release }}
         id: pyoptix-cache
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
@@ -77,11 +88,29 @@ jobs:
           fi
           cp pyoptix-wheel/*.whl dist/
       - name: Save PyOptiX wheel
-        if: steps.pyoptix-cache.outputs.cache-hit != 'true'
+        if: ${{ !inputs.release && steps.pyoptix-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: pyoptix-wheel
           key: ${{ steps.pyoptix-cache.outputs.cache-primary-key }}
+      # Export the digest directly from this hosted job, independently of the
+      # artifact storage shared with the self-hosted test job.
+      - name: Record warp-optix wheel hash
+        id: wheel-hash
+        shell: bash
+        run: |
+          uv run --no-project python -I - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          wheels = list(Path("dist").glob("warp_optix-*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit(f"Expected one warp-optix wheel, found {len(wheels)}")
+          digest = hashlib.sha256(wheels[0].read_bytes()).hexdigest()
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"sha256={digest}\n")
+          PY
       - name: Upload wheels
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
@@ -105,7 +134,7 @@ jobs:
         with:
           version: "0.12.2"
           python-version: "3.12"
-          enable-cache: true
+          enable-cache: ${{ !inputs.release }}
       # The Windows runner image ships msvcp140.dll 14.0 from VS 2015.
       # Prebuilt wheels such as usd-core need 14.40 or later.
       - name: Install VC++ Redistributable
@@ -135,6 +164,7 @@ jobs:
           $dirs = @("$env:SystemRoot\System32", (uv run --no-sync python -c "import sys; print(sys.base_prefix)"))
           Get-ChildItem $dirs -Filter 'msvcp140*.dll' | Format-Table FullName, @{n = 'Version'; e = { $_.VersionInfo.ProductVersion } } -AutoSize
       - name: Cache Warp kernels
+        if: ${{ !inputs.release }}
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ${{ runner.temp }}/warp-kernel-cache

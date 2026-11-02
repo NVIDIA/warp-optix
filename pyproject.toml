@@ -10,7 +10,7 @@ name = "warp-optix"
 version = "0.2.0"
 description = "Warp ray tracing with PyOptiX"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12,<3.13"
 license = "Apache-2.0 AND BSD-3-Clause AND LicenseRef-NVIDIA-OptiX"
 license-files = ["LICENSE.md", "LICENSE.txt", "OptiX_LICENSE.txt", "THIRD_PARTY_NOTICES.txt", "licenses/*.txt"]
 authors = [
@@ -23,13 +23,10 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Programming Language :: C++",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Multimedia :: Graphics :: 3D Rendering",
     "Topic :: Scientific/Engineering :: Visualization",
     "Operating System :: Microsoft :: Windows",
-    "Operating System :: POSIX :: Linux",
 ]
 
 dependencies = ["pyoptix==9.1.0", "warp-lang>=1.17", "numpy>=1.20"]

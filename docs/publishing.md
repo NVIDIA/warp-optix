@@ -2,7 +2,10 @@
 
 Releases use GitHub Actions Trusted Publishing. Maintainers do not share a
 PyPI token. This workflow currently releases Windows x64 / CPython 3.12 wheels.
-Linux wheels need a separate manylinux packaging change. PyOptiX remains a
+Package metadata therefore requires Python 3.12 (`>=3.12,<3.13`) and advertises
+Windows support only. Linux wheels need a separate manylinux packaging change;
+broaden the metadata when those wheels and additional Python versions ship.
+No source distribution is published by this workflow. PyOptiX remains a
 separate dependency; the bundled CI PyOptiX wheel is not published by this project.
 
 ## One-time GitHub setup
@@ -50,6 +53,11 @@ repository's normal review process. Neither merging the workflow nor configuring
 the publisher uploads a package. Publishing starts when a new `v*` tag is pushed,
 and still requires approval in the `pypi` environment.
 
+Release builds disable the uv, PyOptiX, and Warp kernel caches. The GitHub-hosted
+build records the warp-optix wheel's SHA-256 as a workflow output; validation
+checks the downloaded wheel against that digest before inspecting or staging it.
+Validation also requires the tagged commit to be an ancestor of `origin/main`.
+
 ## Publish the next version
 
 Version 0.2.0 was published manually. Do not rebuild or replace its existing wheel.
@@ -92,6 +100,10 @@ Use an unused version for the next release, for example 0.2.1 or 0.2.1a1.
   repository, including the environment `pypi`.
 - Tag mismatch: the tag suffix must exactly match the wheel's version. Do not
   rename or move an existing release tag to work around a mismatch.
+- Commit outside `main`: merge the release changes through normal review before
+  tagging. The workflow rejects tags whose commits are not in `origin/main`.
+- Wheel hash mismatch: the downloaded artifact differs from the hosted build's
+  output. Investigate the build, artifact, and GPU runner before starting a new release.
 - File already exists: the version/file was already uploaded. Published wheels
   cannot be replaced; prepare a new version for changed package contents.
 - Waiting for a GPU runner: the Windows suite uses the existing NVIDIA runner
