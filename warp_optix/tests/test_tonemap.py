@@ -97,7 +97,9 @@ def test_texture_input_matches_array_tonemapping():
             mapper.configure_auto_exposure(auto_exposure)
             mapper.process(source)
             outputs.append(mapper.get_numpy().copy())
-        np.testing.assert_allclose(outputs[0], outputs[1], rtol=1e-6, atol=1e-6, err_msg=f"auto exposure {auto_exposure}")
+        np.testing.assert_allclose(
+            outputs[0], outputs[1], rtol=1e-6, atol=1e-6, err_msg=f"auto exposure {auto_exposure}"
+        )
 
 
 @pytest.mark.parametrize(

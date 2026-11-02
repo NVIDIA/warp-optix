@@ -180,14 +180,9 @@ def load_hdr(path: str | Path) -> tuple[np.ndarray, int, int]:
     if width <= 0 or height <= 0:
         raise ValueError("Invalid HDR: dimensions must be positive")
     if width > MAX_HDR_DIMENSION or height > MAX_HDR_DIMENSION:
-        raise ValueError(
-            f"Invalid HDR: {width}x{height} exceeds the {MAX_HDR_DIMENSION} pixel "
-            "dimension limit"
-        )
+        raise ValueError(f"Invalid HDR: {width}x{height} exceeds the {MAX_HDR_DIMENSION} pixel dimension limit")
     if width * height > MAX_HDR_PIXELS:
-        raise ValueError(
-            f"Invalid HDR: {width}x{height} exceeds the {MAX_HDR_PIXELS} pixel limit"
-        )
+        raise ValueError(f"Invalid HDR: {width}x{height} exceeds the {MAX_HDR_PIXELS} pixel limit")
 
     # Pixel data starts after the resolution line
     data = raw[m.end() :]

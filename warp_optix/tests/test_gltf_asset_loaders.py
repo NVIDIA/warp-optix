@@ -7,7 +7,6 @@ import subprocess
 
 import numpy as np
 import pytest
-
 from warp_optix.pathtracing.asset_loaders import (
     _build_texture_list,
     _load_gltf_images,
@@ -18,9 +17,7 @@ from warp_optix.pathtracing.asset_loaders import (
 def test_missing_gltf_image_does_not_shift_texture_sources():
     image = np.zeros((2, 2, 4), dtype=np.float32)
     image[..., 0] = 0.25
-    textures = _build_texture_list(
-        {"textures": [{"source": 0}, {"source": 1}]}, [None, image]
-    )
+    textures = _build_texture_list({"textures": [{"source": 0}, {"source": 1}]}, [None, image])
 
     np.testing.assert_array_equal(textures[0], np.ones((1, 1, 4), dtype=np.float32))
     assert textures[1] is image
@@ -84,12 +81,17 @@ def _link_directory(link, target):
     if os.name == "nt":
         # Junctions do not require Windows developer mode or symlink privileges.
         subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-             "New-Item -ItemType Junction -Path $env:WARP_OPTIX_TEST_LINK "
-             "-Target $env:WARP_OPTIX_TEST_TARGET | Out-Null"],
-            env={**os.environ, "WARP_OPTIX_TEST_LINK": str(link),
-                 "WARP_OPTIX_TEST_TARGET": str(target)},
-            check=True, capture_output=True,
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "New-Item -ItemType Junction -Path $env:WARP_OPTIX_TEST_LINK "
+                "-Target $env:WARP_OPTIX_TEST_TARGET | Out-Null",
+            ],
+            env={**os.environ, "WARP_OPTIX_TEST_LINK": str(link), "WARP_OPTIX_TEST_TARGET": str(target)},
+            check=True,
+            capture_output=True,
         )
     else:
         link.symlink_to(target, target_is_directory=True)

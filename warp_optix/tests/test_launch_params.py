@@ -6,6 +6,7 @@
 import numpy as np
 import pytest
 import warp as wp
+
 import warp_optix as wo
 
 pytestmark = [pytest.mark.gpu, pytest.mark.skipif(not wp.is_cuda_available(), reason="CUDA unavailable")]
@@ -32,9 +33,20 @@ def write(value: wp.uint32, output: wp.array[wp.uint32]):
 def trace(output: wp.array[wp.uint32]):
     i = wp.tid()
     payload = Payload()
-    wp.optix_trace(wp.uint64(0), wp.vec3(0.0), wp.vec3(0.0, 0.0, -1.0),
-                   0.0, 1.0, 0.0, wp.uint32(255), wp.uint32(0),
-                   wp.uint32(0), wp.uint32(1), wp.uint32(0), payload)
+    wp.optix_trace(
+        wp.uint64(0),
+        wp.vec3(0.0),
+        wp.vec3(0.0, 0.0, -1.0),
+        0.0,
+        1.0,
+        0.0,
+        wp.uint32(255),
+        wp.uint32(0),
+        wp.uint32(0),
+        wp.uint32(1),
+        wp.uint32(0),
+        payload,
+    )
     output[i] = payload.value
 
 

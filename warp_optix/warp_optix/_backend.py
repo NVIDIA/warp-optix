@@ -7,14 +7,13 @@ PyOptiX owns every standard OptiX object and its destruction. The extension
 adds missing operations to those types; it never registers a second copy.
 """
 
-from importlib import import_module
-from importlib.metadata import version
-from pathlib import Path
 import os
 import sys
 import sysconfig
+from importlib import import_module
+from importlib.metadata import version
+from pathlib import Path
 from types import ModuleType
-
 
 _package_dir = Path(__file__).resolve().parent
 _dll_directory_handles = []

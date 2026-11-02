@@ -50,9 +50,7 @@ def test_arrow_ball_is_outward_randomized_and_deterministic():
     ],
 )
 def test_arrow_ball_rejects_invalid_parameters(kwargs, message):
-    parameters = dict(
-        arrow_count=8, ball_radius=0.8, arrow_length=0.42, swirl=0.24, seed=1
-    )
+    parameters = dict(arrow_count=8, ball_radius=0.8, arrow_length=0.42, swirl=0.24, seed=1)
     parameters.update(kwargs)
     with pytest.raises(ValueError, match=message):
         generate_arrow_ball(**parameters)

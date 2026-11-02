@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
-
 from warp_optix.pathtracing.hdr_loader import load_hdr
 
 

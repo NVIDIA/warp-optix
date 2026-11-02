@@ -78,16 +78,12 @@ def _reset_auto_exposure_stats(stats: wp.array(dtype=wp.float32)):
 
 
 @wp.func
-def _read_hdr(
-    image: wp.array2d(dtype=wp.vec4), x: int, y: int, width: int, height: int
-) -> wp.vec4:
+def _read_hdr(image: wp.array2d(dtype=wp.vec4), x: int, y: int, width: int, height: int) -> wp.vec4:
     return image[y, x]
 
 
 @wp.func
-def _read_hdr(
-    image: wp.Texture2D, x: int, y: int, width: int, height: int
-) -> wp.vec4:
+def _read_hdr(image: wp.Texture2D, x: int, y: int, width: int, height: int) -> wp.vec4:
     # Input textures use point filtering and normalized coordinates.
     uv = wp.vec2((float(x) + 0.5) / float(width), (float(y) + 0.5) / float(height))
     return wp.texture_sample(image, uv, dtype=wp.vec4)

@@ -17,7 +17,7 @@ import re
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -59,9 +59,7 @@ def _import_usd():
     return Sdf, Usd, UsdGeom, UsdLux, UsdShade
 
 
-def _as_float_tuple(
-    value: Any, size: int, default: tuple[float, ...]
-) -> tuple[float, ...]:
+def _as_float_tuple(value: Any, size: int, default: tuple[float, ...]) -> tuple[float, ...]:
     if value is None:
         return default
     try:
@@ -93,12 +91,7 @@ def _ellipsoid_surface_area(radii: tuple[float, float, float]) -> float:
     """Approximate ellipsoid area for a transformed sphere light."""
     a, b, c = (max(abs(float(value)), 1.0e-9) for value in radii)
     power = 1.6075
-    return (
-        4.0
-        * math.pi
-        * ((a**power * b**power + a**power * c**power + b**power * c**power) / 3.0)
-        ** (1.0 / power)
-    )
+    return 4.0 * math.pi * ((a**power * b**power + a**power * c**power + b**power * c**power) / 3.0) ** (1.0 / power)
 
 
 def _sphere_light_proxy_properties(
@@ -110,21 +103,11 @@ def _sphere_light_proxy_properties(
 ) -> tuple[float, float]:
     """Resolve render radius and radiance while preserving authored power."""
     linear = np.asarray(world_transform, dtype=np.float64)[:3, :3]
-    radii = tuple(
-        authored_radius * float(np.linalg.norm(linear[:, axis])) for axis in range(3)
-    )
+    radii = tuple(authored_radius * float(np.linalg.norm(linear[:, axis])) for axis in range(3))
     authored_area = _ellipsoid_surface_area(radii)
-    render_radius = (
-        math.sqrt(authored_area / (4.0 * math.pi))
-        if proxy_radius is None
-        else proxy_radius
-    )
+    render_radius = math.sqrt(authored_area / (4.0 * math.pi)) if proxy_radius is None else proxy_radius
     render_area = 4.0 * math.pi * render_radius * render_radius
-    radiance = (
-        intensity / render_area
-        if normalize
-        else intensity * authored_area / render_area
-    )
+    radiance = intensity / render_area if normalize else intensity * authored_area / render_area
     return render_radius, radiance
 
 
@@ -175,8 +158,7 @@ def _material_bind_subsets(prim, UsdGeom, UsdShade):
     return [
         UsdGeom.Subset(child)
         for child in prim.GetChildren()
-        if child.IsA(UsdGeom.Subset)
-        and str(UsdGeom.Subset(child).GetFamilyNameAttr().Get()) == "materialBind"
+        if child.IsA(UsdGeom.Subset) and str(UsdGeom.Subset(child).GetFamilyNameAttr().Get()) == "materialBind"
     ]
 
 
@@ -217,9 +199,7 @@ def _asset_path(value: Any, attribute=None) -> Path | None:
 
             for spec in attribute.GetPropertyStack():
                 default = getattr(spec, "default", None)
-                default_path = str(
-                    getattr(default, "path", "") or getattr(default, "authoredPath", "")
-                )
+                default_path = str(getattr(default, "path", "") or getattr(default, "authoredPath", ""))
                 if default_path != authored:
                     continue
                 anchored = Sdf.ComputeAssetPathRelativeToLayer(spec.layer, authored)
@@ -265,12 +245,7 @@ def _mdl_texture_semantic(name: str) -> str | None:
         return "normalmap_texture"
     if "emiss" in normalized or "emission" in normalized:
         return "emissive_texture"
-    if (
-        normalized.startswith("orm")
-        or "ormtexture" in normalized
-        or "ormmap" in normalized
-        or "mask" in normalized
-    ):
+    if normalized.startswith("orm") or "ormtexture" in normalized or "ormmap" in normalized or "mask" in normalized:
         return "ORM_texture"
     if "rough" in normalized:
         return "reflectionroughness_texture"
@@ -281,7 +256,7 @@ def _mdl_texture_semantic(name: str) -> str | None:
     return None
 
 
-@lru_cache(maxsize=None)
+@cache
 def _parse_mdl_texture_inputs(mdl_path: Path) -> tuple[tuple[str, Path], ...]:
     """Parse texture defaults from a collected MDL source asset."""
     if not mdl_path.is_file():
@@ -324,7 +299,7 @@ def _mdl_texture_inputs(shader) -> dict[str, Path]:
     return dict(_parse_mdl_texture_inputs(mdl_path))
 
 
-@lru_cache(maxsize=None)
+@cache
 def _parse_mdl_literal_inputs(mdl_path: Path) -> tuple[tuple[str, Any], ...]:
     """Parse simple named literal arguments from a collected MDL asset."""
     if not mdl_path.is_file():
@@ -336,13 +311,9 @@ def _parse_mdl_literal_inputs(mdl_path: Path) -> tuple[tuple[str, Any], ...]:
     if re.search(r"::OmniUe4Translucent\s*\(", source):
         values["_mdl_is_omni_ue4_translucent"] = True
 
-    opacity_declaration = re.search(
-        r"\bNum4_Opacity\s*=\s*texture_2d\s*\(([^)]*)\)", source
-    )
+    opacity_declaration = re.search(r"\bNum4_Opacity\s*=\s*texture_2d\s*\(([^)]*)\)", source)
     if opacity_declaration:
-        values["_mdl_opacity_texture_srgb"] = "gamma_srgb" in opacity_declaration.group(
-            1
-        )
+        values["_mdl_opacity_texture_srgb"] = "gamma_srgb" in opacity_declaration.group(1)
     orm_declaration = re.search(
         r"\b(?:Num3_Mask(?:_1)?|ORM_texture)\s*=\s*texture_2d\s*\(([^)]*)\)",
         source,
@@ -353,10 +324,7 @@ def _parse_mdl_literal_inputs(mdl_path: Path) -> tuple[tuple[str, Any], ...]:
     vector_pattern = re.compile(r"\b(\w+)\s*:\s*(color|float2)\s*\(([^()]*)\)")
     for name, kind, components in vector_pattern.findall(source):
         try:
-            parsed = tuple(
-                float(component.strip().removesuffix("f"))
-                for component in components.split(",")
-            )
+            parsed = tuple(float(component.strip().removesuffix("f")) for component in components.split(","))
         except ValueError:
             continue
         expected_size = 3 if kind == "color" else 2
@@ -365,9 +333,7 @@ def _parse_mdl_literal_inputs(mdl_path: Path) -> tuple[tuple[str, Any], ...]:
         if len(parsed) == expected_size:
             values[name] = parsed
 
-    scalar_pattern = re.compile(
-        r"\b(\w+)\s*:\s*(true|false|[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?f?)\b"
-    )
+    scalar_pattern = re.compile(r"\b(\w+)\s*:\s*(true|false|[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?f?)\b")
     for name, literal in scalar_pattern.findall(source):
         if literal == "true":
             values[name] = True
@@ -420,9 +386,7 @@ def _mdl_literal_inputs(shader) -> dict[str, Any]:
     return dict(_parse_mdl_literal_inputs(mdl_path))
 
 
-def _normalize_texture_inputs(
-    values: dict[str, Any], attributes: dict[str, Any] | None = None
-) -> None:
+def _normalize_texture_inputs(values: dict[str, Any], attributes: dict[str, Any] | None = None) -> None:
     """Add canonical aliases for authored texture inputs with common names."""
     for name, value in tuple(values.items()):
         semantic = _mdl_texture_semantic(name)
@@ -434,9 +398,7 @@ def _normalize_texture_inputs(
 
 def _rebase_missing_texture(stage_path: Path, texture_path: Path) -> Path:
     """Rebase a broken texture asset path to a stage-local textures directory."""
-    resolved = (
-        texture_path if texture_path.is_absolute() else stage_path.parent / texture_path
-    )
+    resolved = texture_path if texture_path.is_absolute() else stage_path.parent / texture_path
     resolved = resolved.resolve()
     if _texture_candidate_exists(resolved):
         return resolved
@@ -482,9 +444,7 @@ def _decode_texture(path: Path, max_size: int | None = None) -> np.ndarray:
     return np.ascontiguousarray(arr, dtype=np.uint8)
 
 
-def _decode_udim(
-    tiles: tuple[tuple[int, Path], ...], max_size: int | None = None
-) -> np.ndarray:
+def _decode_udim(tiles: tuple[tuple[int, Path], ...], max_size: int | None = None) -> np.ndarray:
     """Decode UDIM tiles into a grid atlas using the standard 10-column layout."""
     offsets = [(number - 1001) % 10 for number, _ in tiles]
     rows = [(number - 1001) // 10 for number, _ in tiles]
@@ -504,9 +464,7 @@ def _decode_udim(
         for tile in images:
             resized.append(
                 np.asarray(
-                    Image.fromarray(tile, mode="RGBA").resize(
-                        (width, height), Image.Resampling.LANCZOS
-                    ),
+                    Image.fromarray(tile, mode="RGBA").resize((width, height), Image.Resampling.LANCZOS),
                     dtype=np.uint8,
                 )
             )
@@ -556,18 +514,14 @@ def _decode_packed_orm(spec: tuple, max_size: int | None = None) -> np.ndarray:
             from PIL import Image  # noqa: PLC0415
 
             image = np.asarray(
-                Image.fromarray(image, mode="RGBA").resize(
-                    (width, height), Image.Resampling.LANCZOS
-                ),
+                Image.fromarray(image, mode="RGBA").resize((width, height), Image.Resampling.LANCZOS),
                 dtype=np.uint8,
             )
         return image[..., 0].astype(np.float32) * (1.0 / 255.0)
 
     rough_source = channel_or_constant(rough, rough_constant)
     metal_source = channel_or_constant(metal, metal_constant)
-    roughness = (
-        rough_constant * (1.0 - rough_influence) + rough_source * rough_influence
-    )
+    roughness = rough_constant * (1.0 - rough_influence) + rough_source * rough_influence
     metallic = metal_constant * (1.0 - metal_influence) + metal_source * metal_influence
     packed = np.full((height, width, 4), 255, dtype=np.uint8)
     packed[..., 1] = np.clip(roughness * 255.0 + 0.5, 0.0, 255.0).astype(np.uint8)
@@ -608,9 +562,7 @@ def _decode_packed_base_opacity(spec: tuple, max_size: int | None = None) -> np.
         from PIL import Image  # noqa: PLC0415
 
         return np.asarray(
-            Image.fromarray(image, mode="RGBA").resize(
-                (width, height), Image.Resampling.LANCZOS
-            ),
+            Image.fromarray(image, mode="RGBA").resize((width, height), Image.Resampling.LANCZOS),
             dtype=np.uint8,
         )
 
@@ -647,9 +599,7 @@ def _decode_packed_base_opacity(spec: tuple, max_size: int | None = None) -> np.
     return np.ascontiguousarray(packed, dtype=np.uint8)
 
 
-def _fit_textures_to_budget(
-    textures: list[np.ndarray], max_bytes: int | None = None
-) -> list[np.ndarray]:
+def _fit_textures_to_budget(textures: list[np.ndarray], max_bytes: int | None = None) -> list[np.ndarray]:
     """Proportionally downscale mipmapped RGBA textures to a GPU-memory budget."""
     total_bytes = sum(texture.nbytes for texture in textures)
     gpu_bytes = math.ceil(total_bytes * _MIP_CHAIN_MEMORY_FACTOR)
@@ -686,9 +636,7 @@ def _fit_textures_to_budget(
         if (target_height, target_width) == (height, width):
             resized.append(texture)
             continue
-        image = Image.fromarray(texture, mode="RGBA").resize(
-            (target_width, target_height), Image.Resampling.LANCZOS
-        )
+        image = Image.fromarray(texture, mode="RGBA").resize((target_width, target_height), Image.Resampling.LANCZOS)
         resized.append(np.ascontiguousarray(image, dtype=np.uint8))
 
     resized_bytes = sum(texture.nbytes for texture in resized)
@@ -830,9 +778,7 @@ def _material_to_pbr(
             "base_color_texture": texture("diffuseColor", srgb=True),
             "normal_texture": texture("normal"),
             "metallic_roughness_texture": orm_texture,
-            "emissive_texture": texture("emissiveColor", srgb=True)
-            if enable_emissive_materials
-            else {},
+            "emissive_texture": texture("emissiveColor", srgb=True) if enable_emissive_materials else {},
             "occlusion_texture": texture("occlusion"),
         }
 
@@ -841,10 +787,7 @@ def _material_to_pbr(
     is_omni_ue4_base = bool(values.get("_mdl_is_omni_ue4_base", False))
     is_omni_ue4_translucent = bool(values.get("_mdl_is_omni_ue4_translucent", False))
     is_glass = (
-        "omniglass" in identity_lower
-        or "glass_color" in values
-        or "glass_ior" in values
-        or is_omni_ue4_translucent
+        "omniglass" in identity_lower or "glass_color" in values or "glass_ior" in values or is_omni_ue4_translucent
     )
     packed_opacity = False
     if is_omni_ue4_translucent:
@@ -877,9 +820,7 @@ def _material_to_pbr(
             else texture("diffuse_texture", srgb=True)
         )
     elif is_glass and bool(values.get("use_glass_color_texture", True)):
-        base_color_texture = texture(
-            "glass_color_texture", "diffuse_texture", srgb=True
-        )
+        base_color_texture = texture("glass_color_texture", "diffuse_texture", srgb=True)
     elif is_glass:
         base_color_texture = {"index": -1, "texCoord": texture_uv_set}
     else:
@@ -901,9 +842,7 @@ def _material_to_pbr(
     else:
         base = diffuse_tint if diffuse_tint != (1.0, 1.0, 1.0) else diffuse_constant
     emissive_texture = (
-        texture("emissive_texture", "emissive_color_texture", srgb=True)
-        if enable_emissive_materials
-        else {}
+        texture("emissive_texture", "emissive_color_texture", srgb=True) if enable_emissive_materials else {}
     )
     has_emissive_texture = emissive_texture.get("index", -1) >= 0
     emission_enabled = enable_emissive_materials and (
@@ -921,15 +860,9 @@ def _material_to_pbr(
         # OmniUe4Base::emissive_multiplier() is 20 * 128. Convert the
         # resulting physical radiance with the same scale as USD lights.
         emissive = (1.0, 1.0, 1.0)
-        emissive_scale = (
-            float(values.get("EmissiveMultiplayer", 1.0))
-            * 2560.0
-            * RENDERER_RADIANCE_PER_NIT
-        )
+        emissive_scale = float(values.get("EmissiveMultiplayer", 1.0)) * 2560.0 * RENDERER_RADIANCE_PER_NIT
     else:
-        emissive_scale = (
-            float(values.get("emissive_intensity", 0.0)) if emission_enabled else 0.0
-        )
+        emissive_scale = float(values.get("emissive_intensity", 0.0)) if emission_enabled else 0.0
     orm_enabled = bool(values.get("enable_ORM_texture", True))
     orm_texture = (
         texture("ORM_texture", srgb=bool(values.get("_mdl_orm_texture_srgb", False)))
@@ -942,11 +875,7 @@ def _material_to_pbr(
         bump_factor = float(values.get("bump_factor", 1.0))
         flip_u = bool(values.get("flip_tangent_u", False))
         # Isaac's OmniPBR and OmniUe4Base both negate tangent V.
-        flip_v = bool(
-            values.get(
-                "flip_tangent_v", "omnipbr" in identity_lower or is_omni_ue4_base
-            )
-        )
+        flip_v = bool(values.get("flip_tangent_v", "omnipbr" in identity_lower or is_omni_ue4_base))
         normal_texture["scale"] = (
             -bump_factor if flip_u else bump_factor,
             -bump_factor if flip_v else bump_factor,
@@ -967,9 +896,7 @@ def _material_to_pbr(
     )
     if not has_orm and packed_orm_index is not None:
         orm_index = packed_orm_index(
-            connected_path(
-                "reflectionroughness_texture", "reflection_roughness_texture"
-            ),
+            connected_path("reflectionroughness_texture", "reflection_roughness_texture"),
             connected_path("metallic_texture"),
             roughness,
             metallic,
@@ -1031,17 +958,11 @@ def _material_to_pbr(
         # Physical transmission retains the dielectric interface; alpha blend
         # is reserved for the MDL assets identified as coverage shells.
         "alpha_mode": "BLEND" if is_fresnel_coverage else "OPAQUE",
-        "transmission_color": (
-            (1.0, 1.0, 1.0)
-            if is_omni_ue4_translucent and not is_fresnel_coverage
-            else None
-        ),
+        "transmission_color": ((1.0, 1.0, 1.0) if is_omni_ue4_translucent and not is_fresnel_coverage else None),
         "specular": float(
             values.get(
                 "specular_level",
-                values.get(
-                    "specular_reflection_weight", values.get("Specular_mdl", 1.0)
-                ),
+                values.get("specular_reflection_weight", values.get("Specular_mdl", 1.0)),
             )
         ),
         "clearcoat": float(values.get("ClearCoat_mdl", 0.0)),
@@ -1059,9 +980,7 @@ def _material_to_pbr(
     }
 
 
-def _expanded_attribute(
-    values, indices, interpolation: str, point_indices, face_ids, corner_ids, width: int
-):
+def _expanded_attribute(values, indices, interpolation: str, point_indices, face_ids, corner_ids, width: int):
     if values is None or len(values) == 0:
         return None
     arr = np.asarray(values, dtype=np.float32).reshape(-1, width)
@@ -1136,11 +1055,7 @@ def _mesh_arrays(mesh, UsdGeom):
         "map1",
     ):
         candidate = primvars.GetPrimvar(name)
-        if (
-            candidate
-            and candidate.HasValue()
-            and str(candidate.GetTypeName()).lower() in texcoord_types
-        ):
+        if candidate and candidate.HasValue() and str(candidate.GetTypeName()).lower() in texcoord_types:
             st = candidate
             break
     if st is None:
@@ -1151,9 +1066,7 @@ def _mesh_arrays(mesh, UsdGeom):
         ]
         candidates.sort(
             key=lambda candidate: (
-                not re.match(
-                    r"^(st|uv|texcoord)_?\d+$", str(candidate.GetPrimvarName()).lower()
-                ),
+                not re.match(r"^(st|uv|texcoord)_?\d+$", str(candidate.GetPrimvarName()).lower()),
                 str(candidate.GetPrimvarName()).lower(),
             )
         )
@@ -1224,23 +1137,13 @@ def _compact_corners(vertices, normals, texcoords, point_indices, used, corner_r
     """Merge corners that have exactly the same position source and attributes."""
     key_parts = [np.asarray(point_indices[used], dtype=np.uint32).reshape(-1, 1)]
     if normals is not None:
-        normal_bits = (
-            np.ascontiguousarray(normals[used], dtype=np.float32)
-            .view(np.uint32)
-            .reshape(-1, 3)
-        )
+        normal_bits = np.ascontiguousarray(normals[used], dtype=np.float32).view(np.uint32).reshape(-1, 3)
         key_parts.append(normal_bits)
     if texcoords is not None:
-        texcoord_bits = (
-            np.ascontiguousarray(texcoords[used], dtype=np.float32)
-            .view(np.uint32)
-            .reshape(-1, 2)
-        )
+        texcoord_bits = np.ascontiguousarray(texcoords[used], dtype=np.float32).view(np.uint32).reshape(-1, 2)
         key_parts.append(texcoord_bits)
     keys = np.ascontiguousarray(np.concatenate(key_parts, axis=1))
-    records = keys.view(
-        np.dtype((np.void, keys.dtype.itemsize * keys.shape[1]))
-    ).reshape(-1)
+    records = keys.view(np.dtype((np.void, keys.dtype.itemsize * keys.shape[1]))).reshape(-1)
     _, first, compact_remap = np.unique(records, return_index=True, return_inverse=True)
     selected = used[first]
     triangles = compact_remap[corner_remap].reshape(-1, 3).astype(np.uint32)
@@ -1256,17 +1159,13 @@ def _triangles_by_material(triangles, face_materials):
     return [
         (
             int(material_id),
-            np.ascontiguousarray(
-                triangles[triangle_materials == material_id, :3], dtype=np.int64
-            ),
+            np.ascontiguousarray(triangles[triangle_materials == material_id, :3], dtype=np.int64),
         )
         for material_id in material_ids
     ]
 
 
-def _normalize_mesh_uvs_for_udim_atlas(
-    texcoords: np.ndarray | None, columns: int, rows: int
-) -> np.ndarray | None:
+def _normalize_mesh_uvs_for_udim_atlas(texcoords: np.ndarray | None, columns: int, rows: int) -> np.ndarray | None:
     """Map authored UDIM coordinates into the stitched texture atlas."""
     if texcoords is None or len(texcoords) == 0 or (columns <= 1 and rows <= 1):
         return texcoords
@@ -1313,9 +1212,7 @@ def load_scene_from_usd(
 
     # Omniverse/Isaac stages commonly author a global ambient term in the
     # root layer's renderSettings. It is independent of any DomeLight.
-    scene.usd_ambient_light = _ambient_light_from_custom_layer_data(
-        stage.GetRootLayer().customLayerData
-    )
+    scene.usd_ambient_light = _ambient_light_from_custom_layer_data(stage.GetRootLayer().customLayerData)
 
     start = time.perf_counter()
     # OpenUSD matrices multiply row vectors while the public path-tracer API
@@ -1338,9 +1235,7 @@ def load_scene_from_usd(
     unit_scale = 1.0
     if apply_stage_units:
         unit_scale = float(UsdGeom.GetStageMetersPerUnit(stage))
-        extra_transform = extra_transform @ np.diag(
-            (unit_scale, unit_scale, unit_scale, 1.0)
-        )
+        extra_transform = extra_transform @ np.diag((unit_scale, unit_scale, unit_scale, 1.0))
     texture_paths: dict[Any, int] = {}
     packed_orm_paths: dict[tuple, int] = {}
     packed_opacity_paths: dict[tuple, int] = {}
@@ -1352,9 +1247,7 @@ def load_scene_from_usd(
     def get_asset_executor() -> ThreadPoolExecutor:
         nonlocal asset_executor
         if asset_executor is None:
-            asset_executor = ThreadPoolExecutor(
-                max_workers=_asset_worker_count(_MAX_ASSET_WORKERS)
-            )
+            asset_executor = ThreadPoolExecutor(max_workers=_asset_worker_count(_MAX_ASSET_WORKERS))
         return asset_executor
 
     def decode_texture_spec(spec):
@@ -1378,11 +1271,7 @@ def load_scene_from_usd(
         resolved = _rebase_missing_texture(path, texture_path)
         if "<UDIM>" in str(resolved):
             pattern = resolved.name.replace("<UDIM>", "*")
-            expression = re.compile(
-                "^"
-                + re.escape(resolved.name).replace(re.escape("<UDIM>"), r"(1\d{3})")
-                + "$"
-            )
+            expression = re.compile("^" + re.escape(resolved.name).replace(re.escape("<UDIM>"), r"(1\d{3})") + "$")
             matches = []
             for candidate in resolved.parent.glob(pattern):
                 match = expression.match(candidate.name)
@@ -1496,11 +1385,7 @@ def load_scene_from_usd(
         if not xformable:
             return ensure_transform_node(prim.GetParent())
 
-        local = (
-            np.asarray(xformable.GetLocalTransformation(), dtype=np.float64)
-            .reshape(4, 4)
-            .T
-        )
+        local = np.asarray(xformable.GetLocalTransformation(), dtype=np.float64).reshape(4, 4).T
         parent_index = None
         if not xformable.GetResetXformStack():
             parent_index = ensure_transform_node(prim.GetParent())
@@ -1515,9 +1400,7 @@ def load_scene_from_usd(
         node_parents.append(parent_index)
         local = np.asarray(local, dtype=np.float32)
         node_local_transforms.append(local)
-        world = (
-            local if parent_index < 0 else node_world_transforms[parent_index] @ local
-        )
+        world = local if parent_index < 0 else node_world_transforms[parent_index] @ local
         node_world_transforms.append(np.asarray(world, dtype=np.float32))
         return node_index
 
@@ -1590,13 +1473,9 @@ def load_scene_from_usd(
     ):
         tri = np.asarray(group, dtype=np.int64)
         used, corner_remap = np.unique(tri.reshape(-1), return_inverse=True)
-        selected, tri = _compact_corners(
-            vertices, normals, texcoords, point_indices, used, corner_remap
-        )
+        selected, tri = _compact_corners(vertices, normals, texcoords, point_indices, used, corner_remap)
         material_texcoords = _normalize_mesh_uvs_for_udim_atlas(texcoords, *uv_grid)
-        selected_texcoords = (
-            material_texcoords[selected] if material_texcoords is not None else None
-        )
+        selected_texcoords = material_texcoords[selected] if material_texcoords is not None else None
         selected_normals = normals[selected] if normals is not None else None
         if selected_normals is not None and flip_normals:
             selected_normals = -selected_normals
@@ -1612,9 +1491,7 @@ def load_scene_from_usd(
     def consume_geometry_job():
         future, node_index, double_sided = geometry_jobs.popleft()
         out_mesh, vertex_count, triangle_count = future.result()
-        instance_id = scene.add_instance(
-            scene.add_mesh(out_mesh), double_sided=double_sided
-        )
+        instance_id = scene.add_instance(scene.add_mesh(out_mesh), double_sided=double_sided)
         instance_ids.append(instance_id)
         instance_node_ids.append(node_index)
         stats["meshes"] += 1
@@ -1628,11 +1505,7 @@ def load_scene_from_usd(
         if scene.usd_environment_path is None:
             dome_texture = _dome_texture(prim, UsdLux)
             if dome_texture is not None:
-                resolved = (
-                    dome_texture
-                    if dome_texture.is_absolute()
-                    else path.parent / dome_texture
-                )
+                resolved = dome_texture if dome_texture.is_absolute() else path.parent / dome_texture
                 resolved = resolved.resolve()
                 if resolved.is_file():
                     scene.usd_environment_path = resolved
@@ -1651,13 +1524,9 @@ def load_scene_from_usd(
                     3,
                     (1.0, 1.0, 1.0),
                 )
-                color = tuple(
-                    a * b for a, b in zip(color, temperature_color, strict=True)
-                )
+                color = tuple(a * b for a, b in zip(color, temperature_color, strict=True))
             intensity = max(0.0, float(light.GetIntensityAttr().Get() or 0.0))
-            intensity *= (
-                2.0 ** float(light.GetExposureAttr().Get() or 0.0)
-            ) * RENDERER_RADIANCE_PER_NIT
+            intensity *= (2.0 ** float(light.GetExposureAttr().Get() or 0.0)) * RENDERER_RADIANCE_PER_NIT
             render_radius, intensity = _sphere_light_proxy_properties(
                 intensity,
                 bool(light.GetNormalizeAttr().Get()),
@@ -1665,9 +1534,7 @@ def load_scene_from_usd(
                 node_world_transforms[node_index],
                 usd_light_radius,
             )
-            position = tuple(
-                float(value) for value in node_world_transforms[node_index][:3, 3]
-            )
+            position = tuple(float(value) for value in node_world_transforms[node_index][:3, 3])
             scene.add_light_sphere(
                 position=position,
                 radius=render_radius,
@@ -1679,10 +1546,7 @@ def load_scene_from_usd(
         if not prim.IsA(UsdGeom.Mesh):
             continue
         imageable = UsdGeom.Imageable(prim)
-        if (
-            str(imageable.ComputeVisibility()) == "invisible"
-            or str(imageable.ComputePurpose()) not in purposes
-        ):
+        if str(imageable.ComputeVisibility()) == "invisible" or str(imageable.ComputePurpose()) not in purposes:
             continue
         mesh = UsdGeom.Mesh(prim)
         node_index = ensure_transform_node(prim)
@@ -1703,9 +1567,7 @@ def load_scene_from_usd(
                 subset_faces = np.asarray(subset.GetIndicesAttr().Get(), dtype=np.int64)
                 face_materials[subset_faces] = material_id(subset_material)
 
-        double_sided = (
-            bool(mesh.GetDoubleSidedAttr().Get()) if strict_sidedness else True
-        )
+        double_sided = bool(mesh.GetDoubleSidedAttr().Get()) if strict_sidedness else True
         # A reflected instance reverses winding while inverse-transpose normal
         # transformation omits that orientation sign.
         flip_normals = np.linalg.det(node_world_transforms[node_index][:3, :3]) < 0.0

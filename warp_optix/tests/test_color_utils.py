@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
-
 from warp_optix.pathtracing.color_utils import (
     srgb_to_linear_rgb,
     srgb_to_linear_u8,
@@ -28,9 +27,7 @@ def test_parallel_texture_preparation_preserves_order_and_alpha():
 
     scene.set_gltf_textures([color, data], srgb_texture_indices={0})
 
-    np.testing.assert_array_equal(
-        scene._gltf_textures[0][0, 0, :3], srgb_to_linear_u8(color[0, 0, :3])
-    )
+    np.testing.assert_array_equal(scene._gltf_textures[0][0, 0, :3], srgb_to_linear_u8(color[0, 0, :3]))
     assert scene._gltf_textures[0][0, 0, 3] == 17
     np.testing.assert_array_equal(
         scene._gltf_textures[1],

@@ -5,8 +5,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
@@ -40,10 +41,7 @@ class USDScene:
         self._scene = scene
         self._stage = stage
         self._source_path = str(source_path)
-        self._handles = tuple(
-            USDTransformHandle(index, str(path), id(self))
-            for index, path in enumerate(paths)
-        )
+        self._handles = tuple(USDTransformHandle(index, str(path), id(self)) for index, path in enumerate(paths))
         self._path_to_handle = {handle.path: handle for handle in self._handles}
         self._local_transforms_device = None
         self._world_transforms_device = None
@@ -98,9 +96,7 @@ class USDScene:
     def instance_ids(self, handle: USDTransformHandle | int) -> tuple[int, ...]:
         """Return render instances attached directly to a transform node."""
         node_index = self._index(handle)
-        selected = self._scene._usd_instance_ids[
-            self._scene._usd_instance_node_ids == node_index
-        ]
+        selected = self._scene._usd_instance_ids[self._scene._usd_instance_node_ids == node_index]
         return tuple(int(value) for value in selected)
 
     def set_visible(self, visible: bool):
@@ -134,9 +130,7 @@ class USDScene:
         rebuild_tlas: bool = True,
     ):
         """Update one local matrix through the batched CUDA path."""
-        self.update_local_transforms(
-            [handle], [matrix], stream=stream, rebuild_tlas=rebuild_tlas
-        )
+        self.update_local_transforms([handle], [matrix], stream=stream, rebuild_tlas=rebuild_tlas)
 
     def update_local_transforms(
         self,
@@ -148,9 +142,7 @@ class USDScene:
     ):
         """Upload and apply a NumPy batch on an optional Warp CUDA stream."""
         indices = np.fromiter((self._index(handle) for handle in handles), dtype=np.int32)
-        self._scene.set_usd_local_transforms(
-            indices, matrices, stream=stream, rebuild_tlas=rebuild_tlas
-        )
+        self._scene.set_usd_local_transforms(indices, matrices, stream=stream, rebuild_tlas=rebuild_tlas)
 
     def update_local_transforms_device(
         self,

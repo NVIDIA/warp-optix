@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-
 if TYPE_CHECKING:
     from .pipeline import HitGroup
 
@@ -60,14 +59,10 @@ class SbtLayout:
         try:
             return self.ray_types.index(name)
         except ValueError:
-            raise KeyError(
-                f"Unknown ray type {name!r}; expected one of {self.ray_types}"
-            ) from None
+            raise KeyError(f"Unknown ray type {name!r}; expected one of {self.ray_types}") from None
 
     def get_sbt_offset(self, handle: HitGroupHandle) -> int:
-        if not isinstance(handle, HitGroupHandle) or not any(
-            handle is h for h in self.hit_groups
-        ):
+        if not isinstance(handle, HitGroupHandle) or not any(handle is h for h in self.hit_groups):
             raise ValueError("Hit-group handle does not belong to this SBT layout")
         return handle.sbt_offset
 
@@ -105,10 +100,7 @@ class SbtLayout:
                     )
                 )
         widths = [max(len(row[i]) for row in rows) for i in range(5)]
-        table = "\n".join(
-            "  ".join(value.ljust(width) for value, width in zip(row, widths)).rstrip()
-            for row in rows
-        )
+        table = "\n".join("  ".join(value.ljust(width) for value, width in zip(row, widths)).rstrip() for row in rows)
         return f"Trace stride: {self.trace_stride} records (ray index = trace offset = miss index)\n{table}"
 
 
@@ -125,17 +117,13 @@ class SbtBuilder:
         if isinstance(ray_types, str):
             raise TypeError("ray_types must be a sequence of names, not a string")
         names = tuple(ray_types)
-        if not names or any(
-            not isinstance(name, str) or not name.strip() for name in names
-        ):
+        if not names or any(not isinstance(name, str) or not name.strip() for name in names):
             raise ValueError("ray_types must contain nonempty names")
         if len(set(names)) != len(names):
             raise ValueError("ray_types must be unique")
         # OptiX trace SBT offset and stride are four-bit values.
         if len(names) > 15:
-            raise ValueError(
-                "At most 15 ray types are supported by the trace SBT stride"
-            )
+            raise ValueError("At most 15 ray types are supported by the trace SBT stride")
         self._owner = object()
         self._ray_types = names
         self._miss = {}
@@ -154,18 +142,14 @@ class SbtBuilder:
         try:
             return self.ray_types.index(name)
         except ValueError:
-            raise KeyError(
-                f"Unknown ray type {name!r}; expected one of {self.ray_types}"
-            ) from None
+            raise KeyError(f"Unknown ray type {name!r}; expected one of {self.ray_types}") from None
 
     def set_miss(self, ray_type: str, kernel: wp.Kernel | None) -> None:
         self.ray_type_index(ray_type)
         try:
             _validate_entry(kernel)
         except (TypeError, ValueError) as error:
-            raise ValueError(
-                f"Miss program for ray type {ray_type!r}: {error}"
-            ) from error
+            raise ValueError(f"Miss program for ray type {ray_type!r}: {error}") from error
         self._miss[ray_type] = kernel
 
     def add_hit_group(self, name: str, /, **ray_kernels: HitGroup) -> HitGroupHandle:
@@ -188,22 +172,15 @@ class SbtBuilder:
             label = f"Hit group {name!r}, ray type {ray!r}"
             if not isinstance(kernel, HitGroup):
                 raise TypeError(f"{label}: expected a warp_optix.HitGroup")
-            if (
-                kernel.intersection is not None
-                and kernel.builtin is not None
-            ):
-                raise ValueError(
-                    f"{label}: custom and built-in intersection programs cannot be combined"
-                )
+            if kernel.intersection is not None and kernel.builtin is not None:
+                raise ValueError(f"{label}: custom and built-in intersection programs cannot be combined")
             try:
                 for entry in (kernel.closest_hit, kernel.any_hit, kernel.intersection):
                     _validate_entry(entry)
             except (TypeError, ValueError) as error:
                 raise ValueError(f"{label}: {error}") from error
             kernels.append(kernel)
-        geometry_types = {
-            (k.intersection is not None, k.builtin) for k in kernels
-        }
+        geometry_types = {(k.intersection is not None, k.builtin) for k in kernels}
         if len(geometry_types) != 1:
             raise ValueError(
                 f"Hit group {name!r}: all ray types must use the same geometry kind (triangle, custom, or built-in primitive type)"
@@ -224,9 +201,7 @@ class SbtBuilder:
         """Validate and freeze the layout; later edits do not change this snapshot."""
         missing = [ray for ray in self.ray_types if ray not in self._miss]
         if missing:
-            raise ValueError(
-                f"Missing miss programs for ray types {missing}; call set_miss() for each ray type"
-            )
+            raise ValueError(f"Missing miss programs for ray types {missing}; call set_miss() for each ray type")
         return SbtLayout(
             self.ray_types,
             tuple(self._groups),

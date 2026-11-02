@@ -94,10 +94,7 @@ def extrude(outline, depth):
             if cross(points[a], points[b], points[c]) <= 1e-10:
                 continue
             if any(
-                all(
-                    cross(points[i], points[j], points[q]) >= -1e-10
-                    for i, j in [(a, b), (b, c), (c, a)]
-                )
+                all(cross(points[i], points[j], points[q]) >= -1e-10 for i, j in [(a, b), (b, c), (c, a)])
                 for q in remaining
                 if q not in (a, b, c)
             ):
@@ -117,9 +114,7 @@ def extrude(outline, depth):
             normals.append((0, 0, sign))
             uvs.append(tuple((p - lo) / span))
         for a, b, c in faces:
-            triangles.append(
-                tuple(offset + i for i in ((c, b, a) if sign < 0 else (a, b, c)))
-            )
+            triangles.append(tuple(offset + i for i in ((c, b, a) if sign < 0 else (a, b, c))))
     perimeter = 0.0
     for a, b in zip(points, np.roll(points, -1, axis=0)):
         d = b - a
@@ -164,14 +159,8 @@ def wood_texture(light, dark, size=512):
         fx, fy = x - ix, y - iy
         fx = fx * fx * (3 - 2 * fx)
         fy = fy * fy * (3 - 2 * fy)
-        a = (
-            grid[iy % rows, ix % columns] * (1 - fx)
-            + grid[iy % rows, (ix + 1) % columns] * fx
-        )
-        b = (
-            grid[(iy + 1) % rows, ix % columns] * (1 - fx)
-            + grid[(iy + 1) % rows, (ix + 1) % columns] * fx
-        )
+        a = grid[iy % rows, ix % columns] * (1 - fx) + grid[iy % rows, (ix + 1) % columns] * fx
+        b = grid[(iy + 1) % rows, ix % columns] * (1 - fx) + grid[(iy + 1) % rows, (ix + 1) % columns] * fx
         return a * (1 - fy) + b * fy
 
     # Nonuniform ring spacing and slowly varying deviations avoid repeated waves.
@@ -183,27 +172,19 @@ def wood_texture(light, dark, size=512):
     for center in centers:
         distance = np.abs((warped - center + 0.5) % 1 - 0.5)
         width = rng.uniform(0.003, 0.006)
-        lines = np.maximum(
-            lines, np.exp(-((distance / width) ** 2)) * rng.uniform(0.8, 1)
-        )
+        lines = np.maximum(lines, np.exp(-((distance / width) ** 2)) * rng.uniform(0.8, 1))
         shoulders = np.maximum(shoulders, np.exp(-((distance / (width * 3)) ** 2)))
     fibers = noise(5, 140)
     cloud = noise(3, 11)
     strength = 0.75 + 0.25 * noise(9, 29)
     blend = np.clip(
-        0.08
-        + 0.17 * cloud
-        + 0.08 * fibers
-        + 0.20 * shoulders
-        + 0.48 * lines * strength,
+        0.08 + 0.17 * cloud + 0.08 * fibers + 0.20 * shoulders + 0.48 * lines * strength,
         0,
         1,
     )
     rgb = np.asarray(light)[None, None, :] * (1 - blend[..., None])
     rgb += np.asarray(dark)[None, None, :] * blend[..., None]
-    return np.concatenate(
-        ((rgb * 255).astype(np.uint8), np.full((size, size, 1), 255, np.uint8)), axis=2
-    )
+    return np.concatenate(((rgb * 255).astype(np.uint8), np.full((size, size, 1), 255, np.uint8)), axis=2)
 
 
 def wood_uvs(positions, grain_axis=1, origin=(0.0, 0.0, 0.0)):
@@ -248,9 +229,7 @@ def timber_box(size):
                         (a, a + stride, a + stride + 1),
                         (a, a + stride + 1, a + 1),
                     ]
-                    triangles.extend(
-                        faces if sign > 0 else [face[::-1] for face in faces]
-                    )
+                    triangles.extend(faces if sign > 0 else [face[::-1] for face in faces])
     return _arrays(vertices, triangles, normals, np.zeros((len(vertices), 2)))
 
 
@@ -313,9 +292,7 @@ def beveled_extrude(outline, depth):
 def _smooth_normals(p, triangles):
     """Average curved-surface normals across duplicated UV seams."""
     _, welded = np.unique(np.round(p, 7), axis=0, return_inverse=True)
-    face = np.cross(
-        p[triangles[:, 1]] - p[triangles[:, 0]], p[triangles[:, 2]] - p[triangles[:, 0]]
-    )
+    face = np.cross(p[triangles[:, 1]] - p[triangles[:, 0]], p[triangles[:, 2]] - p[triangles[:, 0]])
     normals = np.zeros((welded.max() + 1, 3))
     for col in range(3):
         np.add.at(normals, welded[triangles[:, col]], face)
@@ -409,10 +386,7 @@ def _clip_closed_mesh(data, normal, offset):
     triangles = []
     boundary = {}
     for triangle in t:
-        polygon = [
-            (p[i].astype(float), n[i].astype(float), uv[i].astype(float))
-            for i in triangle
-        ]
+        polygon = [(p[i].astype(float), n[i].astype(float), uv[i].astype(float)) for i in triangle]
         clipped = []
         for a, b in zip(polygon, polygon[1:] + polygon[:1]):
             da = np.dot(a[0], normal) - offset
@@ -480,12 +454,8 @@ def build_chess_scene(api):
     mats = [wood_material(i) for i in range(4)]
     mesh_materials = {}
     mesh_data = {}
-    brass = api.create_pbr_material(
-        color=(0.83, 0.49, 0.10), roughness=0.19, metallic=1.0, base_color_scale=1
-    )
-    floor = api.create_pbr_material(
-        color=(0.16, 0.17, 0.18), roughness=0.65, metallic=0, base_color_scale=1
-    )
+    brass = api.create_pbr_material(color=(0.83, 0.49, 0.10), roughness=0.19, metallic=1.0, base_color_scale=1)
+    floor = api.create_pbr_material(color=(0.16, 0.17, 0.18), roughness=0.65, metallic=0, base_color_scale=1)
 
     def mesh(
         data,
@@ -513,9 +483,7 @@ def build_chess_scene(api):
         return mid
 
     def place(mid, position, scale=1.0):
-        return api.create_instance_with_transform(
-            mid, position, (0, 0, 0, 1), scale=scale
-        )
+        return api.create_instance_with_transform(mid, position, (0, 0, 0, 1), scale=scale)
 
     def box(
         x,
@@ -532,9 +500,7 @@ def build_chess_scene(api):
         data = (
             timber_box((x, y, z))
             if material in mats
-            else extrude(
-                [(-x / 2, -y / 2), (x / 2, -y / 2), (x / 2, y / 2), (-x / 2, y / 2)], z
-            )
+            else extrude([(-x / 2, -y / 2), (x / 2, -y / 2), (x / 2, y / 2), (-x / 2, y / 2)], z)
         )
         mid = mesh(
             data,
@@ -562,11 +528,7 @@ def build_chess_scene(api):
                 cuts.uniform(0.25, 0.65),
                 cuts.uniform(-2, 2),
             )
-            origin = (
-                (along, -1.7 + depth, -0.8 + shift)
-                if axis == 0
-                else (-1.7 + shift, -0.8 + depth, along)
-            )
+            origin = (along, -1.7 + depth, -0.8 + shift) if axis == 0 else (-1.7 + shift, -0.8 + depth, along)
             box(
                 0.997,
                 0.09,
@@ -678,10 +640,7 @@ def build_chess_scene(api):
 
     def ball(radius, center):
         angles = np.linspace(-np.pi / 2, np.pi / 2, 33)
-        return [
-            (0 if i in (0, 32) else radius * np.cos(a), center + radius * np.sin(a))
-            for i, a in enumerate(angles)
-        ]
+        return [(0 if i in (0, 32) else radius * np.cos(a), center + radius * np.sin(a)) for i, a in enumerate(angles)]
 
     proportions = {
         "pawn": 0.76,
@@ -729,13 +688,9 @@ def build_chess_scene(api):
                     for r, y in profile
                 ]
             if kind == "bishop":
-                body_profile = [point for point in profile if point[1] <= 1.29] + [
-                    (0, 1.29)
-                ]
+                body_profile = [point for point in profile if point[1] <= 1.29] + [(0, 1.29)]
             if kind == "queen":
-                body_profile = [point for point in profile if point[1] <= 1.62] + [
-                    (0, 1.62)
-                ]
+                body_profile = [point for point in profile if point[1] <= 1.62] + [(0, 1.62)]
             components = [(mesh(lathe(foot + body_profile), material), (0, 0, 0))]
             if kind == "queen":
                 components.append((mesh(crown(), material), (0, 0, 0)))
@@ -781,9 +736,7 @@ def build_chess_scene(api):
                     (-0.39, 1.20),
                     (-0.40, 0.95),
                 ]
-                components.append(
-                    (mesh(beveled_extrude(mane, 0.10), material), (0, 0, 0))
-                )
+                components.append((mesh(beveled_extrude(mane, 0.10), material), (0, 0, 0)))
                 ear_mesh = mesh(beveled_extrude(ear, 0.07), material)
                 components.extend((ear_mesh, (0, 0, z)) for z in (-0.105, 0.105))
             if kind == "king":
@@ -802,9 +755,7 @@ def build_chess_scene(api):
                     (-0.045, 2.19),
                 ]
                 cross = [(x * 1.18, 2.105 + (y - 2.025) * 1.08) for x, y in cross]
-                components.append(
-                    (mesh(beveled_extrude(cross, 0.18), brass), (0, 0, 0))
-                )
+                components.append((mesh(beveled_extrude(cross, 0.18), brass), (0, 0, 0)))
             if kind == "bishop":
                 head = lathe(
                     [
@@ -825,9 +776,7 @@ def build_chess_scene(api):
                 offset = normal[1] * 1.59
                 left = _clip_closed_mesh(upper, normal, offset + 0.013)
                 right = _clip_closed_mesh(upper, -normal, -offset + 0.013)
-                components.extend(
-                    (mesh(part, material), (0, 0, 0)) for part in (bottom, left, right)
-                )
+                components.extend((mesh(part, material), (0, 0, 0)) for part in (bottom, left, right))
             if kind == "bishop":
                 components.append(
                     (
@@ -846,9 +795,7 @@ def build_chess_scene(api):
                 for angle in np.arange(6) * np.pi / 3:
                     angles = np.linspace(angle + 0.10, angle + np.pi / 3 - 0.10, 9)
                     outline = [(0.30 * np.cos(a), 0.30 * np.sin(a)) for a in angles]
-                    outline += [
-                        (0.205 * np.cos(a), 0.205 * np.sin(a)) for a in angles[::-1]
-                    ]
+                    outline += [(0.205 * np.cos(a), 0.205 * np.sin(a)) for a in angles[::-1]]
                     p, t, n, uv = beveled_extrude(outline, 0.22)
                     # Turn the annular sector into a vertical battlement.
                     p = p[:, [0, 2, 1]]
@@ -858,18 +805,11 @@ def build_chess_scene(api):
                     components.append((mesh((p, t, n, uv), material), (0, 0, 0)))
             if kind == "queen":
                 bead = mesh(lathe(ball(0.033, 2.105), round_profile=False), brass)
-                components.extend(
-                    (bead, (0.28 * np.cos(a), 0, 0.28 * np.sin(a)))
-                    for a in np.arange(8) * np.pi / 4
-                )
+                components.extend((bead, (0.28 * np.cos(a), 0, 0.28 * np.sin(a))) for a in np.arange(8) * np.pi / 4)
             squares = (
                 [(i, 1 if side == 0 else 6) for i in range(8)]
                 if kind == "pawn"
-                else [
-                    (i, 0 if side == 0 else 7)
-                    for i, k in enumerate(arrangement)
-                    if k == kind
-                ]
+                else [(i, 0 if side == 0 else 7) for i, k in enumerate(arrangement) if k == kind]
             )
             for col, row in squares:
                 # Each piece samples a different part of the same timber texture.
@@ -891,9 +831,7 @@ def build_chess_scene(api):
                         rotated[:, 2] = s * timber[:, 0] + c * timber[:, 2]
                         # UVs belong to mesh vertices, so each wooden component
                         # needs its own mesh for this piece's timber orientation.
-                        mid = api.create_mesh(
-                            p, t, normals=n, uvs=wood_uvs(rotated), material_id=material
-                        )
+                        mid = api.create_mesh(p, t, normals=n, uvs=wood_uvs(rotated), material_id=material)
                         mesh_materials[mid] = material
                     # Rotate the horse as a whole so opposing sets face inward.
                     if kind == "knight":
@@ -922,9 +860,5 @@ def build_chess_scene(api):
         sun_disk_intensity=0.0,
         sun_glow_intensity=0.0,
     )
-    api.scene.add_light_sphere(
-        position=(-3, 7, 2), radius=1.8, color=(1, 0.87, 0.70), intensity=35
-    )
-    api.scene.add_light_sphere(
-        position=(4, 5, -3), radius=1.2, color=(0.70, 0.85, 1), intensity=15
-    )
+    api.scene.add_light_sphere(position=(-3, 7, 2), radius=1.8, color=(1, 0.87, 0.70), intensity=35)
+    api.scene.add_light_sphere(position=(4, 5, -3), radius=1.2, color=(0.70, 0.85, 1), intensity=15)

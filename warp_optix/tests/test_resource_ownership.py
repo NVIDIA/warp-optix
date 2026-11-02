@@ -35,8 +35,9 @@ def write_struct(params: Params):
 
 @wp.kernel
 def write_instance(handle: wp.uint64, records: wp.array[wo.Instance]):
-    records[0] = wo.make_instance(wp.identity(3, float), wp.vec3(0.0), handle,
-                                  wp.uint32(0), wp.uint32(0), wp.uint32(255), wp.uint32(0))
+    records[0] = wo.make_instance(
+        wp.identity(3, float), wp.vec3(0.0), handle, wp.uint32(0), wp.uint32(0), wp.uint32(255), wp.uint32(0)
+    )
 
 
 def geometry():

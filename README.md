@@ -53,6 +53,7 @@ def render(scene: wp.uint64, image: wp.array2d[float]):
     hit = wo.closest_hit(scene, origin, wp.vec3(0.0, 0.0, -1.0), 0.0, 100.0, wp.uint32(0xFF), wp.uint32(0))
     image[y, x] = hit.t
 
+
 ctx = wo.create_context("cuda:0")
 gas = wo.build_accel(ctx, [wo.triangles(vertices, indices)])  # Warp device arrays
 pipeline = wo.create_pipeline(ctx, render)

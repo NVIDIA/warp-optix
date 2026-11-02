@@ -3,21 +3,20 @@
 
 import numpy as np
 import warp as wp
-
 from warp_optix.pathtracing.pathtracing_warp_kernels import (
     PathtraceLaunchParams,
     PhysicalSkyParams,
-    SphereLight,
     ShadedHitData,
-    _set_incident_medium_for_hit,
+    SphereLight,
     _bsdf_evaluate,
-    _eval_physical_sky,
     _bsdf_sample,
+    _eval_physical_sky,
     _filter_roughness_for_normal_map,
     _intersect_sphere_lights,
     _material_f0,
-    _sky_star_radiance,
     _sample_sphere_light,
+    _set_incident_medium_for_hit,
+    _sky_star_radiance,
 )
 
 
@@ -66,9 +65,7 @@ def _sample_star_field(output: wp.array(dtype=wp.float32)):
 
 
 @wp.kernel
-def _sample_clear_thin_transmission(
-    roughness: wp.float32, output: wp.array(dtype=wp.vec4)
-):
+def _sample_clear_thin_transmission(roughness: wp.float32, output: wp.array(dtype=wp.vec4)):
     sample = _bsdf_sample(
         wp.vec3(0.0, 0.0, 1.0),
         wp.vec3(0.0, 0.0, 1.0),
@@ -144,9 +141,7 @@ def _evaluate_backside_thin_transmission(output: wp.array(dtype=wp.vec4)):
 
 
 @wp.kernel
-def _trace_authored_lamp_light(
-    params: PathtraceLaunchParams, output: wp.array(dtype=wp.vec4)
-):
+def _trace_authored_lamp_light(params: PathtraceLaunchParams, output: wp.array(dtype=wp.vec4)):
     hit = _intersect_sphere_lights(
         params,
         wp.vec3(0.0, 0.0, 0.0),
@@ -167,9 +162,7 @@ def _filter_wool_normal_roughness(output: wp.array(dtype=wp.float32)):
 def _evaluate_material_f0(output: wp.array(dtype=wp.vec3)):
     output[0] = _material_f0(wp.vec3(1.0), wp.vec3(1.0), 1.0, 0.0, 1.0, 1.5, 0.0)
     output[1] = _material_f0(wp.vec3(1.0), wp.vec3(1.0), 0.5, 0.0, 1.0, 1.1, 0.0)
-    output[2] = _material_f0(
-        wp.vec3(0.2, 0.4, 0.8), wp.vec3(1.0), 1.0, 1.0, 1.0, 1.5, 0.0
-    )
+    output[2] = _material_f0(wp.vec3(0.2, 0.4, 0.8), wp.vec3(1.0), 1.0, 1.0, 1.0, 1.5, 0.0)
 
 
 def test_material_f0_matches_dielectric_glass_and_metal_limits():
@@ -245,9 +238,7 @@ def test_night_sky_contains_antipodal_moon_disk():
 
     center, outside = output.numpy()
     assert center.min() > outside.max()
-    np.testing.assert_allclose(
-        center - outside, (0.04, 0.044, 0.05), rtol=0.02, atol=5.0e-4
-    )
+    np.testing.assert_allclose(center - outside, (0.04, 0.044, 0.05), rtol=0.02, atol=5.0e-4)
 
 
 def test_procedural_star_field_is_sparse_and_nonblack():

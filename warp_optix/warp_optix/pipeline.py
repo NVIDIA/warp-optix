@@ -192,8 +192,11 @@ def create_pipeline(
             traversableGraphFlags=int(graph_flags),
             numPayloadValues=payload_words,
             numAttributeValues=attribute_words,
-            exceptionFlags=int((ExceptionFlags.USER if exception else ExceptionFlags.NONE)
-                               if exception_flags is None else exception_flags),
+            exceptionFlags=int(
+                (ExceptionFlags.USER if exception else ExceptionFlags.NONE)
+                if exception_flags is None
+                else exception_flags
+            ),
             pipelineLaunchParamsVariableName="params",
             usesPrimitiveTypeFlags=primitive_flags or int(native.PRIMITIVE_TYPE_FLAGS_TRIANGLE),
         )
@@ -221,7 +224,10 @@ def create_pipeline(
         # name without a module as "no program"; built-in intersections have a module only.
         def slot(prefix: str, suffix: str, kernel, module=optix_module) -> dict:
             if kernel is not None:
-                return {f"{prefix}Module{suffix}": module, f"{prefix}EntryFunctionName{suffix}": kernel.get_mangled_name()}
+                return {
+                    f"{prefix}Module{suffix}": module,
+                    f"{prefix}EntryFunctionName{suffix}": kernel.get_mangled_name(),
+                }
             if module is not optix_module:
                 return {f"{prefix}Module{suffix}": module}
             return {f"{prefix}EntryFunctionName{suffix}": ""}
@@ -242,7 +248,9 @@ def create_pipeline(
         ]
         callable_descs = [native.ProgramGroupDesc(**slot("callables", "DC", k)) for k in callable_programs]
         callable_descs += [native.ProgramGroupDesc(**slot("callables", "CC", k)) for k in continuation_programs]
-        exception_descs = [native.ProgramGroupDesc(**slot("exception", "", exception_program))] if exception_program else []
+        exception_descs = (
+            [native.ProgramGroupDesc(**slot("exception", "", exception_program))] if exception_program else []
+        )
         descs = [raygen_desc, *exception_descs, *miss_descs, *hit_descs, *callable_descs]
         groups, log = ctx.programGroupCreate(descs, native.ProgramGroupOptions())
         if log:
@@ -372,8 +380,14 @@ def write_launch_params(buffer: LaunchParamsBuffer, values, stream=None) -> None
         ctx._retain_launch(stream, [buffer.data, *buffer._inputs])
 
 
-def launch(pipeline: Pipeline, dim: Sequence[int], inputs: Sequence | None = None,
-           stream: wp.Stream | None = None, *, params_buffer: LaunchParamsBuffer | None = None) -> None:
+def launch(
+    pipeline: Pipeline,
+    dim: Sequence[int],
+    inputs: Sequence | None = None,
+    stream: wp.Stream | None = None,
+    *,
+    params_buffer: LaunchParamsBuffer | None = None,
+) -> None:
     """Launch with automatic inputs or an explicitly populated parameter buffer.
 
     An explicit schema takes inputs=[schema_instance]. Automatic storage is
@@ -399,7 +413,9 @@ def launch(pipeline: Pipeline, dim: Sequence[int], inputs: Sequence | None = Non
         inputs = tuple(inputs)
         key = stream.cuda_stream
         if key not in pipeline.buffers:
-            data = pipeline.params if not pipeline.buffers else wp.empty(1, dtype=pipeline.params_type, device=ctx.device)
+            data = (
+                pipeline.params if not pipeline.buffers else wp.empty(1, dtype=pipeline.params_type, device=ctx.device)
+            )
             pipeline.buffers[key] = LaunchParamsBuffer(pipeline, data)
         buffer = pipeline.buffers[key]
         if pipeline.explicit_params:
@@ -413,7 +429,15 @@ def launch(pipeline: Pipeline, dim: Sequence[int], inputs: Sequence | None = Non
         if buffer._event is not None:
             stream.wait_event(buffer._event)
         width, height, depth = [*reversed(dim), 1, 1][:3]
-        native.launch(pipeline.pipeline, stream.cuda_stream, buffer.data.ptr,
-                      pipeline.params_size, pipeline.sbt, width, height, depth)
+        native.launch(
+            pipeline.pipeline,
+            stream.cuda_stream,
+            buffer.data.ptr,
+            pipeline.params_size,
+            pipeline.sbt,
+            width,
+            height,
+            depth,
+        )
         buffer._event = stream.record_event()
         ctx._retain_launch(stream, [buffer.data, *buffer._inputs])

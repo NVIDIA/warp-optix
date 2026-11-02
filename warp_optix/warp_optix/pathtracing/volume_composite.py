@@ -59,10 +59,7 @@ def _volume_palette(params: VolumeParams, field: float, ramp: float):
         table_position = coordinate * float(params.transfer_count - wp.uint32(1))
         low = wp.min(wp.int32(table_position), wp.int32(params.transfer_count) - 2)
         blend = table_position - float(low)
-        return (
-            params.transfer_table[low] * (1.0 - blend)
-            + params.transfer_table[low + 1] * blend
-        )
+        return params.transfer_table[low] * (1.0 - blend) + params.transfer_table[low + 1] * blend
     dark = params.cool_dark
     mid = params.cool_mid
     light = params.cool_light
@@ -141,9 +138,7 @@ def _integrate_volume(
         edge_light = 0.45
         if wp.dot(gradient, gradient) > 1.0e-8:
             edge_light += 0.9 * wp.abs(wp.dot(wp.normalize(gradient), sun_direction))
-        lighting = (
-            ambient + sun_radiance * phase * wp.clamp(sample[2], 0.0, 1.0)
-        ) * edge_light
+        lighting = (ambient + sun_radiance * phase * wp.clamp(sample[2], 0.0, 1.0)) * edge_light
         source = wp.cw_mul(color, lighting) + color * volume_params.emission
         result.radiance += result.transmittance * alpha * source
         result.transmittance *= 1.0 - alpha
@@ -165,9 +160,7 @@ def composite_volume(params: PathtraceLaunchParams, volume_params: VolumeParams)
         view_direction = _mul_mat3x3_cm(params.view, direction)
         surface_t = depth / wp.max(-view_direction[2], 1.0e-5)
     rng = _xxhash32(wp.uint32(x), wp.uint32(y), params.frame_index)
-    volume = _integrate_volume(
-        params, volume_params, origin, direction, surface_t, _pcg_rand01(rng)
-    )
+    volume = _integrate_volume(params, volume_params, origin, direction, surface_t, _pcg_rand01(rng))
     color = params.color_output[y, x]
     rgb = volume.radiance + volume.transmittance * wp.vec3(color[0], color[1], color[2])
     params.color_output[y, x] = wp.vec4(rgb[0], rgb[1], rgb[2], color[3])
