@@ -206,16 +206,23 @@ def curves(
     width_keys = [widths] * len(vertex_keys) if isinstance(widths, wp.array) else list(widths)
     num_vertices = _vertex_count(vertex_keys)
     degree = 3
-    for name, value in (("ROUND_LINEAR", 1), ("ROUND_QUADRATIC_BSPLINE", 2),
-                        ("ROUND_QUADRATIC_BSPLINE_ROCAPS", 2), ("FLAT_QUADRATIC_BSPLINE", 2)):
+    for name, value in (
+        ("ROUND_LINEAR", 1),
+        ("ROUND_QUADRATIC_BSPLINE", 2),
+        ("ROUND_QUADRATIC_BSPLINE_ROCAPS", 2),
+        ("FLAT_QUADRATIC_BSPLINE", 2),
+    ):
         primitive = getattr(PrimitiveType, name, None)
         if primitive is not None and int(curve_type) == int(primitive):
             degree = value
             break
     _validate_indices(indices, num_vertices - degree, vertex_keys[0].device)
     if len(width_keys) != len(vertex_keys) or any(
-        key.dtype != wp.float32 or key.size != num_vertices or not key.is_contiguous
-        or key.device != vertex_keys[0].device for key in width_keys
+        key.dtype != wp.float32
+        or key.size != num_vertices
+        or not key.is_contiguous
+        or key.device != vertex_keys[0].device
+        for key in width_keys
     ):
         raise ValueError("widths must provide one float32 value per vertex on the vertex device")
     descriptor = native.BuildInputCurveArray(
@@ -238,8 +245,11 @@ def instances(records: wp.array):
     """Instance input retaining its records; child handles must stay unchanged on updates."""
     if records.dtype is not Instance or not records.device.is_cuda or not records.is_contiguous:
         raise ValueError("records must be a contiguous CUDA array of Instance")
-    return BuildInput(native.BuildInputInstanceArray(instances=records.ptr, numInstances=records.size),
-                      (records,), instance_records=records)
+    return BuildInput(
+        native.BuildInputInstanceArray(instances=records.ptr, numInstances=records.size),
+        (records,),
+        instance_records=records,
+    )
 
 
 # ---------------------------------------------------------------------------

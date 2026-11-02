@@ -90,7 +90,9 @@ def as_program(kernel: wp.Kernel, kind: ProgramKind, params, module: str) -> wp.
         if name not in fields:
             raise TypeError(f"{kind.name.lower()} kernel '{kernel.key}' argument '{name}' is not a launch parameter")
         if not wp.types.types_equal(fields[name].type, arg_type):
-            raise TypeError(f"{kind.name.lower()} kernel '{kernel.key}' argument '{name}' type differs from launch parameters")
+            raise TypeError(
+                f"{kind.name.lower()} kernel '{kernel.key}' argument '{name}' type differs from launch parameters"
+            )
 
     tree = ast.parse(kernel.adj.source)
     fn = tree.body[0]

@@ -125,7 +125,7 @@ def benchmark(args, context, asset, device):
 
         for random_access in (0, 1):
 
-            def launch(case):
+            def launch(case, output=output, random_access=random_access):
                 wo.launch(
                     case[2],
                     dim=(asset.height, asset.width),

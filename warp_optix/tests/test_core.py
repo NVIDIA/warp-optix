@@ -15,8 +15,9 @@ QUAD_VERTICES = np.array([[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0]], dtype
 QUAD_INDICES = np.array([0, 1, 2, 0, 2, 3], dtype=np.int32)
 
 
-@pytest.mark.parametrize("values,dtype", [([0, 1, 4], wp.int32), ([0, 1, -1], wp.int32),
-                                          ([0, 1, 2], wp.float32), ([0, 1], wp.int32)])
+@pytest.mark.parametrize(
+    "values,dtype", [([0, 1, 4], wp.int32), ([0, 1, -1], wp.int32), ([0, 1, 2], wp.float32), ([0, 1], wp.int32)]
+)
 def test_triangle_indices_are_validated(values, dtype):
     vertices = wp.array(QUAD_VERTICES, dtype=wp.vec3, device="cuda")
     indices = wp.array(values, dtype=dtype, device="cuda")
@@ -24,9 +25,14 @@ def test_triangle_indices_are_validated(values, dtype):
         wo.triangles(vertices, indices)
 
 
-@pytest.mark.parametrize("curve_type,start", [(wo.PrimitiveType.ROUND_LINEAR, 3),
-                                             (wo.PrimitiveType.ROUND_CUBIC_BSPLINE, 1),
-                                             (wo.PrimitiveType.ROUND_QUADRATIC_BSPLINE, -1)])
+@pytest.mark.parametrize(
+    "curve_type,start",
+    [
+        (wo.PrimitiveType.ROUND_LINEAR, 3),
+        (wo.PrimitiveType.ROUND_CUBIC_BSPLINE, 1),
+        (wo.PrimitiveType.ROUND_QUADRATIC_BSPLINE, -1),
+    ],
+)
 def test_curve_indices_are_validated(curve_type, start):
     vertices = wp.array(QUAD_VERTICES, dtype=wp.vec3, device="cuda")
     widths = wp.full(4, 0.1, dtype=wp.float32, device="cuda")

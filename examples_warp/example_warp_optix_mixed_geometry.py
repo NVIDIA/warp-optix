@@ -400,7 +400,9 @@ def main() -> None:
         translations = [(0.0, 0.0, 0.0)] + [(x, y, 0.0) for x, y in shape_positions] + [(0.0, 0.0, 0.0)]
         layout = pipeline.sbt_layout
         print(layout.describe())
-        sbt_offsets = [layout.get_sbt_offset(triangles)] + [layout.get_sbt_offset(shapes)] * 6 + [layout.get_sbt_offset(curves)]
+        sbt_offsets = (
+            [layout.get_sbt_offset(triangles)] + [layout.get_sbt_offset(shapes)] * 6 + [layout.get_sbt_offset(curves)]
+        )
         records = wp.empty(len(traversables), dtype=wo.Instance)
         wp.launch(
             write_instances,

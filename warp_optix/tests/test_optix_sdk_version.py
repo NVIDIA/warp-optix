@@ -3,9 +3,9 @@
 
 """Build-time SDK checks also apply to user-supplied OptiX headers."""
 
-from pathlib import Path
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -31,8 +31,7 @@ def test_build_rejects_incompatible_sdk_headers(header_text, expected_error, tmp
         header.write_text(header_text)
     script = tmp_path / "check.cmake"
     script.write_text(
-        f'include("{checker.as_posix()}")\n'
-        f'warp_optix_check_optix_version("{header.as_posix()}" "9.1.0")\n'
+        f'include("{checker.as_posix()}")\nwarp_optix_check_optix_version("{header.as_posix()}" "9.1.0")\n'
     )
     result = subprocess.run([cmake, "-P", str(script)], capture_output=True, text=True)
     if expected_error is None:

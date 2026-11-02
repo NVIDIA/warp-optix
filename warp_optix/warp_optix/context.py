@@ -3,9 +3,9 @@
 
 """Lifetime and device checks shared by the functional OptiX API."""
 
-from contextlib import contextmanager
 import logging
 import weakref
+from contextlib import contextmanager
 
 import warp as wp
 
@@ -37,12 +37,17 @@ class Context:
                 context.log_message_count += 1
             logging.getLogger("warp_optix").log(
                 {1: logging.CRITICAL, 2: logging.ERROR, 3: logging.WARNING, 4: logging.INFO}.get(level, logging.DEBUG),
-                "[%s] %s", tag, message,
+                "[%s] %s",
+                tag,
+                message,
             )
 
         options = native.DeviceContextOptions(
-            logCallbackFunction=log, logCallbackLevel=log_level,
-            validationMode=native.DEVICE_CONTEXT_VALIDATION_MODE_ALL if validation else native.DEVICE_CONTEXT_VALIDATION_MODE_OFF,
+            logCallbackFunction=log,
+            logCallbackLevel=log_level,
+            validationMode=native.DEVICE_CONTEXT_VALIDATION_MODE_ALL
+            if validation
+            else native.DEVICE_CONTEXT_VALIDATION_MODE_OFF,
         )
         with wp.ScopedDevice(self.device):
             self._native = native.deviceContextCreate(self.device.context, options)
@@ -102,14 +107,23 @@ class Context:
             self._check_open()
             with wp.ScopedDevice(self.device):
                 result = member(*args, **kwargs)
-            if name in ("moduleCreate", "moduleCreateFromPTX", "builtinISModuleGet", "programGroupCreate", "pipelineCreate"):
-                objects = result[0] if name == "programGroupCreate" else [
-                    result[0] if name in ("moduleCreate", "moduleCreateFromPTX") else result
-                ]
+            if name in (
+                "moduleCreate",
+                "moduleCreateFromPTX",
+                "builtinISModuleGet",
+                "programGroupCreate",
+                "pipelineCreate",
+            ):
+                objects = (
+                    result[0]
+                    if name == "programGroupCreate"
+                    else [result[0] if name in ("moduleCreate", "moduleCreateFromPTX") else result]
+                )
                 for obj in objects:
                     if not any(type(obj) is type(old) and obj == old for old in self._objects):
                         self._objects.append(obj)
             return result
+
         return call
 
     @contextmanager

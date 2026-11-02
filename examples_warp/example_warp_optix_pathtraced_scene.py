@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import numpy as np
 
-
 RAINBOW_SRGB = np.array(
     [
         (0.86, 0.06, 0.02),

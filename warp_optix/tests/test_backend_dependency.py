@@ -11,6 +11,7 @@ from types import ModuleType
 
 import optix
 import pytest
+
 from warp_optix import _ext, native
 
 
@@ -22,6 +23,7 @@ def test_optix_headers_are_available_without_separate_sdk(monkeypatch):
     assert (include / "optix_device.h").is_file()
     assert (include / "OptiX_LICENSE.txt").is_file()
     from warp_optix.addon import build_options
+
     assert str(include) in build_options().extra_cuda_include_dirs
 
 
@@ -51,7 +53,10 @@ def test_optix_headers_incomplete_package(monkeypatch, tmp_path):
 def test_dependency_and_supplement_import_in_either_order(first, tmp_path):
     second = "warp_optix" if first == "optix" else "optix"
     subprocess.run(
-        [sys.executable, "-c", f"""
+        [
+            sys.executable,
+            "-c",
+            f"""
 import {first}
 import {second}
 import sys
@@ -66,7 +71,8 @@ assert native.version() == (9, 1, 0)
 assert warp_optix._ext.optix_version() == optix.version()
 assert hasattr(native.DenoiserParams(), 'temporalModeUsePreviousLayers')
 assert hasattr(optix.DeviceContext, 'coopVecMatrixConvert')
-"""],
+""",
+        ],
         cwd=tmp_path,
         check=True,
     )
@@ -84,7 +90,10 @@ def test_unsupported_wrapper_abi_rejected_before_installing_methods():
 
 def test_unsupported_dependency_version_rejected(tmp_path):
     subprocess.run(
-        [sys.executable, "-c", """
+        [
+            sys.executable,
+            "-c",
+            """
 import importlib.metadata
 original = importlib.metadata.version
 importlib.metadata.version = lambda name: '9.2.0' if name == 'pyoptix' else original(name)
@@ -94,7 +103,8 @@ except ImportError as error:
     assert 'requires pyoptix==9.1.0' in str(error), error
 else:
     raise AssertionError('Unsupported dependency was accepted')
-"""],
+""",
+        ],
         cwd=tmp_path,
         check=True,
     )
@@ -104,11 +114,12 @@ else:
     "upstream_sdk, extension_sdk",
     [((9, 0, 0), (9, 1, 0)), ((9, 1, 0), (9, 0, 0)), ((9, 0, 0), (9, 0, 0))],
 )
-def test_compiled_sdk_mismatch_rejected_before_installing_methods(
-    upstream_sdk, extension_sdk, tmp_path
-):
+def test_compiled_sdk_mismatch_rejected_before_installing_methods(upstream_sdk, extension_sdk, tmp_path):
     subprocess.run(
-        [sys.executable, "-c", f"""
+        [
+            sys.executable,
+            "-c",
+            f"""
 import sys
 from types import ModuleType
 import optix
@@ -125,12 +136,13 @@ try:
 except ImportError as error:
     message = str(error)
     assert 'OptiX SDK version mismatch' in message, message
-    assert 'pyoptix was compiled with {'.'.join(map(str, upstream_sdk))}' in message, message
-    assert 'warp-optix was compiled with {'.'.join(map(str, extension_sdk))}' in message, message
+    assert 'pyoptix was compiled with {".".join(map(str, upstream_sdk))}' in message, message
+    assert 'warp-optix was compiled with {".".join(map(str, extension_sdk))}' in message, message
 else:
     raise AssertionError('Unsupported SDK was accepted')
 assert not hasattr(optix.DeviceContext, 'coopVecMatrixConvert')
-"""],
+""",
+        ],
         cwd=tmp_path,
         check=True,
     )
@@ -147,9 +159,7 @@ def test_native_installer_rejects_compiled_sdk_mismatch():
 
 
 def test_supplemental_enums_work_with_dependency_structs():
-    curves = native.BuiltinISOptions(
-        builtinISModuleType=native.PRIMITIVE_TYPE_ROUND_CUBIC_BEZIER
-    )
+    curves = native.BuiltinISOptions(builtinISModuleType=native.PRIMITIVE_TYPE_ROUND_CUBIC_BEZIER)
     assert int(curves.builtinISModuleType) == int(native.PRIMITIVE_TYPE_ROUND_CUBIC_BEZIER)
     image = optix.Image2D()
     image.format = native.PIXEL_FORMAT_FLOAT2

@@ -25,11 +25,7 @@ import numpy as np
 
 
 def _load_helper():
-    path = (
-        Path(__file__).resolve().parents[2]
-        / "examples_warp"
-        / "example_warp_optix_chess_scene.py"
-    )
+    path = Path(__file__).resolve().parents[2] / "examples_warp" / "example_warp_optix_chess_scene.py"
     spec = importlib.util.spec_from_file_location("procedural_chess", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -68,9 +64,7 @@ def test_all_chess_components_are_closed_and_outward_facing():
         create_pbr_material=lambda **kwargs: next(materials),
         create_mesh=create_mesh,
         create_instance_with_transform=create_instance,
-        set_instance_material=lambda instance, material: overrides.__setitem__(
-            instance, material
-        ),
+        set_instance_material=lambda instance, material: overrides.__setitem__(instance, material),
         set_use_procedural_sky=lambda *args: None,
         set_sky_parameters=lambda *args, **kwargs: None,
     )
@@ -109,12 +103,8 @@ def test_all_chess_components_are_closed_and_outward_facing():
         # Weld only for topology checks: UV seams and sharp edges need duplicates.
         _, welded = np.unique(np.round(p, 6), axis=0, return_inverse=True)
         tri = welded[t]
-        directed = Counter(
-            (int(a), int(b)) for face in tri for a, b in zip(face, np.roll(face, -1))
-        )
-        assert all(
-            count == 1 and directed[(b, a)] == 1 for (a, b), count in directed.items()
-        )
+        directed = Counter((int(a), int(b)) for face in tri for a, b in zip(face, np.roll(face, -1)))
+        assert all(count == 1 and directed[(b, a)] == 1 for (a, b), count in directed.items())
 
 
 def test_procedural_textures_are_repeatable_rgba():
@@ -153,9 +143,7 @@ def test_lathe_normals_are_continuous_across_seams_and_poles():
 
 def test_wood_mapping_uses_scene_units_for_board_and_pieces():
     helper = _load_helper()
-    points = np.array(
-        [[-0.3, 0, -0.2], [0.3, 0.5, 0.2], [0.1, 1.4, 0.05]], dtype=np.float32
-    )
+    points = np.array([[-0.3, 0, -0.2], [0.3, 0.5, 0.2], [0.1, 1.4, 0.05]], dtype=np.float32)
     piece_uv = helper.wood_uvs(points, grain_axis=1)
     # A board blank with fibers along Z has exactly the same grain scale
     # as an upright piece cut from the corresponding timber coordinates.
@@ -174,9 +162,7 @@ def test_wood_mapping_uses_scene_units_for_board_and_pieces():
 def test_wood_growth_rings_follow_round_trunk_cross_sections():
     helper = _load_helper()
     angles = np.linspace(0, 2 * np.pi, 25)
-    points = np.column_stack(
-        (0.4 * np.cos(angles) - 1.7, np.zeros_like(angles), 0.4 * np.sin(angles) - 0.8)
-    )
+    points = np.column_stack((0.4 * np.cos(angles) - 1.7, np.zeros_like(angles), 0.4 * np.sin(angles) - 0.8))
     uv = helper.wood_uvs(points)
     np.testing.assert_allclose(uv[:, 0], 0.2, atol=1e-7)
     np.testing.assert_allclose(uv[:, 1], 0, atol=1e-7)

@@ -7,9 +7,7 @@ from .pathtracing_warp_kernels import PhysicalSkyParams, _eval_physical_sky
 
 
 @wp.kernel
-def generate_physical_sky_lut(
-    sky: PhysicalSkyParams, output: wp.array2d(dtype=wp.vec4)
-):
+def generate_physical_sky_lut(sky: PhysicalSkyParams, output: wp.array2d(dtype=wp.vec4)):
     """Evaluate the procedural sky into an equirectangular lookup table."""
     x, y = wp.tid()
     width = output.shape[1]

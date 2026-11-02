@@ -71,8 +71,18 @@ def raygen(scene: wp.uint64, tint: wp.vec3, image: wp.array2d[wp.vec3]):
     y, x = wp.tid()
     payload = Payload()
     wp.optix_trace(
-        scene, wp.vec3(float(x), float(y), 5.0), wp.vec3(0.0, 0.0, -1.0), 0.0, 100.0, 0.0,
-        wp.uint32(0xFF), wp.uint32(0), wp.uint32(0), wp.uint32(1), wp.uint32(0), payload,
+        scene,
+        wp.vec3(float(x), float(y), 5.0),
+        wp.vec3(0.0, 0.0, -1.0),
+        0.0,
+        100.0,
+        0.0,
+        wp.uint32(0xFF),
+        wp.uint32(0),
+        wp.uint32(0),
+        wp.uint32(1),
+        wp.uint32(0),
+        payload,
     )
     image[y, x] = payload.color
 
@@ -272,8 +282,13 @@ def write_instances(gas: wp.uint64, poses: wp.array[wp.transform], records: wp.a
     i = wp.tid()
     pose = poses[i]
     records[i] = wo.make_instance(
-        wp.quat_to_matrix(wp.transform_get_rotation(pose)), wp.transform_get_translation(pose),
-        gas, wp.uint32(i), wp.uint32(0), wp.uint32(0xFF), wp.uint32(0),
+        wp.quat_to_matrix(wp.transform_get_rotation(pose)),
+        wp.transform_get_translation(pose),
+        gas,
+        wp.uint32(i),
+        wp.uint32(0),
+        wp.uint32(0xFF),
+        wp.uint32(0),
     )
 
 
@@ -366,9 +381,7 @@ Vec16h = wp.types.vector(length=16, dtype=wp.float16)
 def closest_hit(matrices: wp.uint64, weight_offset: wp.uint32, biases: wp.uint64, bias_offset: wp.uint32):
     inputs = Vec32h(wp.float16(0.0))
     outputs = Vec16h()
-    wp.optix_coop_vec_matmul_bias_fp8_e4m3(
-        inputs, matrices, weight_offset, biases, bias_offset, wp.uint32(0), outputs
-    )
+    wp.optix_coop_vec_matmul_bias_fp8_e4m3(inputs, matrices, weight_offset, biases, bias_offset, wp.uint32(0), outputs)
 ```
 
 The registered family includes load, conversion, elementwise arithmetic, `exp2`, `log2`, `tanh`,
@@ -552,6 +565,7 @@ overlay = GLLineOverlay(
 )
 overlay.update_device(contact_starts_cuda, contact_ends_cuda, contact_colors_cuda)
 
+
 def draw_contacts():
     camera = api.viewer.camera
     overlay.draw(
@@ -561,6 +575,7 @@ def draw_contacts():
         camera_near=camera.near,
         camera_far=camera.far,
     )
+
 
 gl_viewer.set_draw_overlay(draw_contacts)
 ```
@@ -595,9 +610,7 @@ usd.update_local_transforms([body], matrices)
 
 # Zero-staging CUDA batch on a caller-owned Warp stream.
 transform_count_cuda = wp.array([capacity], dtype=wp.int32, device="cuda")
-usd.update_local_transforms_device(
-    transform_count_cuda, body_ids_cuda, local_mat44_cuda, stream=simulation_stream
-)
+usd.update_local_transforms_device(transform_count_cuda, body_ids_cuda, local_mat44_cuda, stream=simulation_stream)
 # Newton-style wp.transform + wp.vec3 scale arrays are accepted directly too.
 usd.update_local_transform_trs_device(
     transform_count_cuda,

@@ -29,7 +29,6 @@ import logging
 from pathlib import Path
 
 import numpy as np
-
 import warp as wp
 
 logger = logging.getLogger(__name__)

@@ -57,9 +57,7 @@ def test_hair_ball_geometry_is_disjoint_tapered_and_deterministic():
 def test_rainbow_materials_are_uniform_per_strand_and_flow_bottom_to_top():
     hair_count = 2000
     segments = 5
-    points, _radii, _starts = generate_hair_ball(
-        hair_count, segments, 0.8, 0.45, 0.06, 1.5, 0.012, 123
-    )
+    points, _radii, _starts = generate_hair_ball(hair_count, segments, 0.8, 0.45, 0.06, 1.5, 0.012, 123)
     slots = rainbow_segment_slots(points, segments)
     strand_slots = slots.reshape(hair_count, segments)
     root_heights = points[:: 3 * segments + 1, 1]

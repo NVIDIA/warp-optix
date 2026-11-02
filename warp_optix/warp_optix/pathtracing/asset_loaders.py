@@ -66,9 +66,7 @@ def _read_external_uri(path: Path, uri: str) -> bytes:
     base = path.parent.resolve()
     target = (base / uri).resolve()
     if not target.is_relative_to(base):
-        raise ValueError(
-            f"glTF resource {uri!r} resolves outside the asset directory {base}"
-        )
+        raise ValueError(f"glTF resource {uri!r} resolves outside the asset directory {base}")
     return target.read_bytes()
 
 
@@ -167,9 +165,7 @@ def _read_accessor(root: dict, buffers: list[bytes], accessor_index: int) -> np.
     return arr.reshape(count, num_components)
 
 
-def _load_gltf_images(
-    path: Path, root: dict, buffers: list[bytes]
-) -> list[np.ndarray | None]:
+def _load_gltf_images(path: Path, root: dict, buffers: list[bytes]) -> list[np.ndarray | None]:
     import imageio.v3 as iio  # noqa: PLC0415
 
     images = root.get("images", [])
@@ -192,11 +188,7 @@ def _load_gltf_images(
 
         arr = iio.imread(io.BytesIO(raw))
         arr = np.asarray(arr)
-        opaque = (
-            np.iinfo(arr.dtype).max
-            if np.issubdtype(arr.dtype, np.integer)
-            else 1.0
-        )
+        opaque = np.iinfo(arr.dtype).max if np.issubdtype(arr.dtype, np.integer) else 1.0
         if arr.ndim == 2:
             arr = np.stack([arr, arr, arr, np.full_like(arr, opaque)], axis=-1)
         elif arr.shape[-1] == 3:

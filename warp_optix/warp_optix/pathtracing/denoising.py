@@ -78,35 +78,21 @@ class OptixDenoiser:
             self.output_width - scale < target_width <= self.output_width
             and self.output_height - scale < target_height <= self.output_height
         ):
-            raise ValueError(
-                "output_size must match the denoised size, allowing one cropped pixel for 2x upscaling"
-            )
+            raise ValueError("output_size must match the denoised size, allowing one cropped pixel for 2x upscaling")
         self._denoiser = None
         self._history_valid = False
-        model_name = (
-            "DENOISER_MODEL_KIND_TEMPORAL_UPSCALE2X"
-            if upscale
-            else "DENOISER_MODEL_KIND_TEMPORAL_AOV"
-        )
-        if not hasattr(native, model_name) or not hasattr(
-            native.DenoiserParams(), "temporalModeUsePreviousLayers"
-        ):
-            raise RuntimeError(
-                "OptiX temporal denoising requires updated PyOptiX denoiser bindings"
-            )
+        model_name = "DENOISER_MODEL_KIND_TEMPORAL_UPSCALE2X" if upscale else "DENOISER_MODEL_KIND_TEMPORAL_AOV"
+        if not hasattr(native, model_name) or not hasattr(native.DenoiserParams(), "temporalModeUsePreviousLayers"):
+            raise RuntimeError("OptiX temporal denoising requires updated PyOptiX denoiser bindings")
         options = native.DenoiserOptions()
         options.guideAlbedo = 1
         options.guideNormal = 1
         device = self.stream.device
         with wp.ScopedStream(self.stream):
             try:
-                self._denoiser = context.denoiserCreate(
-                    getattr(native, model_name), options
-                )
+                self._denoiser = context.denoiserCreate(getattr(native, model_name), options)
                 sizes = self._denoiser.computeMemoryResources(self.width, self.height)
-                self._state = wp.empty(
-                    sizes.stateSizeInBytes, dtype=wp.uint8, device=device
-                )
+                self._state = wp.empty(sizes.stateSizeInBytes, dtype=wp.uint8, device=device)
                 self._scratch = wp.empty(
                     max(
                         sizes.withoutOverlapScratchSizeInBytes,
@@ -116,26 +102,18 @@ class OptixDenoiser:
                     device=device,
                 )
                 self._average_color = wp.empty(3, dtype=wp.float32, device=device)
-                self._flow = wp.empty(
-                    (self.height, self.width), dtype=wp.vec2, device=device
-                )
+                self._flow = wp.empty((self.height, self.width), dtype=wp.vec2, device=device)
                 shape = (self.output_height, self.output_width)
                 self._output = wp.zeros(shape, dtype=wp.vec4, device=device)
                 self._previous_output = wp.zeros(shape, dtype=wp.vec4, device=device)
                 self._cropped_output = (
-                    wp.empty(
-                        (target_height, target_width), dtype=wp.vec4, device=device
-                    )
+                    wp.empty((target_height, target_width), dtype=wp.vec4, device=device)
                     if (target_height, target_width) != shape
                     else None
                 )
                 self._guide_pixel_size = int(sizes.internalGuideLayerPixelSizeInBytes)
-                guide_size = (
-                    self.output_width * self.output_height * self._guide_pixel_size
-                )
-                self._previous_guide = wp.zeros(
-                    guide_size, dtype=wp.uint8, device=device
-                )
+                guide_size = self.output_width * self.output_height * self._guide_pixel_size
+                self._previous_guide = wp.zeros(guide_size, dtype=wp.uint8, device=device)
                 self._output_guide = wp.zeros(guide_size, dtype=wp.uint8, device=device)
                 self._denoiser.setup(
                     int(self.stream.cuda_stream),
@@ -150,19 +128,13 @@ class OptixDenoiser:
                 self.close()
                 raise
 
-    def _image(
-        self, array, pixel_format, *, pixel_stride=None, width=None, height=None
-    ):
+    def _image(self, array, pixel_format, *, pixel_stride=None, width=None, height=None):
         image = self._optix.Image2D()
         image.data = array.ptr
         image.width = self.width if width is None else width
         image.height = self.height if height is None else height
-        image.pixelStrideInBytes = (
-            array.strides[1] if pixel_stride is None else pixel_stride
-        )
-        image.rowStrideInBytes = (
-            array.strides[0] if pixel_stride is None else image.width * pixel_stride
-        )
+        image.pixelStrideInBytes = array.strides[1] if pixel_stride is None else pixel_stride
+        image.rowStrideInBytes = array.strides[0] if pixel_stride is None else image.width * pixel_stride
         image.format = pixel_format
         return image
 
@@ -178,9 +150,7 @@ class OptixDenoiser:
         ):
             array = getattr(inputs, name)
             if array.shape != (self.height, self.width) or array.dtype != dtype:
-                raise ValueError(
-                    f"{name} must be a {dtype.__name__} array of shape {(self.height, self.width)}"
-                )
+                raise ValueError(f"{name} must be a {dtype.__name__} array of shape {(self.height, self.width)}")
             if array.device != self.stream.device or not array.is_contiguous:
                 raise ValueError(f"{name} must be contiguous on {self.stream.device}")
         optix = self._optix
