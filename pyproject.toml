@@ -9,12 +9,12 @@ build-backend = "scikit_build_core.build"
 name = "warp-optix"
 version = "0.2.0"
 description = "Warp ray tracing with PyOptiX"
-readme = "README.md"
+readme = "docs/pypi.md"
 requires-python = ">=3.10"
 license = "Apache-2.0 AND BSD-3-Clause AND LicenseRef-NVIDIA-OptiX"
 license-files = ["LICENSE.md", "LICENSE.txt", "OptiX_LICENSE.txt", "THIRD_PARTY_NOTICES.txt", "licenses/*.txt"]
 authors = [
-    {name = "R. Keith Morley", email = "kmorley@nvidia.com"},
+    {name = "NVIDIA Corporation"},
 ]
 keywords = ["optix", "ray-tracing", "nvidia", "cuda", "gpu", "rendering"]
 classifiers = [
@@ -45,7 +45,7 @@ ui = ["imgui-bundle>=1.92", "PyOpenGL>=3.1"]
 
 [project.urls]
 Homepage = "https://github.com/NVIDIA/warp-optix"
-Documentation = "https://github.com/NVIDIA/warp-optix/blob/develop/README.md"
+Documentation = "https://github.com/NVIDIA/warp-optix/blob/main/warp_optix/README.md"
 Repository = "https://github.com/NVIDIA/warp-optix"
 Issues = "https://github.com/NVIDIA/warp-optix/issues"
 
