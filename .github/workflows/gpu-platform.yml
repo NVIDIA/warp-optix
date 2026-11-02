@@ -44,6 +44,18 @@ jobs:
       - name: Install CUDA Toolkit components
         shell: bash
         run: uv run --no-project python .github/scripts/install_cuda.py --platform ${{ inputs.platform }} --prefix "$RUNNER_TEMP/cuda"
+      - name: Resolve locked PyOptiX source
+        id: pyoptix
+        shell: bash
+        run: echo "hash=$(uv run --no-project python .github/scripts/fetch_locked_sdist.py pyoptix --print-hash)" >> "$GITHUB_OUTPUT"
+      # PyOptiX only changes with its locked source, the CUDA version, or the
+      # build settings in this workflow, so reuse its wheel across runs.
+      - name: Restore PyOptiX wheel
+        id: pyoptix-cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: pyoptix-wheel
+          key: pyoptix-wheel-v1-${{ inputs.platform }}-${{ steps.pyoptix.outputs.hash }}-${{ hashFiles('.github/scripts/install_cuda.py', '.github/workflows/gpu-platform.yml') }}
       - name: Build wheels
         shell: bash
         env:
@@ -53,11 +65,21 @@ jobs:
           # exceeds the default COFF section limit without /bigobj. Use the dash
           # form: Git Bash rewrites "/bigobj" into a Windows path.
           CL: ${{ startsWith(inputs.platform, 'windows') && '-bigobj' || '' }}
+          PYOPTIX_CACHED: ${{ steps.pyoptix-cache.outputs.cache-hit }}
         run: |
           uv build --wheel --out-dir dist
           # PyPI publishes PyOptiX only as an sdist; build the locked one here.
-          sdist=$(uv run --no-project python .github/scripts/fetch_locked_sdist.py pyoptix --out-dir "$RUNNER_TEMP/sdist")
-          uv build --wheel --out-dir dist "$sdist"
+          if [ "$PYOPTIX_CACHED" != true ]; then
+            sdist=$(uv run --no-project python .github/scripts/fetch_locked_sdist.py pyoptix --out-dir "$RUNNER_TEMP/sdist")
+            uv build --wheel --out-dir pyoptix-wheel "$sdist"
+          fi
+          cp pyoptix-wheel/*.whl dist/
+      - name: Save PyOptiX wheel
+        if: steps.pyoptix-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: pyoptix-wheel
+          key: ${{ steps.pyoptix-cache.outputs.cache-primary-key }}
       - name: Upload wheels
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:

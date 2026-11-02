@@ -18,12 +18,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("package")
     parser.add_argument("--lock", type=Path, default=Path("uv.lock"))
-    parser.add_argument("--out-dir", type=Path, required=True)
+    output = parser.add_mutually_exclusive_group(required=True)
+    output.add_argument("--out-dir", type=Path, help="download the sdist here and print its path")
+    output.add_argument("--print-hash", action="store_true", help="print the locked hash, e.g. for a cache key")
     args = parser.parse_args()
 
     with args.lock.open("rb") as file:
         packages = tomllib.load(file)["package"]
     (sdist,) = [package["sdist"] for package in packages if package["name"] == args.package]
+    if args.print_hash:
+        print(sdist["hash"])
+        return
     algorithm, expected = sdist["hash"].split(":", 1)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
