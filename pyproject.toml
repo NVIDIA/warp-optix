@@ -121,7 +121,7 @@ docstring-code-format = true
 
 [tool.pyright]
 include = ["warp_optix/warp_optix"]
-pythonVersion = "3.10"
+pythonVersion = "3.12"
 # CI runs pyright without installing warp, pyoptix or the optional extras.
 reportMissingImports = false
 reportMissingModuleSource = false
