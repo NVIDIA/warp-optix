@@ -250,8 +250,18 @@ void install_pyoptix_extensions(py::module_ upstream) {
 
 } // namespace
 
+#ifdef WARP_OPTIX_ENABLE_DLSS
+void register_dlss_bindings(py::module_& m); // src/dlss.cpp
+#endif
+
 PYBIND11_MODULE(_ext, m) {
     m.doc() = "Additional OptiX bindings for the pyoptix dependency";
+#ifdef WARP_OPTIX_ENABLE_DLSS
+    m.attr("DLSS_ENABLED") = true;
+    register_dlss_bindings(m);
+#else
+    m.attr("DLSS_ENABLED") = false;
+#endif
     m.def("optix_version", &optix_version, "OptiX SDK version used to compile this supplemental extension.");
     m.def("install_pyoptix_extensions", &install_pyoptix_extensions);
     m.def("sync_module_options", &sync_module_options);

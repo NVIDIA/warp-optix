@@ -52,7 +52,7 @@ def _parse_args():
     parser.add_argument("--exposure", type=float, default=0.32)
     parser.add_argument("--contrast", type=float, default=1.08)
     parser.add_argument("--saturation", type=float, default=1.1)
-    parser.add_argument("--denoiser", choices=("auto", "optix", "none"), default="auto")
+    parser.add_argument("--denoiser", choices=("auto", "dlss", "optix", "none"), default="auto")
     parser.add_argument("--no-cuda-graphs", action="store_true")
     parser.add_argument("--no-set", action="store_true")
     return parser.parse_args()

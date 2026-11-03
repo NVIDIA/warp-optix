@@ -35,7 +35,7 @@ from .defaults import (
     DEFAULT_VIEWER_SIZE,
     DEFAULT_VIEWER_WIDTH,
 )
-from .denoising import DenoiserInputs, OptixDenoiser
+from .denoising import DenoiserInputs, DlssDenoiser, OptixDenoiser, dlss_rr_available, dlss_rr_requirements
 from .materials import MaterialManager
 from .pathtracer_api import PathTracerAPI
 from .pathtracing_viewer import PathTracingViewer as PathTracingRenderer
@@ -52,6 +52,7 @@ __all__ = [
     "Camera",
     "Curve",
     "DenoiserInputs",
+    "DlssDenoiser",
     "MaterialManager",
     "Mesh",
     "OptixDenoiser",
@@ -63,4 +64,6 @@ __all__ = [
     "Tonemapper",
     "USDScene",
     "USDTransformHandle",
+    "dlss_rr_available",
+    "dlss_rr_requirements",
 ]

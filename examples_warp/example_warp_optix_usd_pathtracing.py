@@ -99,7 +99,7 @@ def _parse_args():
     parser.add_argument("--exposure", type=float, default=0.68, help="Linear display exposure multiplier.")
     parser.add_argument("--contrast", type=float, default=1.08, help="Display contrast multiplier.")
     parser.add_argument("--saturation", type=float, default=1.1, help="Display saturation multiplier.")
-    parser.add_argument("--denoiser", choices=("auto", "optix", "none"), default="auto")
+    parser.add_argument("--denoiser", choices=("auto", "dlss", "optix", "none"), default="auto")
     parser.add_argument("--no-cuda-graphs", action="store_true", help="Disable OptiX CUDA graph replay.")
     parser.add_argument("--no-set", action="store_true", help="Disable Shader Execution Reordering.")
     parser.add_argument(

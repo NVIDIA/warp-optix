@@ -422,10 +422,11 @@ api.set_denoiser("none")  # Raw rendering.
 api.set_denoiser("optix", optix_upscale=False)  # Native-resolution denoising.
 ```
 
-The default `denoiser="auto"` selects OptiX, with raw rendering as a fallback.
-Explicit `"optix"` selection requires successful initialization; `"none"`
-disables denoising. Inspect `active_denoiser` and `denoiser_error` for the active
-backend and fallback diagnostics.
+The default `denoiser="auto"` selects DLSS Ray Reconstruction when it is
+available (see below), then OptiX, with raw rendering as the last fallback.
+Explicit `"dlss"` or `"optix"` selection requires successful initialization;
+`"none"` disables denoising. Inspect `active_denoiser` and `denoiser_error` for
+the active backend and fallback diagnostics.
 
 OptiX uses temporal denoising at native resolution by default;
 `optix_upscale=True` selects its temporal 2x upscaling model. Odd output sizes
@@ -452,6 +453,61 @@ denoiser.close()
 
 The supplemental extension adds the temporal models and guide-layer fields
 to the PyOptiX dependency's denoiser bindings. `context` is the context from `wo.create_context()`.
+
+### DLSS Ray Reconstruction
+
+DLSS Ray Reconstruction (RR) denoises and, in its upscaling quality modes,
+reconstructs a lower-resolution render at the output resolution. warp-optix uses
+the RR runtime that ships with the NVIDIA driver since R620
+(`ngx-builtins/nvngx_dlssd`), the same way Blender Cycles does: it compiles the
+NGX SDK in header-only mode (`NVSDK_NGX_HEADER_ONLY`), links no NVIDIA library,
+and distributes no DLSS binary.
+
+DLSS support is **off by default** because header-only mode still compiles
+NVIDIA's proprietary NGX loader (`nvsdk_ngx_loader.h`) into the extension. Build
+it in explicitly; the SDK headers (7 files, pinned commit, SHA-256 verified) are
+fetched at build time into the git-ignored `third_party/` and never committed:
+
+```bash
+WARP_OPTIX_ENABLE_DLSS=ON pip install .
+# or: pip install . -C cmake.define.WARP_OPTIX_ENABLE_DLSS=ON
+# DLSS_ROOT=/path/to/DLSS-SDK uses a local SDK instead of downloading headers.
+```
+
+```python
+from warp_optix.pathtracing import PathTracerAPI, dlss_rr_requirements
+
+print(dlss_rr_requirements())  # {'supported': True, ...} or a 'reason' (e.g. driver older than R620)
+api = PathTracerAPI(denoiser="dlss", dlss_quality="balanced")
+```
+
+`dlss_quality` is `"dlaa"` (denoise at full resolution, the default),
+`"max_quality"`, `"balanced"`, `"max_perf"`, or `"ultra_performance"`; the
+upscaling modes render at the size NGX recommends for the output and
+reconstruct to full resolution. The model preset defaults to `F` (the DLSS 4.5
+transformer model). Without a DLSS build or on older drivers, `"auto"` falls
+back to OptiX and `dlss_rr_requirements()` reports why.
+
+Custom renderers use `DlssDenoiser` directly. It needs every guide of
+`DenoiserInputs`, including linear `depth` and `specular_albedo`, plus the
+camera's world-to-view and view-to-clip matrices and the frame's jitter:
+
+```python
+from warp_optix.pathtracing import DenoiserInputs, DlssDenoiser
+
+render_size = DlssDenoiser.optimal_render_size((1920, 1080), "balanced")
+denoiser = DlssDenoiser(*render_size, output_size=(1920, 1080), quality="balanced", stream=stream)
+output = denoiser.apply(inputs, view_matrix=view, projection_matrix=proj, jitter=(jx, jy), reset=False)
+denoiser.close()
+```
+
+RR is a large transformer model, and its cost depends strongly on the GPU
+generation. Measured for the reconstruction step alone at 1920x1080 output on an
+RTX 3080 Laptop GPU (Ampere): about 60 ms per frame in DLAA mode and 24 ms in
+balanced mode. Newer GPUs run the model much faster.
+
+warp-optix identifies itself to NGX with a project ID rather than an
+NVIDIA-issued application ID.
 
 ### Interactive viewer features
 

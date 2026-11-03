@@ -72,6 +72,7 @@ class PathTracerAPI:
         backface_culling: bool = True,
         denoiser: str | None = None,
         optix_upscale: bool = False,
+        dlss_quality: str = "dlaa",
     ):
         self.width = int(width)
         self.height = int(height)
@@ -90,6 +91,7 @@ class PathTracerAPI:
             backface_culling=backface_culling,
             denoiser=denoiser,
             optix_upscale=optix_upscale,
+            dlss_quality=dlss_quality,
         )
         self._built = False
         self._running = True
@@ -143,9 +145,14 @@ class PathTracerAPI:
         """Whether OptiX should denoise and upscale by 2x."""
         return self._viewer.optix_upscale
 
-    def set_denoiser(self, denoiser: str, *, optix_upscale: bool | None = None):
+    @property
+    def dlss_quality(self) -> str:
+        """DLSS Ray Reconstruction quality mode ('dlaa' denoises at full resolution)."""
+        return self._viewer.dlss_quality
+
+    def set_denoiser(self, denoiser: str, *, optix_upscale: bool | None = None, dlss_quality: str | None = None):
         """Switch backend while retaining each backend's quality settings."""
-        self._viewer.set_denoiser(denoiser, optix_upscale=optix_upscale)
+        self._viewer.set_denoiser(denoiser, optix_upscale=optix_upscale, dlss_quality=dlss_quality)
 
     @property
     def texture_mipmaps_enabled(self) -> bool:

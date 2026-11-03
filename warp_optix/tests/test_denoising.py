@@ -23,17 +23,23 @@ def _renderer(monkeypatch, mode):
     renderer._render_width, renderer._render_height = 64, 48
     renderer.denoiser = mode
     renderer.optix_upscale = False
+    renderer.dlss_quality = "dlaa"
     renderer._denoiser_explicit = True
     renderer._ctx = object()
     renderer._optix = object()
-    renderer._render_stream = object()
+    renderer._render_stream = SimpleNamespace(device="cuda:0")
     renderer._optix_denoiser = None
+    renderer._dlss_denoiser = None
     renderer._sync_prev_camera_matrices_to_current = lambda: None
     renderer._set_render_resolution = lambda w, h: (
         setattr(renderer, "_render_width", w),
         setattr(renderer, "_render_height", h),
     )
     monkeypatch.setattr(renderer_module.wp, "synchronize_stream", lambda stream: None)
+    # These tests cover OptiX selection; DLSS availability is tested in test_dlss.py.
+    monkeypatch.setattr(
+        renderer_module, "dlss_rr_requirements", lambda device: {"supported": False, "reason": "disabled in test"}
+    )
     return renderer
 
 

@@ -64,7 +64,7 @@ def _parse_args():
     parser.add_argument("--max-frames", type=int, default=0)
     parser.add_argument("--no-depth-test", action="store_true")
     parser.add_argument("--camera-speed", type=float, default=1.0)
-    parser.add_argument("--denoiser", choices=("auto", "optix", "none"), default="auto")
+    parser.add_argument("--denoiser", choices=("auto", "dlss", "optix", "none"), default="auto")
     parser.add_argument("--no-cuda-graphs", action="store_true")
     parser.add_argument("--no-set", action="store_true")
     return parser.parse_args()

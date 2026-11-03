@@ -36,7 +36,7 @@ from warp_optix import native
 from . import pathtracing_warp_kernels as pwk
 from .camera import Camera
 from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH
-from .denoising import DenoiserInputs, OptixDenoiser
+from .denoising import DLSS_QUALITY_MODES, DenoiserInputs, DlssDenoiser, OptixDenoiser, dlss_rr_requirements
 from .environment_map import EnvironmentMap
 from .lighting import RENDERER_RADIANCE_PER_NIT
 from .scene import Scene
@@ -164,6 +164,7 @@ class PathTracingViewer:
         backface_culling: bool = True,
         denoiser: str | None = None,
         optix_upscale: bool = False,
+        dlss_quality: str = "dlaa",
     ):
         """
         Initialize the path tracing viewer.
@@ -188,7 +189,11 @@ class PathTracingViewer:
         self._denoiser_explicit = denoiser is not None
         self.denoiser = self._normalize_denoiser(denoiser if denoiser is not None else "auto")
         self.optix_upscale = bool(optix_upscale)
+        if dlss_quality not in DLSS_QUALITY_MODES:
+            raise ValueError(f"dlss_quality must be one of {sorted(DLSS_QUALITY_MODES)}")
+        self.dlss_quality = dlss_quality
         self._optix_denoiser = None
+        self._dlss_denoiser = None
         self.denoiser_error: str | None = None
         self.enable_set = bool(enable_set)
         self.enable_cuda_graphs = bool(enable_cuda_graphs)
@@ -325,33 +330,44 @@ class PathTracingViewer:
     @staticmethod
     def _normalize_denoiser(value: str) -> str:
         value = str(value).strip().lower()
-        if value not in ("auto", "optix", "none"):
-            raise ValueError("denoiser must be 'auto', 'optix', or 'none'")
+        if value not in ("auto", "dlss", "optix", "none"):
+            raise ValueError("denoiser must be 'auto', 'dlss', 'optix', or 'none'")
         return value
 
     @property
     def active_denoiser(self) -> str:
+        if self._dlss_denoiser is not None:
+            return "dlss"
         return "optix" if self._optix_denoiser is not None else "none"
 
-    def set_denoiser(self, denoiser: str, *, optix_upscale: bool | None = None):
+    @property
+    def _temporal_denoiser(self):
+        """The active temporal reconstruction backend, which accumulates history itself."""
+        return self._dlss_denoiser if self._dlss_denoiser is not None else self._optix_denoiser
+
+    def set_denoiser(self, denoiser: str, *, optix_upscale: bool | None = None, dlss_quality: str | None = None):
         """Switch reconstruction backends without rebuilding the scene.
 
-        Explicit selections require the backend; 'auto' tries OptiX,
-        then raw rendering. Backend-specific resolution settings are retained.
+        Explicit selections require the backend; 'auto' tries DLSS Ray
+        Reconstruction (driver R620+), then OptiX, then raw rendering. Backend-specific resolution settings are retained.
         """
         mode = self._normalize_denoiser(denoiser)
         upscale = self.optix_upscale if optix_upscale is None else bool(optix_upscale)
-        if mode == self.denoiser and upscale == self.optix_upscale and self._denoiser_explicit:
+        quality = self.dlss_quality if dlss_quality is None else dlss_quality
+        if quality not in DLSS_QUALITY_MODES:
+            raise ValueError(f"dlss_quality must be one of {sorted(DLSS_QUALITY_MODES)}")
+        current = (self.denoiser, self.optix_upscale, self.dlss_quality)
+        if (mode, upscale, quality) == current and self._denoiser_explicit:
             return
-        previous = self.denoiser, self.optix_upscale, self._denoiser_explicit
-        self.denoiser, self.optix_upscale, self._denoiser_explicit = mode, upscale, True
+        previous = (*current, self._denoiser_explicit)
+        self.denoiser, self.optix_upscale, self.dlss_quality, self._denoiser_explicit = mode, upscale, quality, True
         if self._ctx is None:
             return
         wp.synchronize_stream(self._render_stream)
         try:
             self._init_denoiser()
         except Exception:
-            self.denoiser, self.optix_upscale, self._denoiser_explicit = previous
+            self.denoiser, self.optix_upscale, self.dlss_quality, self._denoiser_explicit = previous
             self._init_denoiser()
             raise
 
@@ -360,10 +376,16 @@ class PathTracingViewer:
             self._optix_denoiser.close()
             self._optix_denoiser = None
 
+    def _destroy_denoisers(self):
+        self._destroy_optix_denoiser()
+        if self._dlss_denoiser is not None:
+            self._dlss_denoiser.close()
+            self._dlss_denoiser = None
+
     def _init_denoiser(self):
         # Release old reconstruction resources before replacing render targets
         # to avoid retaining two generations of allocations during large resizes.
-        self._destroy_optix_denoiser()
+        self._destroy_denoisers()
         self.denoiser_error = None
         self._denoiser_status_reported = False
         self.sample_index = 0
@@ -376,6 +398,10 @@ class PathTracingViewer:
         if self._optix is None:
             self._set_render_resolution(self.width, self.height)
             return
+        if self.denoiser in ("dlss", "auto"):
+            self._init_dlss_denoiser()
+            if self._dlss_denoiser is not None:
+                return
         if self.denoiser in ("optix", "auto"):
             try:
                 scale = 2 if self.optix_upscale else 1
@@ -394,10 +420,41 @@ class PathTracingViewer:
             except Exception as exc:
                 if self.denoiser == "optix":
                     raise
-                self.denoiser_error = f"OptiX initialization failed: {exc}"
+                self.denoiser_error = "; ".join(
+                    filter(None, (self.denoiser_error, f"OptiX initialization failed: {exc}"))
+                )
                 logger.warning("Denoiser fallback: %s", self.denoiser_error)
                 self._set_render_resolution(self.width, self.height)
         else:
+            self._set_render_resolution(self.width, self.height)
+
+    def _init_dlss_denoiser(self):
+        """Create the DLSS Ray Reconstruction backend, or record why it is unavailable.
+
+        In 'auto' mode, missing DLSS support (a build without DLSS, or a driver
+        older than R620) is the normal case and is not reported as an error.
+        """
+        requirements = dlss_rr_requirements(self._render_stream.device)
+        if not requirements["supported"] and self.denoiser != "dlss":
+            logger.debug("DLSS Ray Reconstruction not used: %s", requirements["reason"])
+            return
+        try:
+            if not requirements["supported"]:
+                raise RuntimeError(requirements["reason"])
+            render_width, render_height = DlssDenoiser.optimal_render_size((self.width, self.height), self.dlss_quality)
+            self._set_render_resolution(render_width, render_height)
+            self._dlss_denoiser = DlssDenoiser(
+                self._render_width,
+                self._render_height,
+                output_size=(self.width, self.height),
+                quality=self.dlss_quality,
+                stream=self._render_stream,
+            )
+        except Exception as exc:
+            if self.denoiser == "dlss":
+                raise
+            self.denoiser_error = f"DLSS Ray Reconstruction unavailable: {exc}"
+            logger.info("Denoiser fallback: %s", self.denoiser_error)
             self._set_render_resolution(self.width, self.height)
 
     def _denoiser_inputs(self, color=None) -> DenoiserInputs:
@@ -1038,7 +1095,7 @@ class PathTracingViewer:
         use_external_accum: bool,
     ) -> bool:
         """Update accumulation state and return whether temporal history resets."""
-        if self._optix_denoiser is not None:
+        if self._temporal_denoiser is not None:
             return False
 
         reset_temporal = (
@@ -1201,7 +1258,7 @@ class PathTracingViewer:
         current_view_inv = np.linalg.inv(current_view)
         current_proj_inv = np.linalg.inv(current_proj)
         use_external_accum = (
-            self.accumulate_samples and self._optix_denoiser is None and self._device_camera_state is None
+            self.accumulate_samples and self._temporal_denoiser is None and self._device_camera_state is None
         )
         samples_this_frame = self.samples_per_frame
         reset_temporal = self._update_temporal_state(current_view, current_proj, use_external_accum)
@@ -1226,7 +1283,18 @@ class PathTracingViewer:
         self._last_accum_proj = current_proj.copy()
         self._last_output_mode = self.output_mode
 
-        if self._optix_denoiser is not None:
+        if self._dlss_denoiser is not None:
+            output = self._dlss_denoiser.apply(
+                self._denoiser_inputs(self._accum_buffer),
+                view_matrix=current_view,
+                projection_matrix=current_proj,
+                # DLSS expects the offset that undoes this frame's jitter.
+                jitter=(-self._last_jitter[0], -self._last_jitter[1]),
+                reset=reset_temporal or self._denoiser_reset_history,
+            )
+            self._denoiser_reset_history = False
+            self._process_output(output, resize_final_to_render=False)
+        elif self._optix_denoiser is not None:
             output = self._optix_denoiser.apply(
                 self._denoiser_inputs(self._accum_buffer),
                 reset=reset_temporal or self._denoiser_reset_history,
@@ -1249,7 +1317,7 @@ class PathTracingViewer:
             # Tear down resources tied to the old dimensions first.  Native
             # window/output resolution remains uncapped; this only avoids a
             # transient old+new allocation spike during resize.
-            self._destroy_optix_denoiser()
+            self._destroy_denoisers()
             self.width = width
             self.height = height
             self.camera.set_aspect_ratio(width, height)
@@ -1262,7 +1330,7 @@ class PathTracingViewer:
         """Wait for rendering and release reconstruction resources."""
         wp.synchronize_stream(self._render_stream)
         self._optix_graph_warmed = False
-        self._destroy_optix_denoiser()
+        self._destroy_denoisers()
         # Destroying the context releases its pipelines and modules. GPU buffers
         # are dropped afterwards so OptiX never sees them freed while in use.
         if self._ctx is not None:

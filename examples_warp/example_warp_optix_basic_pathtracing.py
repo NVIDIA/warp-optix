@@ -78,11 +78,17 @@ def _parse_args():
     parser.add_argument("--saturation", type=float, default=1.1, help="Display saturation multiplier.")
     parser.add_argument(
         "--denoiser",
-        choices=("auto", "optix", "none"),
+        choices=("auto", "dlss", "optix", "none"),
         default=None,
         help="Select the denoiser backend.",
     )
     parser.add_argument("--optix-upscale", action="store_true", help="Enable OptiX temporal 2x upscaling.")
+    parser.add_argument(
+        "--dlss-quality",
+        choices=("dlaa", "max_quality", "balanced", "max_perf", "ultra_performance"),
+        default="dlaa",
+        help="DLSS Ray Reconstruction quality; modes other than dlaa render at lower resolution and upscale.",
+    )
     parser.add_argument("--no-set", action="store_true", help="Disable Shader Execution Reordering.")
     parser.add_argument(
         "--no-backface-culling",
@@ -236,6 +242,7 @@ def main():
         height=args.height,
         denoiser=args.denoiser,
         optix_upscale=args.optix_upscale,
+        dlss_quality=args.dlss_quality,
         enable_set=not args.no_set,
         backface_culling=not args.no_backface_culling,
     )

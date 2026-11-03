@@ -21,6 +21,7 @@ import warp as wp
 from warp_optix.gl import GLInteropViewer
 
 from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH
+from .denoising import DLSS_QUALITY_MODES
 from .pathtracer_api import PathTracerAPI
 
 logger = logging.getLogger(__name__)
@@ -134,6 +135,7 @@ class PathTracingViewerBackend:
         backface_culling: bool = True,
         denoiser: str | None = None,
         optix_upscale: bool = False,
+        dlss_quality: str = "dlaa",
     ):
         try:
             super().__init__()
@@ -187,6 +189,7 @@ class PathTracingViewerBackend:
             height=self.height,
             denoiser=denoiser,
             optix_upscale=optix_upscale,
+            dlss_quality=dlss_quality,
             enable_set=enable_set,
             samples_per_frame=samples_per_frame,
             max_bounces=max_bounces,
@@ -351,19 +354,31 @@ class PathTracingViewerBackend:
     def optix_upscale(self, value: bool) -> None:
         self.set_denoiser(self.denoiser, optix_upscale=value)
 
-    def set_denoiser(self, denoiser: str, *, optix_upscale: bool | None = None):
-        self._api.set_denoiser(denoiser, optix_upscale=optix_upscale)
+    @property
+    def dlss_quality(self) -> str:
+        return self._api.dlss_quality
+
+    def set_denoiser(self, denoiser: str, *, optix_upscale: bool | None = None, dlss_quality: str | None = None):
+        self._api.set_denoiser(denoiser, optix_upscale=optix_upscale, dlss_quality=dlss_quality)
 
     def _ui_denoiser_controls(self, imgui):
         imgui.text(f"Denoiser: {self.active_denoiser}")
-        modes = ["auto", "optix", "none"]
+        modes = ["auto", "dlss", "optix", "none"]
         changed, selected = imgui.combo("Denoiser", modes.index(self.denoiser), modes)
         if changed:
             try:
                 self.set_denoiser(modes[selected])
             except (RuntimeError, ValueError) as exc:
                 logger.warning("Could not switch denoiser: %s", exc)
-        if self.denoiser in ("optix", "auto"):
+        if self.active_denoiser == "dlss":
+            qualities = list(DLSS_QUALITY_MODES)
+            changed, selected = imgui.combo("DLSS Quality", qualities.index(self.dlss_quality), qualities)
+            if changed:
+                try:
+                    self.set_denoiser(self.denoiser, dlss_quality=qualities[selected])
+                except (RuntimeError, ValueError) as exc:
+                    logger.warning("Could not change DLSS quality: %s", exc)
+        if self.denoiser in ("optix", "auto") and self.active_denoiser != "dlss":
             changed, upscale = imgui.checkbox("OptiX 2x Upscaling", self.optix_upscale)
             if changed:
                 try:

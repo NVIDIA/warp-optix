@@ -356,7 +356,7 @@ def test_resize_releases_old_denoiser_before_native_reallocation(monkeypatch):
     viewer.camera = SimpleNamespace(set_aspect_ratio=lambda width, height: events.append(("aspect", width, height)))
     viewer._tonemapper = SimpleNamespace(resize=lambda width, height: events.append(("tonemap", width, height)))
     viewer._sync_prev_camera_matrices_to_current = lambda: events.append(("camera",))
-    viewer._destroy_optix_denoiser = lambda: events.append(("destroy_optix",))
+    viewer._destroy_denoisers = lambda: events.append(("destroy_denoisers",))
     viewer._init_denoiser = lambda: events.append(("init",))
     monkeypatch.setattr(viewer_module.wp, "synchronize_stream", lambda stream: events.append(("sync",)))
 
@@ -364,7 +364,7 @@ def test_resize_releases_old_denoiser_before_native_reallocation(monkeypatch):
 
     assert viewer.width == 3840
     assert viewer.height == 2160
-    assert events[:2] == [("sync",), ("destroy_optix",)]
+    assert events[:2] == [("sync",), ("destroy_denoisers",)]
     assert events[-2:] == [("init",), ("tonemap", 3840, 2160)]
 
 

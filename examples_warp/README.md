@@ -16,6 +16,8 @@ uv run --no-sync python examples_warp/example_warp_optix_mixed_geometry.py
 uv run --no-sync python examples_warp/example_warp_optix_tiny_raytracer.py
 uv run --no-sync python examples_warp/example_warp_optix_basic_pathtracing.py
 uv run --no-sync python examples_warp/example_warp_optix_basic_pathtracing.py --denoiser optix --optix-upscale
+# Needs a DLSS build (WARP_OPTIX_ENABLE_DLSS=ON) and an NVIDIA driver R620+:
+uv run --no-sync python examples_warp/example_warp_optix_basic_pathtracing.py --denoiser dlss --dlss-quality balanced
 uv run --no-sync python examples_warp/example_warp_optix_pathtraced_hairball.py
 uv run --no-sync python examples_warp/example_warp_optix_pathtraced_arrowball.py
 uv run --no-sync python examples_warp/example_warp_optix_pathtraced_contact_lines.py
