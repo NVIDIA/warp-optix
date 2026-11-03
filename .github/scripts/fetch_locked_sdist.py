@@ -9,10 +9,9 @@ where compilers and CUDA are available, instead of on the GPU runners.
 
 import argparse
 import hashlib
+import tomllib
 import urllib.request
 from pathlib import Path
-
-import tomllib
 
 
 def main() -> None:

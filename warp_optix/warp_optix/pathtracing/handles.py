@@ -17,9 +17,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Generic, TypeVar
-
-T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -36,7 +33,7 @@ class Handle:
         return self.value >= 0
 
 
-class HandleBuffer(Generic[T]):
+class HandleBuffer[T]:
     """Sparse handle buffer with stable IDs."""
 
     def __init__(self) -> None:
