@@ -44,15 +44,15 @@ def query_raygen(params: QueryParams):
         params.traversable,
         wp.vec3(2.0, 0.0, 3.0),
         wp.vec3(0.0, 0.0, -1.0),
-        0.001,
         100.0,
+        payload,
+        0.001,
         0.25,
         wp.uint32(0x5A),
         wp.uint32(1),
         wp.uint32(0),
         wp.uint32(1),
         wp.uint32(0),
-        payload,
     )
 
 
@@ -63,15 +63,15 @@ def reorder_raygen(params: QueryParams):
         params.traversable,
         wp.vec3(2.0, 0.0, 3.0),
         wp.vec3(0.0, 0.0, -1.0),
-        0.001,
         100.0,
+        payload,
+        0.001,
         0.25,
         wp.uint32(0x5A),
         wp.uint32(1),
         wp.uint32(0),
         wp.uint32(1),
         wp.uint32(0),
-        payload,
     )
     params.output[12] = wp.uint32(1) if wp.optix_hit_object_is_hit() else wp.uint32(0)
     params.output[13] = wp.optix_hit_object_get_instance_id()
@@ -94,7 +94,7 @@ def query_closest_hit(params: QueryParams):
     params.output[3] = wp.optix_get_primitive_type()
     params.output[4] = wp.optix_get_ray_flags()
     params.output[5] = wp.optix_get_ray_visibility_mask()
-    params.output[6] = wp.float_to_uint32(wp.optix_get_ray_time())
+    params.output[6] = wp.optix_float_as_uint32(wp.optix_get_ray_time())
     params.output[7] = wp.uint32(1) if wp.optix_is_front_face_hit() else wp.uint32(0)
     params.output[8] = wp.uint32(1) if wp.optix_is_back_face_hit() else wp.uint32(0)
 
@@ -105,19 +105,19 @@ def query_closest_hit(params: QueryParams):
     error = wp.uint32(0)
     object_origin = wp.vec3(0.0, 0.0, 0.0)
     world_origin = wp.vec3(2.0, 0.0, 0.0)
-    if wp.length(wp.optix_transform_point_from_object_to_world_space(object_origin) - world_origin) > 1.0e-5:
+    if wp.length(wp.optix_transform_point_object_to_world(object_origin) - world_origin) > 1.0e-5:
         error |= wp.uint32(1)
-    if wp.length(wp.optix_transform_point_from_world_to_object_space(world_origin) - object_origin) > 1.0e-5:
+    if wp.length(wp.optix_transform_point_world_to_object(world_origin) - object_origin) > 1.0e-5:
         error |= wp.uint32(2)
 
     vector = wp.vec3(1.0, 2.0, 3.0)
-    world_vector = wp.optix_transform_vector_from_object_to_world_space(vector)
-    if wp.length(wp.optix_transform_vector_from_world_to_object_space(world_vector) - vector) > 1.0e-5:
+    world_vector = wp.optix_transform_vector_object_to_world(vector)
+    if wp.length(wp.optix_transform_vector_world_to_object(world_vector) - vector) > 1.0e-5:
         error |= wp.uint32(4)
 
     normal = wp.normalize(wp.vec3(1.0, 2.0, 3.0))
-    world_normal = wp.optix_transform_normal_from_object_to_world_space(normal)
-    if wp.length(wp.optix_transform_normal_from_world_to_object_space(world_normal) - normal) > 1.0e-5:
+    world_normal = wp.optix_transform_normal_object_to_world(normal)
+    if wp.length(wp.optix_transform_normal_world_to_object(world_normal) - normal) > 1.0e-5:
         error |= wp.uint32(8)
 
     if not wp.optix_is_triangle_hit():
@@ -127,8 +127,8 @@ def query_closest_hit(params: QueryParams):
     if wp.optix_is_triangle_back_face_hit():
         error |= wp.uint32(512)
 
-    object_to_world = wp.optix_get_object_to_world_transform_matrix()
-    world_to_object = wp.optix_get_world_to_object_transform_matrix()
+    object_to_world = wp.optix_get_object_to_world_matrix()
+    world_to_object = wp.optix_get_world_to_object_matrix()
     if (
         wp.abs(object_to_world[0, 0]) > 1.0e-5
         or wp.abs(object_to_world[0, 1] + 2.0) > 1.0e-5
@@ -170,22 +170,22 @@ def motion_raygen(params: QueryParams):
         params.traversable,
         wp.vec3(0.0, 0.0, 3.0),
         wp.vec3(0.0, 0.0, -1.0),
-        0.001,
         100.0,
+        payload,
+        0.001,
         0.25,
         wp.uint32(255),
         wp.uint32(0),
         wp.uint32(0),
         wp.uint32(1),
         wp.uint32(0),
-        payload,
     )
 
 
 @wp.kernel(module="unique")
 def motion_closest_hit(params: QueryParams):
-    params.output[0] = wp.float_to_uint32(wp.optix_get_ray_time())
-    params.output[1] = wp.float_to_uint32(wp.optix_get_ray_tmax())
+    params.output[0] = wp.optix_float_as_uint32(wp.optix_get_ray_time())
+    params.output[1] = wp.optix_float_as_uint32(wp.optix_get_ray_tmax())
 
 
 @wp.kernel(module="unique")
@@ -195,15 +195,15 @@ def curve_raygen(params: QueryParams):
         params.traversable,
         wp.vec3(0.0, 0.0, 3.0),
         wp.vec3(0.0, 0.0, -1.0),
-        0.001,
         100.0,
+        payload,
+        0.001,
         0.0,
         wp.uint32(255),
         wp.uint32(0),
         wp.uint32(0),
         wp.uint32(1),
         wp.uint32(0),
-        payload,
     )
 
 
@@ -211,11 +211,11 @@ def curve_raygen(params: QueryParams):
 def curve_closest_hit(params: QueryParams):
     params.output[0] = wp.uint32(1)
     params.output[1] = wp.optix_get_primitive_type()
-    params.output[2] = wp.float_to_uint32(wp.optix_get_curve_parameter())
+    params.output[2] = wp.optix_float_as_uint32(wp.optix_get_curve_parameter())
     world_hit = wp.optix_get_world_ray_origin() + wp.optix_get_ray_tmax() * wp.optix_get_world_ray_direction()
-    params.output[3] = wp.float_to_uint32(world_hit[2])
-    object_origin = wp.optix_transform_point_from_object_to_world_space(wp.vec3(0.0))
-    params.output[4] = wp.float_to_uint32(object_origin[2])
+    params.output[3] = wp.optix_float_as_uint32(world_hit[2])
+    object_origin = wp.optix_transform_point_object_to_world(wp.vec3(0.0))
+    params.output[4] = wp.optix_float_as_uint32(object_origin[2])
 
     error = wp.uint32(0)
     vertices = wp.optix_get_linear_curve_vertex_data()
@@ -249,7 +249,7 @@ def curve_closest_hit(params: QueryParams):
         probe = wp.optix_get_ribbon_vertex_data()[0, 0] + wp.optix_get_ribbon_normal(parameters)[0]
     elif primitive_type == wp.uint32(0x2507):
         probe = wp.optix_get_cubic_bezier_vertex_data()[0, 0]
-    params.output[6] = wp.float_to_uint32(probe)
+    params.output[6] = wp.optix_float_as_uint32(probe)
 
 
 @wp.kernel(module="unique")
@@ -301,8 +301,8 @@ def exception_raygen(params: QueryParams):
 @wp.kernel(module="unique")
 def exception_program(params: QueryParams):
     params.output[0] = wp.uint32(wp.optix_get_exception_code())
-    params.output[1] = wp.optix_get_exception_detail_0()
-    params.output[2] = wp.optix_get_exception_detail_1()
+    params.output[1] = wp.optix_get_exception_detail(0)
+    params.output[2] = wp.optix_get_exception_detail(1)
 
 
 @wp.kernel(module="unique")
@@ -332,21 +332,18 @@ def _launch(pipeline, traversable, output):
 
 def test_common_device_queries_on_gpu():
     device = wp.get_device("cuda")
-    ctx = wo.create_context(device)
     vertices = wp.array(TRIANGLE_VERTICES, dtype=wp.vec3, device=device)
     indices = wp.array(TRIANGLE_INDICES, dtype=wp.uint32, device=device)
-    gas = wo.build_accel(ctx, [wo.triangles(vertices, indices)], flags=RANDOM_ACCESS, compact=True, device=device)
+    gas = wo.Accel([wo.triangles(vertices, indices)], flags=RANDOM_ACCESS, compact=True, device=device)
     records = wp.empty(1, dtype=wo.Instance, device=device)
-    wp.launch(write_rotated_instance, dim=1, inputs=[gas.handle, records], device=device)
-    ias = wo.build_accel(ctx, [wo.instances(records)], device=device)
+    wp.launch(write_rotated_instance, dim=1, inputs=[gas.id, records], device=device)
+    ias = wo.Accel([wo.instances(records)], device=device)
 
     single_level = wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING
     hit = wo.HitGroup(closest_hit=query_closest_hit)
-    pipeline = wo.create_pipeline(
-        ctx, query_raygen, miss=[query_miss], hit_groups=[hit], payload_words=1, graph_flags=single_level
-    )
+    pipeline = wo.Pipeline(query_raygen, miss=[query_miss], hit_groups=[hit], payload_words=1, graph_flags=single_level)
     output = wp.zeros(15, dtype=wp.uint32, device=device)
-    result = _launch(pipeline, ias.handle, output)
+    result = _launch(pipeline, ias.id, output)
     assert result[0] == 77
     assert result[1] == 0
     assert result[2] == 0
@@ -356,60 +353,59 @@ def test_common_device_queries_on_gpu():
     # Pipelines without motion blur report time zero.
     assert result[6] == np.float32(0.0).view(np.uint32)
     assert tuple(result[7:9]) == (1, 0)
-    assert int(result[9]) | (int(result[10]) << 32) == gas.handle
+    assert int(result[9]) | (int(result[10]) << 32) == gas.id
     assert result[11] == 0
 
-    reorder_pipeline = wo.create_pipeline(
-        ctx, reorder_raygen, miss=[query_miss], hit_groups=[hit], payload_words=1, graph_flags=single_level
+    reorder_pipeline = wo.Pipeline(
+        reorder_raygen, miss=[query_miss], hit_groups=[hit], payload_words=1, graph_flags=single_level
     )
-    reorder_result = _launch(reorder_pipeline, ias.handle, output)
+    reorder_result = _launch(reorder_pipeline, ias.id, output)
     assert tuple(reorder_result[:5]) == tuple(result[:5])
     assert tuple(reorder_result[7:12]) == tuple(result[7:12])
     assert tuple(reorder_result[12:15]) == (1, 77, 0)
 
     # Refitting a dynamic GAS keeps its handle; the moved triangle leaves the ray.
-    dynamic = wo.build_accel(
-        ctx, [wo.triangles(vertices, indices)], flags=RANDOM_ACCESS | wo.BuildFlags.ALLOW_UPDATE, device=device
+    dynamic = wo.Accel(
+        [wo.triangles(vertices, indices)], flags=RANDOM_ACCESS | wo.BuildFlags.ALLOW_UPDATE, device=device
     )
-    wp.launch(write_rotated_instance, dim=1, inputs=[dynamic.handle, records], device=device)
-    ias = wo.build_accel(ctx, [wo.instances(records)], device=device)
+    wp.launch(write_rotated_instance, dim=1, inputs=[dynamic.id, records], device=device)
+    ias = wo.Accel([wo.instances(records)], device=device)
     vertices.assign(TRIANGLE_VERTICES + np.array([10.0, 0.0, 0.0], dtype=np.float32))
-    assert wo.update_accel(ctx, dynamic).handle == dynamic.handle
-    assert _launch(pipeline, ias.handle, output)[0] == 0xFFFFFFFF
+    dynamic_id = dynamic.id
+    dynamic.refit()
+    assert dynamic.id == dynamic_id
+    assert _launch(pipeline, ias.id, output)[0] == 0xFFFFFFFF
 
 
 def test_callables_and_exception_programs_on_gpu():
     device = wp.get_device("cuda")
-    ctx = wo.create_context(device)
     output = wp.zeros(3, dtype=wp.uint32, device=device)
 
     # Callables are indexed by their position in ``callables``.
-    pipeline = wo.create_pipeline(ctx, callable_raygen, callables=[first_callable, second_callable])
+    pipeline = wo.Pipeline(callable_raygen, callables=[first_callable, second_callable])
     assert tuple(_launch(pipeline, 0, output)[:2]) == (85, 84)
 
-    pipeline = wo.create_pipeline(ctx, exception_raygen, exception=exception_program)
+    pipeline = wo.Pipeline(exception_raygen, exception=exception_program)
     assert tuple(_launch(pipeline, 0, output)) == (1234, 77, 88)
 
 
 def test_motion_blur_triangles_on_gpu():
     device = wp.get_device("cuda")
-    ctx = wo.create_context(device)
     keys = [
         wp.array(TRIANGLE_VERTICES + np.array([0.0, 0.0, dz], dtype=np.float32), dtype=wp.vec3, device=device)
         for dz in (0.0, -0.5)
     ]
     indices = wp.array(TRIANGLE_INDICES, dtype=wp.uint32, device=device)
     motion = native.MotionOptions(numKeys=2, flags=native.MOTION_FLAG_NONE, timeBegin=0.0, timeEnd=1.0)
-    gas = wo.build_accel(ctx, [wo.triangles(keys, indices)], motion=motion, device=device)
-    pipeline = wo.create_pipeline(
-        ctx,
+    gas = wo.Accel([wo.triangles(keys, indices)], motion=motion, device=device)
+    pipeline = wo.Pipeline(
         motion_raygen,
         miss=[query_miss],
         hit_groups=[wo.HitGroup(closest_hit=motion_closest_hit)],
         payload_words=1,
         motion_blur=True,
     )
-    result = _launch(pipeline, gas.handle, wp.zeros(2, dtype=wp.uint32, device=device))
+    result = _launch(pipeline, gas.id, wp.zeros(2, dtype=wp.uint32, device=device))
     assert result[0] == np.float32(0.25).view(np.uint32)
     # At time 0.25 the triangle has moved a quarter of the way to z = -0.5.
     assert result[1:].view(np.float32)[0] == pytest.approx(3.125)
@@ -417,19 +413,17 @@ def test_motion_blur_triangles_on_gpu():
 
 def test_round_linear_curve_queries_on_gpu():
     device = wp.get_device("cuda")
-    ctx = wo.create_context(device)
     vertices = wp.array([[0.0, -1.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3, device=device)
     widths = wp.array([0.25, 0.25], dtype=float, device=device)
     indices = wp.array([0], dtype=wp.uint32, device=device)
-    gas = wo.build_accel(ctx, [wo.curves(vertices, widths, indices)], flags=RANDOM_ACCESS, device=device)
-    pipeline = wo.create_pipeline(
-        ctx,
+    gas = wo.Accel([wo.curves(vertices, widths, indices)], flags=RANDOM_ACCESS, device=device)
+    pipeline = wo.Pipeline(
         curve_raygen,
         miss=[query_miss],
         hit_groups=[wo.HitGroup(closest_hit=curve_closest_hit, builtin=wo.PrimitiveType.ROUND_LINEAR)],
         payload_words=1,
     )
-    result = _launch(pipeline, gas.handle, wp.zeros(7, dtype=wp.uint32, device=device))
+    result = _launch(pipeline, gas.id, wp.zeros(7, dtype=wp.uint32, device=device))
     floats = result.view(np.float32)
     assert result[0] == 1
     assert result[1] == int(wo.PrimitiveType.ROUND_LINEAR)
@@ -452,21 +446,17 @@ def test_round_linear_curve_queries_on_gpu():
 )
 def test_higher_order_curve_vertex_data_on_gpu(curve_type, control_points):
     device = wp.get_device("cuda")
-    ctx = wo.create_context(device)
     vertices = wp.array(control_points, dtype=wp.vec3, device=device)
     widths = wp.full(len(control_points), 0.25, dtype=float, device=device)
     indices = wp.array([0], dtype=wp.uint32, device=device)
-    gas = wo.build_accel(
-        ctx, [wo.curves(vertices, widths, indices, curve_type=curve_type)], flags=RANDOM_ACCESS, device=device
-    )
-    pipeline = wo.create_pipeline(
-        ctx,
+    gas = wo.Accel([wo.curves(vertices, widths, indices, curve_type=curve_type)], flags=RANDOM_ACCESS, device=device)
+    pipeline = wo.Pipeline(
         curve_raygen,
         miss=[query_miss],
         hit_groups=[wo.HitGroup(closest_hit=higher_order_curve_closest_hit, builtin=curve_type)],
         payload_words=1,
     )
-    assert _launch(pipeline, gas.handle, wp.zeros(1, dtype=wp.uint32, device=device))[0] == 0
+    assert _launch(pipeline, gas.id, wp.zeros(1, dtype=wp.uint32, device=device))[0] == 0
 
 
 @pytest.mark.parametrize(
@@ -478,6 +468,5 @@ def test_higher_order_curve_vertex_data_on_gpu(curve_type, control_points):
     ],
 )
 def test_programs_must_bind_raygen_arguments(miss, message):
-    ctx = wo.create_context("cuda")
     with pytest.raises(TypeError, match=message):
-        wo.create_pipeline(ctx, query_raygen, miss=[miss])
+        wo.Pipeline(query_raygen, miss=[miss])

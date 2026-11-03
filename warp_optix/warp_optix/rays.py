@@ -28,7 +28,8 @@ class AccelQueryRay:
             curve parameter. Custom primitives: the bits of the first reported attribute, as float.
         v: Triangles: barycentric v. Ribbons: the parameter across the curve. Other built-in curves: 0.
             Custom primitives: the bits of the second reported attribute, as float.
-        instance_id: User id of the hit instance (0 for a geometry acceleration structure).
+        instance_id: User id of the hit instance (``0xFFFFFFFF`` when querying a geometry acceleration
+            structure directly, which has no instance).
         primitive_index: Index of the hit primitive within its build input.
     """
 

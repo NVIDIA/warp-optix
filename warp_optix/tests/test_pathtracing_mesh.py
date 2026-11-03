@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import warp as wp
-from warp_optix.pathtracing import PathTracerAPI, Scene
+from warp_optix.pathtracing import PathTracer, Scene
 from warp_optix.pathtracing.scene import Mesh
 
 
@@ -26,7 +26,7 @@ def test_mesh_rejects_invalid_indices_before_gpu_upload(indices):
 
 
 def test_generated_sphere_winding_matches_outward_normals():
-    scene = Scene(None)
+    scene = Scene()
     vertices, indices, normals, _ = scene._create_sphere_geometry((0.0, 0.0, 0.0), 1.0, 16)
     geometric = np.cross(
         vertices[indices[:, 1]] - vertices[indices[:, 0]],
@@ -46,8 +46,8 @@ def test_dynamic_mesh_exposes_writable_vec3_device_buffers():
         dtype=np.float32,
     )
     indices = np.array([[0, 1, 2]], dtype=np.uint32)
-    scene = Scene(None)
-    api = PathTracerAPI.__new__(PathTracerAPI)
+    scene = Scene()
+    api = PathTracer.__new__(PathTracer)
     api._viewer = SimpleNamespace(_scene=scene)
     geometry_id = api.create_mesh(vertices, indices, dynamic=True)
     mesh = scene._meshes[geometry_id]

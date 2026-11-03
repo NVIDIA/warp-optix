@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from warp_optix.pathtracing import Curve, Mesh, PathTracerAPI, Scene
+from warp_optix.pathtracing import Curve, Mesh, PathTracer, Scene
 
 
 def _points():
@@ -74,8 +74,8 @@ def test_curve_rejects_invalid_inputs(points, kwargs, message):
 
 @pytest.mark.parametrize("basis", ["linear", "cubic_bezier"])
 def test_pathtracer_api_creates_reusable_curve_geometry(basis):
-    scene = Scene(None)
-    api = PathTracerAPI.__new__(PathTracerAPI)
+    scene = Scene()
+    api = PathTracer.__new__(PathTracer)
     api._viewer = SimpleNamespace(_scene=scene)
     scene.materials.add_diffuse((0.2, 0.3, 0.4))
     scene.materials.add_diffuse((0.8, 0.7, 0.6))
@@ -95,8 +95,8 @@ def test_pathtracer_api_creates_reusable_curve_geometry(basis):
 
 
 def test_pathtracer_api_creates_one_dynamic_curve_instance_for_arrow_batch():
-    scene = Scene(None)
-    api = PathTracerAPI.__new__(PathTracerAPI)
+    scene = Scene()
+    api = PathTracer.__new__(PathTracer)
     api._viewer = SimpleNamespace(_scene=scene)
     scene.materials.add_diffuse((0.2, 0.3, 0.4))
     scene.materials.add_diffuse((0.8, 0.7, 0.6))
@@ -121,8 +121,8 @@ def test_pathtracer_api_creates_one_dynamic_curve_instance_for_arrow_batch():
 
 
 def test_host_arrow_batch_update_builds_shaft_tip_and_clears_inactive_slots():
-    scene = Scene(None)
-    api = PathTracerAPI.__new__(PathTracerAPI)
+    scene = Scene()
+    api = PathTracer.__new__(PathTracer)
     api._viewer = SimpleNamespace(_scene=scene)
     scene.materials.add_diffuse((0.2, 0.3, 0.4))
     scene.materials.add_diffuse((0.8, 0.7, 0.6))
@@ -180,8 +180,8 @@ def test_host_arrow_batch_update_builds_shaft_tip_and_clears_inactive_slots():
     ],
 )
 def test_arrow_batch_rejects_invalid_shape_parameters(kwargs, message):
-    scene = Scene(None)
-    api = PathTracerAPI.__new__(PathTracerAPI)
+    scene = Scene()
+    api = PathTracer.__new__(PathTracer)
     api._viewer = SimpleNamespace(_scene=scene)
     with pytest.raises(ValueError, match=message):
         api.create_arrow_batch(**kwargs)
