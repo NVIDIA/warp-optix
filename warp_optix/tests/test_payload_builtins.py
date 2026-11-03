@@ -69,9 +69,7 @@ def test_indexed_payload_builtins_match_numbered_forms():
     gas = triangle_gas()
     results = []
     for hit, miss in ((indexed_hit, indexed_miss), (numbered_hit, numbered_miss)):
-        pipeline = wo.Pipeline(
-            payload_raygen, miss=[miss], hit_groups=[wo.HitGroup(closest_hit=hit)], payload_words=3
-        )
+        pipeline = wo.Pipeline(payload_raygen, miss=[miss], hit_groups=[wo.HitGroup(closest_hit=hit)], payload_words=3)
         output = wp.zeros((2, 3), dtype=wp.uint32, device="cuda")
         wo.launch(pipeline, 2, [gas, output])
         results.append(output.numpy())
