@@ -6,6 +6,12 @@ the included path tracer. Applications import `warp_optix`. Installation brings
 in `pyoptix==9.1.0` for the standard OptiX bindings and builds a small extension
 for cooperative vectors and missing binding fields and fixes.
 
+> [!WARNING]
+> **Alpha software:** warp-optix is under active development and is not yet
+> feature-complete or production-ready. The public API is experimental and may
+> change between releases without backward compatibility. Features and behavior
+> may change, and bugs are expected.
+
 ## Installation
 
 Build from the repository root with Python 3.10+, a CUDA Toolkit and a C++17
