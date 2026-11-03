@@ -78,7 +78,9 @@ def make_instance(
 
     Overloads take a full affine ``wp.mat44`` (scale and shear allowed) or a
     ``rotation: wp.mat33`` plus ``translation: wp.vec3``. ``flags`` takes
-    :class:`InstanceFlags`; ``mask`` is the 8-bit visibility mask.
+    :class:`InstanceFlags`; ``mask`` is the 8-bit visibility mask. In kernels with
+    backward passes enabled, pass the integer arguments positionally (Warp 1.18
+    miscompiles keyword arguments to generic integer parameters in adjoint code).
     """
     r = wp.quat_to_matrix(wp.transform_get_rotation(xform))
     p = wp.transform_get_translation(xform)

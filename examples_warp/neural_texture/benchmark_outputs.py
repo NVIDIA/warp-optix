@@ -101,7 +101,7 @@ def make_raygen(width: int, consumed: int, production: bool, name: str):
     return raygen
 
 
-def benchmark(args, context, asset, device):
+def benchmark(args, asset, device):
     stream = wp.get_stream(device)
     results = {}
     for consumed in (3, 7):
@@ -119,8 +119,8 @@ def benchmark(args, context, asset, device):
                 SimpleNamespace(weights=last.weights[:width].copy(), bias=last.bias[:width].copy()),
             )
             experimental = SimpleNamespace(**{**vars(asset), "layers": layers})
-            runtime = upload_asset(experimental, context, device=device)
-            pipeline = wo.create_pipeline(context, raygen, device=device)
+            runtime = upload_asset(experimental, device=device)
+            pipeline = wo.Pipeline(raygen, device=device)
             cases.append((label, runtime, pipeline))
 
         for random_access in (0, 1):
@@ -174,16 +174,10 @@ def benchmark(args, context, asset, device):
                 },
             }
             print(key, {label: round(float(np.median(times)), 4) for label, times in samples.items()}, flush=True)
-        # Context owns API objects; release these completed cases before the next
-        # consumer count instead of retaining their compilation state indefinitely.
-        wp.synchronize_device(device)
+        # Release these completed cases before the next consumer count instead of
+        # retaining their compilation state until interpreter exit.
         for case in cases:
-            pipeline = case[2]
-            pipeline.pipeline.destroy()
-            for group in pipeline.groups:
-                group.destroy()
-            for module in pipeline.modules:
-                module.destroy()
+            case[2].close()
         del cases
     return results
 
@@ -199,27 +193,22 @@ def main():
     device = "cuda:0"
     wp.init()
     with wp.ScopedDevice(device):
-        context = wo.create_context(device)
-        try:
-            asset = load_asset(args.asset)
-            results = benchmark(args, context, asset, device)
-            print(
-                json.dumps(
-                    {
-                        "gpu": wp.get_device(device).name,
-                        "asset": args.asset,
-                        "resolution": [asset.width, asset.height],
-                        "source_channels": asset.channel_count,
-                        "iterations": args.iterations,
-                        "rounds": args.rounds,
-                        "results": results,
-                    },
-                    indent=2,
-                )
+        asset = load_asset(args.asset)
+        results = benchmark(args, asset, device)
+        print(
+            json.dumps(
+                {
+                    "gpu": wp.get_device(device).name,
+                    "asset": args.asset,
+                    "resolution": [asset.width, asset.height],
+                    "source_channels": asset.channel_count,
+                    "iterations": args.iterations,
+                    "rounds": args.rounds,
+                    "results": results,
+                },
+                indent=2,
             )
-        finally:
-            wp.synchronize_device(device)
-            context.destroy()
+        )
 
 
 if __name__ == "__main__":

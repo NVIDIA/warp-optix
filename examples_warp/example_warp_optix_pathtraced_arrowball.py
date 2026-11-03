@@ -23,7 +23,7 @@ from warp_optix.gl import GLInteropViewer
 from warp_optix.pathtracing import (
     DEFAULT_VIEWER_HEIGHT,
     DEFAULT_VIEWER_WIDTH,
-    PathTracerAPI,
+    PathTracer,
 )
 
 
@@ -118,7 +118,7 @@ def main():
     )
 
     wp.init()
-    api = PathTracerAPI(
+    api = PathTracer(
         width=args.width,
         height=args.height,
         denoiser=args.denoiser,

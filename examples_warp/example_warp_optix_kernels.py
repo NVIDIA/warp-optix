@@ -35,32 +35,18 @@ class Payload:
 def raygen(scale: wp.uint32, values: wp.array2d[wp.uint32]):
     y, x = wp.tid()
     payload = Payload()
-    wp.optix_trace(
-        wp.uint64(0),
-        wp.vec3(0.0),
-        wp.vec3(0.0, 0.0, -1.0),
-        0.0,
-        1.0,
-        0.0,
-        wp.uint32(255),
-        wp.uint32(0),
-        wp.uint32(0),
-        wp.uint32(1),
-        wp.uint32(0),
-        payload,
-    )
+    wp.optix_trace(wp.uint64(0), wp.vec3(0.0), wp.vec3(0.0, 0.0, -1.0), 1.0, payload)
     values[y, x] = payload.value
 
 
 @wp.kernel(module="unique")
 def miss(scale: wp.uint32):
     index = wp.optix_get_launch_index()
-    wp.optix_set_payload_0(scale * index[1] + index[0])
+    wp.optix_set_payload(0, scale * index[1] + index[0])
 
 
 def main() -> None:
-    ctx = wo.create_context()
-    pipeline = wo.create_pipeline(ctx, raygen, miss=[miss], payload_words=1)
+    pipeline = wo.Pipeline(raygen, miss=[miss], payload_words=1)
     values = wp.zeros((4, 8), dtype=wp.uint32)
     wo.launch(pipeline, dim=values.shape, inputs=[100, values])
     result = values.numpy()

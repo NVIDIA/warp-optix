@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
+import warp_optix as wo
 from warp_optix import native
 
 from .device import NeuralTextureView
@@ -82,7 +83,6 @@ def _description(n, k, element_type, layout, offset, size):
 
 def upload_asset(
     asset: NeuralTextureAsset,
-    context,
     *,
     device: str = "cuda:0",
     stream: int = 0,
@@ -93,11 +93,14 @@ def upload_asset(
     The conversion API itself is asynchronous. This convenience loader performs
     a device synchronization before returning so the runtime is immediately safe
     to launch from any stream and the temporary FP16 device copy can be released.
+    ``stream`` is a raw CUDA stream handle for the conversion (0 = legacy default stream).
     """
     if matrix_element_type != "fp8_e4m3":
         raise ValueError("the v1 decoder requires matrix_element_type='fp8_e4m3'")
     output_element_type = native.COOP_VEC_ELEM_TYPE_FLOAT8_E4M3
-    flags = context.getProperty(native.DEVICE_PROPERTY_COOP_VEC)
+    with wp.ScopedDevice(device):
+        context = wo.get_context(device).native
+        flags = context.getProperty(native.DEVICE_PROPERTY_COOP_VEC)
     if not flags & int(native.DEVICE_PROPERTY_COOP_VEC_FLAG_STANDARD):
         raise RuntimeError("the selected OptiX device does not support cooperative vectors")
 

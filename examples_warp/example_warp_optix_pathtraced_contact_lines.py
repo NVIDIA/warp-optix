@@ -23,7 +23,7 @@ from warp_optix.gl import GLInteropViewer, GLLineOverlay
 from warp_optix.pathtracing import (
     DEFAULT_VIEWER_HEIGHT,
     DEFAULT_VIEWER_WIDTH,
-    PathTracerAPI,
+    PathTracer,
 )
 
 
@@ -87,7 +87,7 @@ def main():
     host_colors = RAINBOW_SRGB[slots]
 
     wp.init()
-    api = PathTracerAPI(
+    api = PathTracer(
         width=args.width,
         height=args.height,
         denoiser=args.denoiser,
@@ -218,7 +218,7 @@ def main():
             )
         if drawn_frames:
             print(f"[opengl] average depth upload + GL draw: {1000.0 * draw_seconds / drawn_frames:.3f} ms")
-        overlay.destroy()
+        overlay.close()
 
 
 if __name__ == "__main__":

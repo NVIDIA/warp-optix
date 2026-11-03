@@ -297,13 +297,17 @@ reusing an input; build a new input and structure for topology changes.
 Warp function writes one from a pose and an acceleration-structure id. It takes a rigid
 `wp.transform`, a full affine `wp.mat44` (scale and shear allowed), or a `wp.mat33` linear part plus a
 `wp.vec3` translation, followed by `accel_id, instance_id=0, sbt_offset=0, mask=0xFF, flags=0`.
+The integer arguments accept any integer type. In kernels compiled with backward passes enabled
+(Warp's default for `wp.launch` kernels), pass them positionally: Warp 1.18 miscompiles keyword
+arguments to generic integer parameters of a `@wp.func` in the adjoint code. OptiX programs are
+compiled without backward passes and are unaffected.
 Instance records are therefore written on the GPU, e.g. one per simulated world:
 
 ```python
 @wp.kernel
 def write_instances(gas: wp.uint64, poses: wp.array[wp.transform], records: wp.array[wo.Instance]):
     i = wp.tid()
-    records[i] = wo.make_instance(poses[i], gas, instance_id=i)
+    records[i] = wo.make_instance(poses[i], gas, i)  # instance_id = i
 
 
 records = wp.empty(world_count, dtype=wo.Instance)
