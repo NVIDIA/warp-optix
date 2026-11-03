@@ -1,41 +1,74 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Lifetime and device checks shared by the functional OptiX API."""
+"""Per-device OptiX contexts, device/stream resolution, and deferred release.
 
+Like Warp's CUDA context, the OptiX device context is implicit: each CUDA
+device gets one, created on first use with the settings in
+:mod:`warp_optix.config` and destroyed at interpreter exit. Resources
+(:class:`~warp_optix.Accel`, :class:`~warp_optix.Pipeline`,
+:class:`~warp_optix.LaunchParams`) hold a reference to their context.
+
+Lifetime contract:
+
+* Every build, refit, and launch records a CUDA event and keeps the arrays,
+  acceleration structures, pipelines, and parameter blocks it reads alive until
+  that event completes.
+* ``close()`` (also called by ``with`` and ``__del__``) makes a resource unusable
+  at once and releases its memory and native objects only after all OptiX work
+  submitted before the close has completed. It never blocks the host.
+* Kernels see an acceleration structure only as an integer ``id``. Keep the
+  :class:`~warp_optix.Accel` alive (or pass the object itself in launch inputs)
+  while work that reads the id may still be submitted, as with ``wp.Mesh.id``.
+* OptiX work cannot be captured into CUDA graphs; every entry point refuses
+  capture.
+"""
+
+from __future__ import annotations
+
+import atexit
 import logging
+import threading
 import weakref
 from contextlib import contextmanager
 
 import warp as wp
 
-from warp_optix import native
+from warp_optix import config, native
+
+CAPTURE_ERROR = "OptiX work cannot be recorded into CUDA graphs; call it outside wp.ScopedCapture"
+
+_log = logging.getLogger("warp_optix")
+_contexts: dict[str, Context] = {}
+_lock = threading.Lock()
 
 
 class Context:
-    """Own native objects and device buffers until close(); also a context manager.
+    """The OptiX device context of one CUDA device.
 
-    Use ``native_handle`` only for advanced native calls. It is borrowed and
-    must not be destroyed separately.
+    Obtain it with :func:`get_context`; it is created on first use and lives until
+    interpreter exit. ``native`` gives the PyOptiX ``DeviceContext`` for advanced
+    calls; it is borrowed and must not be destroyed.
     """
 
-    def __init__(self, device=None, *, validation=False, log_level=4):
-        self._closed = True
-        self.device = wp.get_device(device)
-        if not self.device.is_cuda:
-            raise ValueError("OptiX requires a CUDA device")
-        self._objects = []
-        self._pipelines = []
-        self._accels = {}
-        self._pending = []
+    def __init__(self, device: wp.Device):
+        self.device = device
+        self.validation = bool(config.validation)
+        self.log_level = int(config.log_level)
         self.log_message_count = 0
+        self._destroyed = False
+        # Live acceleration structures by id, for validating instance children.
+        self._accels: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
+        # (event, references) of submitted work, and (events, callback, references) of pending releases.
+        self._pending: list[tuple[wp.Event, tuple]] = []
+        self._releases: list[tuple[list[wp.Event], object, tuple]] = []
         owner = weakref.ref(self)
 
         def log(level, tag, message):
             context = owner()
             if context is not None:
                 context.log_message_count += 1
-            logging.getLogger("warp_optix").log(
+            _log.log(
                 {1: logging.CRITICAL, 2: logging.ERROR, 3: logging.WARNING, 4: logging.INFO}.get(level, logging.DEBUG),
                 "[%s] %s",
                 tag,
@@ -44,143 +77,146 @@ class Context:
 
         options = native.DeviceContextOptions(
             logCallbackFunction=log,
-            logCallbackLevel=log_level,
+            logCallbackLevel=self.log_level,
             validationMode=native.DEVICE_CONTEXT_VALIDATION_MODE_ALL
-            if validation
+            if self.validation
             else native.DEVICE_CONTEXT_VALIDATION_MODE_OFF,
         )
-        with wp.ScopedDevice(self.device):
-            self._native = native.deviceContextCreate(self.device.context, options)
-        self._closed = False
+        with wp.ScopedDevice(device):
+            self._native = native.deviceContextCreate(device.context, options)
+
+    def __repr__(self):
+        return f"Context(device={self.device.alias!r})"
 
     @property
-    def closed(self):
-        return self._closed
-
-    def _check_open(self):
-        if self._closed:
-            raise RuntimeError("The OptiX context is closed")
-
-    @property
-    def native_handle(self):
-        self._check_open()
+    def native(self):
+        """The PyOptiX ``DeviceContext`` (borrowed; do not destroy)."""
         return self._native
 
-    def _device(self, device=None):
-        self._check_open()
-        if device is not None and wp.get_device(device) != self.device:
-            raise ValueError("Device and context must use the same CUDA device")
-        return self.device
+    def retain(self, stream: wp.Stream, references) -> None:
+        """Keep ``references`` alive until the work just submitted to ``stream`` completes."""
+        self.collect()
+        self._pending.append((stream.record_event(), tuple(references)))
 
-    def _stream(self, stream=None):
-        self._check_open()
-        stream = wp.get_stream(self.device) if stream is None else stream
-        if not isinstance(stream, wp.Stream):
-            raise TypeError("stream must be a Warp Stream")
-        if stream.device != self.device:
-            raise ValueError("Stream and context must use the same CUDA device")
-        return stream
-
-    def _arrays(self, values):
-        for value in values:
-            if isinstance(value, wp.array):
-                yield value
-            elif isinstance(value, (tuple, list)):
-                yield from self._arrays(value)
-            elif hasattr(value, "_cls") and hasattr(value._cls, "vars"):
-                yield from self._arrays([getattr(value, name) for name in value._cls.vars])
-
-    def _check_arrays(self, values):
-        for value in self._arrays(values):
-            if value.device != self.device:
-                raise ValueError("Array and context must use the same CUDA device")
-
-    def __getattr__(self, name):
-        if name.startswith("_"):
-            raise AttributeError(name)
-        self._check_open()
-        member = getattr(self._native, name)
-        if not callable(member):
-            return member
-
-        def call(*args, **kwargs):
-            self._check_open()
-            with wp.ScopedDevice(self.device):
-                result = member(*args, **kwargs)
-            if name in (
-                "moduleCreate",
-                "moduleCreateFromPTX",
-                "builtinISModuleGet",
-                "programGroupCreate",
-                "pipelineCreate",
-            ):
-                objects = (
-                    result[0]
-                    if name == "programGroupCreate"
-                    else [result[0] if name in ("moduleCreate", "moduleCreateFromPTX") else result]
-                )
-                for obj in objects:
-                    if not any(type(obj) is type(old) and obj == old for old in self._objects):
-                        self._objects.append(obj)
-            return result
-
-        return call
-
-    @contextmanager
-    def _transaction(self):
-        self._check_open()
-        start = len(self._objects)
-        with wp.ScopedDevice(self.device):
-            try:
-                yield
-            except BaseException:
-                # Failed operations may already have submitted GPU work. Keep
-                # their traceback-owned buffers alive until it has finished.
-                wp.synchronize_device(self.device)
-                while len(self._objects) > start:
-                    obj = self._objects.pop()
-                    try:
-                        obj.destroy()
-                    except Exception:
-                        logging.getLogger("warp_optix").exception("Failed to clean up an OptiX object")
-                raise
-
-    def _retain_launch(self, stream, inputs):
-        self._pending = [(event, values) for event, values in self._pending if not event.is_complete]
-        # Keep input arrays (including arrays inside Warp structs) alive until
-        # this stream has finished reading launch parameters and tracing rays.
-        self._pending.append((stream.record_event(), tuple(self._arrays(inputs))))
-
-    def close(self):
-        if self._closed:
+    def release(self, callback=None, references=()) -> None:
+        """Run ``callback`` and drop ``references`` once all work submitted so far has completed."""
+        if self._destroyed:
+            # The context, and every native object created from it, is already gone (interpreter exit).
             return
+        self._releases.append(([event for event, _ in self._pending], callback, tuple(references)))
+        self.collect()
+
+    def collect(self) -> None:
+        """Drop references of completed work and run releases whose work has finished."""
+        self._pending = [(event, refs) for event, refs in self._pending if not event.is_complete]
+        waiting = []
+        for events, callback, references in self._releases:
+            if all(event.is_complete for event in events):
+                _run(callback)
+            else:
+                waiting.append((events, callback, references))
+        self._releases = waiting
+
+    def check_arrays(self, values) -> None:
+        for value in _arrays(values):
+            if value.device != self.device:
+                raise ValueError("Array and OptiX resource must use the same CUDA device")
+
+    def _shutdown(self) -> None:
         with wp.ScopedDevice(self.device):
             wp.synchronize_device(self.device)
+            for _, callback, _ in self._releases:
+                _run(callback)
+            self._releases.clear()
+            self._pending.clear()
+            self._accels.clear()
             self._native.destroy()
-        self._closed = True
-        self._objects.clear()
-        self._pending.clear()
-        self._pipelines.clear()
-        self._accels.clear()
+            self._destroyed = True
 
-    destroy = close
 
-    def __enter__(self):
-        self._check_open()
-        return self
+def get_context(device=None) -> Context:
+    """Return the OptiX context of a CUDA device, creating it on first use.
 
-    def __exit__(self, *exc):
-        self.close()
+    Most code never needs this; it gives advanced code the native context
+    through ``get_context(device).native``.
+    """
+    device = wp.get_device(device)
+    if not device.is_cuda:
+        raise ValueError("OptiX requires a CUDA device")
+    with _lock:
+        context = _contexts.get(device.alias)
+        if context is None:
+            if not _contexts:
+                atexit.register(_shutdown_all)
+            context = _contexts[device.alias] = Context(device)
+        return context
 
-    def __del__(self):
+
+def resolve(device=None, stream=None) -> tuple[Context, wp.Stream]:
+    """Return the context and stream for a ``device``/``stream`` pair.
+
+    Neither given: the current device and its current stream. Only ``stream``:
+    the stream's device. Only ``device``: that device's current stream. Both:
+    they must match.
+    """
+    if stream is not None:
+        if not isinstance(stream, wp.Stream):
+            raise TypeError("stream must be a Warp Stream")
+        if device is not None and wp.get_device(device) != stream.device:
+            raise ValueError("Stream and device must be the same CUDA device")
+        device = stream.device
+    context = get_context(device)
+    if stream is None:
+        stream = wp.get_stream(context.device)
+    if stream.is_capturing:
+        raise RuntimeError(CAPTURE_ERROR)
+    return context, stream
+
+
+@contextmanager
+def native_objects(context: Context):
+    """Collect native objects created in the block; destroy them if the block fails."""
+    objects: list = []
+    with wp.ScopedDevice(context.device):
         try:
-            self.close()
+            yield objects
+        except BaseException:
+            # Failed operations may already have submitted GPU work that reads
+            # buffers owned by the traceback; wait before destroying anything.
+            wp.synchronize_device(context.device)
+            for obj in reversed(objects):
+                try:
+                    obj.destroy()
+                except Exception:
+                    _log.exception("Failed to clean up an OptiX object")
+            raise
+
+
+def _arrays(values):
+    for value in values:
+        if isinstance(value, wp.array):
+            yield value
+        elif isinstance(value, (tuple, list)):
+            yield from _arrays(value)
+        elif hasattr(value, "_cls") and hasattr(value._cls, "vars"):
+            yield from _arrays([getattr(value, name) for name in value._cls.vars])
+
+
+def _run(callback) -> None:
+    if callback is None:
+        return
+    try:
+        callback()
+    except Exception:
+        _log.exception("Failed to release an OptiX resource")
+
+
+def _shutdown_all() -> None:
+    with _lock:
+        contexts = list(_contexts.values())
+        _contexts.clear()
+    for context in contexts:
+        try:
+            context._shutdown()
         except Exception:
-            pass
-
-
-def require_context(ctx):
-    if not isinstance(ctx, Context):
-        raise TypeError("Use a context returned by warp_optix.create_context()")
-    ctx._check_open()
-    return ctx
+            _log.exception("Failed to destroy the OptiX context of %s", context.device)

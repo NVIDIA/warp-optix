@@ -20,7 +20,6 @@ Handles mesh loading, BLAS/TLAS construction, and instance management.
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -430,11 +429,11 @@ class Mesh:
         normals /= np.where(lengths > 0.0, lengths, 1.0)
         return normals
 
-    def upload_to_gpu(self):
+    def upload_to_gpu(self, device: wp.DeviceLike = "cuda"):
         """Upload the acceleration-structure inputs and, for dynamic meshes, writable normals."""
-        self.d_vertices = wp.array(self.vertices.flatten(), dtype=wp.float32, device="cuda")
-        self.d_indices = wp.array(self.indices.flatten(), dtype=wp.uint32, device="cuda")
-        self.d_normals = wp.array(self.normals.flatten(), dtype=wp.float32, device="cuda") if self.dynamic else None
+        self.d_vertices = wp.array(self.vertices.flatten(), dtype=wp.float32, device=device)
+        self.d_indices = wp.array(self.indices.flatten(), dtype=wp.uint32, device=device)
+        self.d_normals = wp.array(self.normals.flatten(), dtype=wp.float32, device=device) if self.dynamic else None
 
 
 class Curve:
@@ -517,11 +516,11 @@ class Curve:
         self._packed_radius_offset = 0
         self._packed_material_offset = 0
 
-    def upload_to_gpu(self):
+    def upload_to_gpu(self, device: wp.DeviceLike = "cuda"):
         """Upload control points, radii, and segment starts to CUDA."""
-        self.d_vertices = wp.array(self.vertices.reshape(-1), dtype=wp.float32, device="cuda")
-        self.d_widths = wp.array(self.radii, dtype=wp.float32, device="cuda")
-        self.d_indices = wp.array(self.indices, dtype=wp.uint32, device="cuda")
+        self.d_vertices = wp.array(self.vertices.reshape(-1), dtype=wp.float32, device=device)
+        self.d_widths = wp.array(self.radii, dtype=wp.float32, device=device)
+        self.d_indices = wp.array(self.indices, dtype=wp.uint32, device=device)
 
 
 class Instance:
@@ -557,15 +556,18 @@ class Scene:
     Handles meshes, instances, materials, and acceleration structures.
     """
 
-    def __init__(self, optix_ctx, enable_texture_mipmaps: bool = False):
+    def __init__(self, enable_texture_mipmaps: bool = False, device: wp.DeviceLike = None):
         """
         Create a scene.
 
         Args:
-            optix_ctx: OptiX device context
+            enable_texture_mipmaps: Generate mipmaps for material textures.
+            device: CUDA device holding the scene; defaults to the current device.
         """
+        self.device = wp.get_device(device)
+        if not self.device.is_cuda:
+            raise ValueError("Scene requires a CUDA device")
         self._optix = None  # Will be set when building
-        self._ctx = optix_ctx
         self.enable_texture_mipmaps = bool(enable_texture_mipmaps)
         self.materials = MaterialManager()
         self._meshes = []
@@ -593,7 +595,7 @@ class Scene:
         self._packed_material_ids = None
         self._gltf_textures = []
         # Resolved DomeLight texture discovered while composing the last USD
-        # stage. Keeping it here lets PathTracerAPI opt into the environment
+        # stage. Keeping it here lets PathTracer opt into the environment
         # without reopening (and recomposing) a large stage.
         self.usd_environment_path = None
         self.usd_ambient_light = (0.0, 0.0, 0.0)
@@ -681,7 +683,7 @@ class Scene:
     @property
     def tlas_handle(self) -> int:
         """Get the TLAS traversable handle."""
-        return self._ias.handle if self._ias else 0
+        return self._ias.id if self._ias else 0
 
     @property
     def instance_material_ids_address(self) -> int:
@@ -727,12 +729,14 @@ class Scene:
     def set_instance_material_ids_host(self, material_ids: np.ndarray):
         """Upload per-instance material IDs from host memory."""
         self._instance_material_ids = wp.array(
-            np.asarray(material_ids, dtype=np.uint32), dtype=wp.uint32, device="cuda"
+            np.asarray(material_ids, dtype=np.uint32), dtype=wp.uint32, device=self.device
         )
 
     def set_compact_material_bytes(self, compact_bytes: np.ndarray):
         """Upload compact material table bytes to GPU."""
-        self._compact_materials = wp.array(np.asarray(compact_bytes, dtype=np.uint8), dtype=wp.uint8, device="cuda")
+        self._compact_materials = wp.array(
+            np.asarray(compact_bytes, dtype=np.uint8), dtype=wp.uint8, device=self.device
+        )
         self._compact_material_floats = None
 
     def set_instance_materials_device(
@@ -753,7 +757,7 @@ class Scene:
             shape=(material_count, stride),
             dtype=wp.float32,
             capacity=int(self._compact_materials.capacity),
-            device="cuda",
+            device=self.device,
         )
         if len(colors) not in (1, len(material_ids)):
             raise ValueError("Device colors must contain one or one value per instance")
@@ -770,7 +774,7 @@ class Scene:
                 len(properties),
                 self._compact_material_floats,
             ],
-            device="cuda",
+            device=self.device,
         )
         return True
 
@@ -907,7 +911,7 @@ class Scene:
                 wp.mat33(*rotation.reshape(-1)),
                 wp.vec3(*translation),
             ],
-            device="cuda",
+            device=self.device,
         )
         return True
 
@@ -956,12 +960,14 @@ class Scene:
     def _build_usd_transform_buffers(self):
         if self.usd_scene is None or len(self._usd_node_parents) == 0:
             return
-        self._d_usd_node_parents = wp.array(self._usd_node_parents, dtype=wp.int32, device="cuda")
-        self._d_usd_local_transforms = wp.array(self._usd_local_transforms, dtype=wp.mat44, device="cuda")
-        self._d_usd_world_transforms = wp.array(self._usd_world_transforms, dtype=wp.mat44, device="cuda")
-        self._d_usd_instance_ids = wp.array(self._usd_instance_ids, dtype=wp.int32, device="cuda")
-        self._d_usd_instance_node_ids = wp.array(self._usd_instance_node_ids, dtype=wp.int32, device="cuda")
-        self._d_usd_level_nodes = [wp.array(level, dtype=wp.int32, device="cuda") for level in self._usd_level_nodes]
+        self._d_usd_node_parents = wp.array(self._usd_node_parents, dtype=wp.int32, device=self.device)
+        self._d_usd_local_transforms = wp.array(self._usd_local_transforms, dtype=wp.mat44, device=self.device)
+        self._d_usd_world_transforms = wp.array(self._usd_world_transforms, dtype=wp.mat44, device=self.device)
+        self._d_usd_instance_ids = wp.array(self._usd_instance_ids, dtype=wp.int32, device=self.device)
+        self._d_usd_instance_node_ids = wp.array(self._usd_instance_node_ids, dtype=wp.int32, device=self.device)
+        self._d_usd_level_nodes = [
+            wp.array(level, dtype=wp.int32, device=self.device) for level in self._usd_level_nodes
+        ]
         self.usd_scene._attach_device_arrays(self._d_usd_local_transforms, self._d_usd_world_transforms)
 
     def _evaluate_usd_transform_hierarchy_host(self, update_instances: bool = True):
@@ -992,7 +998,7 @@ class Scene:
                         self._d_usd_local_transforms,
                         self._d_usd_world_transforms,
                     ],
-                    device="cuda",
+                    device=self.device,
                 )
             if len(self._usd_instance_ids):
                 wp.launch(
@@ -1004,7 +1010,7 @@ class Scene:
                         self._d_usd_world_transforms,
                         self._device_instance_transforms,
                     ],
-                    device="cuda",
+                    device=self.device,
                 )
 
     def set_usd_local_transforms_device(
@@ -1039,7 +1045,7 @@ class Scene:
                     transforms,
                     self._d_usd_local_transforms,
                 ],
-                device="cuda",
+                device=self.device,
             )
             self._evaluate_usd_transform_hierarchy()
             if rebuild_tlas:
@@ -1089,7 +1095,7 @@ class Scene:
                     scales,
                     self._d_usd_local_transforms,
                 ],
-                device="cuda",
+                device=self.device,
             )
             self._evaluate_usd_transform_hierarchy()
             if rebuild_tlas:
@@ -1111,9 +1117,9 @@ class Scene:
             return
         scope = wp.ScopedStream(stream, sync_enter=False, sync_exit=False) if stream is not None else nullcontext()
         with scope:
-            device_count = wp.array([len(indices)], dtype=wp.int32, device="cuda")
-            device_ids = wp.array(indices, dtype=wp.int32, device="cuda")
-            device_matrices = wp.array(matrices, dtype=wp.mat44, device="cuda")
+            device_count = wp.array([len(indices)], dtype=wp.int32, device=self.device)
+            device_ids = wp.array(indices, dtype=wp.int32, device=self.device)
+            device_matrices = wp.array(matrices, dtype=wp.mat44, device=self.device)
             self.set_usd_local_transforms_device(
                 device_count,
                 device_ids,
@@ -1145,7 +1151,7 @@ class Scene:
         if self._instance_masks is None:
             self._instance_records_dirty = True
             return
-        device_indices = wp.array(indices.astype(np.int32), dtype=wp.int32, device="cuda")
+        device_indices = wp.array(indices.astype(np.int32), dtype=wp.int32, device=self.device)
         wp.launch(
             _update_device_instance_visibility,
             dim=len(indices),
@@ -1154,7 +1160,7 @@ class Scene:
                 wp.uint32(0xFF if visible else 0),
                 self._instance_masks,
             ],
-            device="cuda",
+            device=self.device,
         )
 
     def create_cornell_box(self):
@@ -1467,7 +1473,7 @@ class Scene:
 
         # Upload meshes to GPU
         for mesh in self._meshes:
-            mesh.upload_to_gpu()
+            mesh.upload_to_gpu(self.device)
 
         # Build BLAS for each mesh
         self._build_blas()
@@ -1537,12 +1543,8 @@ class Scene:
                 if geometry.dynamic
                 else native.BUILD_FLAG_PREFER_FAST_TRACE
             )
-            self._gas.append(wo.build_accel(self._ctx, [build_input], flags=build_flags, device="cuda"))
-        wp.synchronize_stream(wp.get_stream("cuda"))
-        self._gas = [
-            gas if geometry.dynamic else dataclasses.replace(gas, scratch=None)
-            for gas, geometry in zip(self._gas, self._meshes)
-        ]
+            # Static structures (no ALLOW_UPDATE) release their scratch buffer after the build.
+            self._gas.append(wo.Accel([build_input], flags=build_flags, device=self.device))
 
     def _update_dynamic_geometry_accel(
         self,
@@ -1551,9 +1553,11 @@ class Scene:
         rebuild_gas: bool,
         rebuild_tlas: bool,
     ) -> bool:
-        self._gas[geometry_index] = wo.update_accel(
-            self._ctx, self._gas[geometry_index], rebuild=rebuild_gas, stream=stream
-        )
+        gas = self._gas[geometry_index]
+        if rebuild_gas:
+            gas.rebuild(stream=stream)
+        else:
+            gas.refit(stream=stream)
         if rebuild_tlas:
             self.rebuild_tlas(stream=stream)
         return True
@@ -1662,14 +1666,14 @@ class Scene:
                     flags[index] |= (
                         native.INSTANCE_FLAG_DISABLE_ANYHIT if override_opaque else native.INSTANCE_FLAG_ENFORCE_ANYHIT
                     )
-            handles = np.array([gas.handle for gas in self._gas], dtype=np.uint64)
+            handles = np.array([gas.id for gas in self._gas], dtype=np.uint64)
             sbt_offsets = np.array([geometry.sbt_offset for geometry in self._meshes], dtype=np.uint32)
-            self._instance_traversables = wp.array(handles[mesh_indices], dtype=wp.uint64, device="cuda")
-            self._instance_sbt_offsets = wp.array(sbt_offsets[mesh_indices], dtype=wp.uint32, device="cuda")
-            self._instance_flags = wp.array(flags, dtype=wp.uint32, device="cuda")
-            self._instance_masks = wp.empty(count, dtype=wp.uint32, device="cuda")
-            self._device_instance_transforms = wp.empty((count, 12), dtype=wp.float32, device="cuda")
-            self._instance_records = wp.empty(count, dtype=wo.Instance, device="cuda")
+            self._instance_traversables = wp.array(handles[mesh_indices], dtype=wp.uint64, device=self.device)
+            self._instance_sbt_offsets = wp.array(sbt_offsets[mesh_indices], dtype=wp.uint32, device=self.device)
+            self._instance_flags = wp.array(flags, dtype=wp.uint32, device=self.device)
+            self._instance_masks = wp.empty(count, dtype=wp.uint32, device=self.device)
+            self._device_instance_transforms = wp.empty((count, 12), dtype=wp.float32, device=self.device)
+            self._instance_records = wp.empty(count, dtype=wo.Instance, device=self.device)
             self._instance_records_dirty = True
             self._ias = None
 
@@ -1690,21 +1694,23 @@ class Scene:
                 self._instance_flags,
             ],
             outputs=[self._instance_records],
-            device="cuda",
+            device=self.device,
             stream=stream,
         )
         if self._ias is None:
-            self._ias = wo.build_accel(
-                self._ctx,
+            self._ias = wo.Accel(
                 [wo.instances(self._instance_records)],
-                flags=native.BUILD_FLAG_ALLOW_UPDATE,
+                flags=wo.BuildFlags.ALLOW_UPDATE,
+                device=self.device,
                 stream=stream,
-                device="cuda",
             )
             self._tlas_updates_since_build = 0
         else:
             rebuild = self._tlas_updates_since_build >= self._max_tlas_updates
-            self._ias = wo.update_accel(self._ctx, self._ias, rebuild=rebuild, stream=stream)
+            if rebuild:
+                self._ias.rebuild(stream=stream)
+            else:
+                self._ias.refit(stream=stream)
             self._tlas_updates_since_build = 0 if rebuild else self._tlas_updates_since_build + 1
 
     def _build_scene_buffers(self):
@@ -1779,12 +1785,12 @@ class Scene:
             radius_offset += flat_radii.shape[0]
 
         rp_bytes = render_primitives.view(np.uint8).reshape(-1)
-        self._render_primitives = wp.array(rp_bytes, dtype=wp.uint8, device="cuda")
-        self._packed_indices = wp.array(np.concatenate(packed_indices), dtype=wp.uint32, device="cuda")
+        self._render_primitives = wp.array(rp_bytes, dtype=wp.uint8, device=self.device)
+        self._packed_indices = wp.array(np.concatenate(packed_indices), dtype=wp.uint32, device=self.device)
 
         def packed_float_buffer(parts):
             values = np.concatenate(parts)
-            return wp.array(values, dtype=wp.float32, device="cuda") if values.size else None
+            return wp.array(values, dtype=wp.float32, device=self.device) if values.size else None
 
         self._packed_positions = packed_float_buffer(packed_positions)
         self._packed_radii = packed_float_buffer(packed_radii)
@@ -1793,7 +1799,7 @@ class Scene:
         self._packed_texcoords0 = packed_float_buffer(packed_texcoords0)
         self._packed_texcoords1 = packed_float_buffer(packed_texcoords1)
         self._packed_prev_positions = None
-        self._packed_material_ids = wp.array(np.concatenate(packed_material_ids), dtype=wp.uint32, device="cuda")
+        self._packed_material_ids = wp.array(np.concatenate(packed_material_ids), dtype=wp.uint32, device=self.device)
 
         self._build_usd_transform_buffers()
 
@@ -1802,7 +1808,9 @@ class Scene:
             light_data[index, :3] = position
             light_data[index, 3] = radius
             light_data[index, 4:7] = np.asarray(color) * intensity
-        self._sphere_light_data = wp.array(light_data, dtype=wp.float32, device="cuda") if len(light_data) else None
+        self._sphere_light_data = (
+            wp.array(light_data, dtype=wp.float32, device=self.device) if len(light_data) else None
+        )
 
         # Build per-instance material ID lookup buffer.
         instance_material_ids = np.full(len(self._instances), NO_MATERIAL_OVERRIDE, dtype=np.uint32)
@@ -1813,9 +1821,9 @@ class Scene:
                 instance_material_ids[i] = np.uint32(inst.material_id)
             instance_render_prim_ids[i] = np.uint32(inst.mesh_index)
             instance_geometry_types[i] = np.uint32(getattr(self._meshes[inst.mesh_index], "geometry_type", 0))
-        self._instance_material_ids = wp.array(instance_material_ids, dtype=wp.uint32, device="cuda")
-        self._instance_render_prim_ids = wp.array(instance_render_prim_ids, dtype=wp.uint32, device="cuda")
-        self._instance_geometry_types = wp.array(instance_geometry_types, dtype=wp.uint32, device="cuda")
+        self._instance_material_ids = wp.array(instance_material_ids, dtype=wp.uint32, device=self.device)
+        self._instance_render_prim_ids = wp.array(instance_render_prim_ids, dtype=wp.uint32, device=self.device)
+        self._instance_geometry_types = wp.array(instance_geometry_types, dtype=wp.uint32, device=self.device)
 
         # Build compact material table for robust device-side lookup.
         compact_dt = np.dtype(
@@ -1977,7 +1985,7 @@ class Scene:
                 mat["clearcoatNormalTexture"]["uvTransform12"],
             )
         compact_bytes = compact.view(np.uint8).reshape(-1)
-        self._compact_materials = wp.array(compact_bytes, dtype=wp.uint8, device="cuda")
+        self._compact_materials = wp.array(compact_bytes, dtype=wp.uint8, device=self.device)
         self._compact_material_floats = None
 
         # Keep one CUDA texture per source image. The compact device array stores
@@ -1992,7 +2000,7 @@ class Scene:
                     filter_mode=wp.TextureFilterMode.LINEAR,
                     address_mode=wp.TextureAddressMode.WRAP,
                     normalized_coords=True,
-                    device="cuda",
+                    device=self.device,
                 )
 
             workers = _texture_worker_count(len(self._gltf_textures))
@@ -2001,7 +2009,7 @@ class Scene:
             self._texture_data = wp.array(
                 self._texture_objects,
                 dtype=wp.Texture2D,
-                device="cuda",
+                device=self.device,
             )
         else:
             self._texture_data = None

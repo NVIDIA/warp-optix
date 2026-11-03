@@ -21,7 +21,7 @@ import warp as wp
 from warp_optix.gl import GLInteropViewer
 
 from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH
-from .pathtracer_api import PathTracerAPI
+from .pathtracer_api import PathTracer
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ def _broadcast_rows(value: np.ndarray | None, count: int, width: int, default: t
     raise ValueError(f"Expected 1 or {count} rows with width {width}, got {len(rows)}")
 
 
-class PathTracingViewerBackend:
+class ViewerBackend:
     """OptiX viewer backend independent of any simulation framework.
 
     The ``log_*`` surface intentionally accepts Warp arrays and mirrors the
@@ -119,7 +119,7 @@ class PathTracingViewerBackend:
         direct_light_samples: int = 1,
         up_axis: str | int = "Y",
         camera_speed: float = 4.0,
-        api: PathTracerAPI | None = None,
+        api: PathTracer | None = None,
         vsync: bool = False,
         max_instances: int = 10000,
         enable_imgui: bool = True,
@@ -182,7 +182,7 @@ class PathTracingViewerBackend:
         self.screenshot_output_path: str | None = None
         self._last_screenshot_path: Path | None = None
 
-        self._api = api or PathTracerAPI(
+        self._api = api or PathTracer(
             width=self.width,
             height=self.height,
             denoiser=denoiser,
@@ -1619,5 +1619,5 @@ class PathTracingViewerBackend:
         self._api.set_debug_buffer_mode(mode)
 
 
-class PathTracingViewer(PathTracingViewerBackend):
+class Viewer(ViewerBackend):
     """Concrete standalone path-tracing viewer."""

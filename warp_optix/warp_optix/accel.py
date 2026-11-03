@@ -3,39 +3,36 @@
 
 """OptiX acceleration structures over Warp device arrays.
 
-Build inputs retain their device arrays. Managed contexts retain acceleration
-structures until closure. Initial instance builds validate child handles with
-a host readback; compaction also synchronizes. Transform-only updates remain
-asynchronous. OptiX work cannot be captured into CUDA graphs.
+:class:`Accel` mirrors ``wp.Mesh``/``wp.Bvh``: construct it from build inputs,
+pass ``accel.id`` to kernels, and update it with :meth:`Accel.refit` or
+:meth:`Accel.rebuild`. Build inputs retain their device arrays. Initial
+instance builds validate child ids with a host readback; compaction also
+synchronizes. Refits remain asynchronous. See :mod:`warp_optix.context` for
+the lifetime contract.
 """
 
 from __future__ import annotations
 
 import ctypes
-import dataclasses
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import warp as wp
 
 from warp_optix import native
-from warp_optix.context import Context, require_context
+from warp_optix.context import CAPTURE_ERROR, resolve
 from warp_optix.enums import BuildFlags, GeometryFlags, PrimitiveType
 
 # ---------------------------------------------------------------------------
 # Instances
 # ---------------------------------------------------------------------------
 
-# OptiX enqueues builds and launches outside CUDA stream capture: a captured graph
-# would silently omit the work. Every entry point that enqueues OptiX work refuses capture.
-CAPTURE_ERROR = "OptiX work cannot be recorded into CUDA graphs; call it outside wp.ScopedCapture"
-
 _mat34 = wp.types.matrix(shape=(3, 4), dtype=wp.float32)
 
 
 @wp.struct
 class Instance:
-    """Device layout of ``OptixInstance`` (80 bytes)."""
+    """Device layout of ``OptixInstance`` (80 bytes); build records with :func:`make_instance`."""
 
     transform: _mat34
     instance_id: wp.uint32
@@ -43,37 +40,93 @@ class Instance:
     visibility_mask: wp.uint32
     flags: wp.uint32
     traversable: wp.uint64
-    pad: wp.vec2ui
+    _pad: wp.vec2ui
 
 
 assert ctypes.sizeof(Instance.ctype) == 80, "Instance must match OptixInstance"
 
 
 @wp.func
+def _instance(
+    transform: _mat34,
+    accel_id: wp.uint64,
+    instance_id: wp.Int,
+    sbt_offset: wp.Int,
+    mask: wp.Int,
+    flags: wp.Int,
+) -> Instance:
+    instance = Instance()
+    instance.transform = transform
+    instance.instance_id = wp.uint32(instance_id)
+    instance.sbt_offset = wp.uint32(sbt_offset)
+    instance.visibility_mask = wp.uint32(mask)
+    instance.flags = wp.uint32(flags)
+    instance.traversable = accel_id
+    return instance
+
+
+@wp.func
+def make_instance(
+    xform: wp.transform,
+    accel_id: wp.uint64,
+    instance_id: wp.Int = 0,
+    sbt_offset: wp.Int = 0,
+    mask: wp.Int = 0xFF,
+    flags: wp.Int = 0,
+) -> Instance:
+    """Return an instance record placing ``accel_id`` at the rigid pose ``xform``.
+
+    Overloads take a full affine ``wp.mat44`` (scale and shear allowed) or a
+    ``rotation: wp.mat33`` plus ``translation: wp.vec3``. ``flags`` takes
+    :class:`InstanceFlags`; ``mask`` is the 8-bit visibility mask.
+    """
+    r = wp.quat_to_matrix(wp.transform_get_rotation(xform))
+    p = wp.transform_get_translation(xform)
+    m = _mat34(r[0, 0], r[0, 1], r[0, 2], p[0], r[1, 0], r[1, 1], r[1, 2], p[1], r[2, 0], r[2, 1], r[2, 2], p[2])
+    return _instance(m, accel_id, instance_id, sbt_offset, mask, flags)
+
+
+@wp.func
+def make_instance(
+    xform: wp.mat44,
+    accel_id: wp.uint64,
+    instance_id: wp.Int = 0,
+    sbt_offset: wp.Int = 0,
+    mask: wp.Int = 0xFF,
+    flags: wp.Int = 0,
+) -> Instance:
+    """Return an instance record placing ``accel_id`` at the affine object-to-world matrix ``xform``."""
+    m = _mat34(
+        xform[0, 0],
+        xform[0, 1],
+        xform[0, 2],
+        xform[0, 3],
+        xform[1, 0],
+        xform[1, 1],
+        xform[1, 2],
+        xform[1, 3],
+        xform[2, 0],
+        xform[2, 1],
+        xform[2, 2],
+        xform[2, 3],
+    )
+    return _instance(m, accel_id, instance_id, sbt_offset, mask, flags)
+
+
+@wp.func
 def make_instance(
     rotation: wp.mat33,
     translation: wp.vec3,
-    traversable: wp.uint64,
-    instance_id: wp.uint32,
-    sbt_offset: wp.uint32,
-    visibility_mask: wp.uint32,
-    flags: wp.uint32,
+    accel_id: wp.uint64,
+    instance_id: wp.Int = 0,
+    sbt_offset: wp.Int = 0,
+    mask: wp.Int = 0xFF,
+    flags: wp.Int = 0,
 ) -> Instance:
-    """Return an instance record placing ``traversable`` at ``rotation`` and ``translation``.
-
-    ``rotation`` may include scale or shear; it is the linear part of the object-to-world map.
-    """
+    """Return an instance record with linear part ``rotation`` (scale/shear allowed) and ``translation``."""
     r, p = rotation, translation
-    instance = Instance()
-    instance.transform = _mat34(
-        r[0, 0], r[0, 1], r[0, 2], p[0], r[1, 0], r[1, 1], r[1, 2], p[1], r[2, 0], r[2, 1], r[2, 2], p[2]
-    )
-    instance.instance_id = instance_id
-    instance.sbt_offset = sbt_offset
-    instance.visibility_mask = visibility_mask
-    instance.flags = flags
-    instance.traversable = traversable
-    return instance
+    m = _mat34(r[0, 0], r[0, 1], r[0, 2], p[0], r[1, 0], r[1, 1], r[1, 2], p[1], r[2, 0], r[2, 1], r[2, 2], p[2])
+    return _instance(m, accel_id, instance_id, sbt_offset, mask, flags)
 
 
 # ---------------------------------------------------------------------------
@@ -83,30 +136,39 @@ def make_instance(
 
 @dataclass(frozen=True)
 class BuildInput:
-    """A native descriptor together with the device arrays it borrows."""
+    """A native descriptor together with the device arrays it borrows.
+
+    ``prepare`` (if set) runs on the build stream before every build and refit,
+    e.g. to pack separate bounds arrays into the layout OptiX reads.
+    """
 
     native: object
     arrays: tuple
     instance_records: wp.array | None = None
+    prepare: Callable[[], None] | None = None
+
+    @property
+    def device(self) -> wp.Device:
+        return self.arrays[0].device
 
 
 def _vertex_count(keys):
     if not keys:
-        raise ValueError("vertices must contain at least one motion key")
+        raise ValueError("points must contain at least one motion key")
     count = None
     for key in keys:
         if not key.device.is_cuda or not key.is_contiguous:
-            raise ValueError("vertices must be contiguous CUDA arrays")
+            raise ValueError("points must be contiguous CUDA arrays")
         if key.dtype == wp.vec3:
             current = key.size
         elif key.dtype == wp.float32 and key.size % 3 == 0:
             current = key.size // 3
         else:
-            raise TypeError("vertices must contain float32 triplets or vec3 values")
+            raise TypeError("points must contain float32 triplets or vec3 values")
         if count is not None and current != count:
-            raise ValueError("vertex motion keys must have equal sizes")
+            raise ValueError("point motion keys must have equal sizes")
         if key.device != keys[0].device:
-            raise ValueError("vertex motion keys must use the same device")
+            raise ValueError("point motion keys must use the same device")
         count = current
     return count
 
@@ -115,31 +177,30 @@ def _validate_indices(indices, limit, device, *, triplets=False):
     if indices.dtype not in (wp.int32, wp.uint32):
         raise TypeError("indices must contain int32 or uint32 values")
     if indices.device != device or not indices.is_contiguous:
-        raise ValueError("indices must be contiguous and on the vertex device")
+        raise ValueError("indices must be contiguous and on the points device")
     if triplets and indices.size % 3:
         raise ValueError("triangle indices must contain complete triplets")
     if wp.get_stream(device).is_capturing:
         raise RuntimeError(CAPTURE_ERROR)
-    # Validate once when creating the input, retaining the previous API's bounds
-    # protection. Vertex-only refits do not repeat this host readback.
+    # Validate once when creating the input. Point-only refits do not repeat this host readback.
     host = indices.numpy()
     if host.size and (host.min() < 0 or host.max() >= limit):
         raise ValueError(f"indices must lie in [0, {limit})")
 
 
 def triangles(
-    vertices: wp.array | Sequence[wp.array],
+    points: wp.array | Sequence[wp.array],
     indices: wp.array,
     *,
     flags: int = GeometryFlags.DISABLE_ANYHIT,
-):
-    """Triangle build input from ``vec3``/``float32[N, 3]`` vertices and int32/uint32 index triplets.
+) -> BuildInput:
+    """Triangle build input from ``vec3``/``float32[N, 3]`` points and int32/uint32 index triplets.
 
-    A sequence of vertex arrays gives one motion key per array. Creating the
+    A sequence of point arrays gives one motion key per array. Creating the
     input reads indices back once to validate bounds; keep indices unchanged
-    while reusing the input for builds and updates.
+    while reusing the input for builds and refits.
     """
-    keys = [vertices] if isinstance(vertices, wp.array) else list(vertices)
+    keys = [points] if isinstance(points, wp.array) else list(points)
     num_vertices = _vertex_count(keys)
     _validate_indices(indices, num_vertices, keys[0].device, triplets=True)
     build_input = native.BuildInputTriangleArray()
@@ -156,17 +217,51 @@ def triangles(
     return BuildInput(build_input, (*keys, indices))
 
 
+@wp.kernel(module="unique", enable_backward=False)
+def _pack_bounds(lowers: wp.array[wp.vec3], uppers: wp.array[wp.vec3], bounds: wp.array2d[float]):
+    i = wp.tid()
+    lo, hi = lowers[i], uppers[i]
+    bounds[i, 0] = lo[0]
+    bounds[i, 1] = lo[1]
+    bounds[i, 2] = lo[2]
+    bounds[i, 3] = hi[0]
+    bounds[i, 4] = hi[1]
+    bounds[i, 5] = hi[2]
+
+
 def aabbs(
-    bounds: wp.array,
+    lowers: wp.array | None = None,
+    uppers: wp.array | None = None,
     *,
+    bounds: wp.array | None = None,
     flags: int | Sequence[int] = GeometryFlags.DISABLE_ANYHIT,
     sbt_indices: wp.array | None = None,
-):
-    """Custom-primitive build input from ``float32[N, 6]`` ``(min, max)`` bounds.
+) -> BuildInput:
+    """Custom-primitive build input, like ``wp.Bvh(lowers, uppers)``.
 
-    With ``sbt_indices`` (uint32 per primitive), primitive ``i`` uses hit record
+    Give ``lowers`` and ``uppers`` (``vec3`` per primitive), or packed ``bounds``
+    (``float32[N, 6]`` as ``(min, max)``) to avoid a packing copy. Separate arrays
+    are packed into a retained buffer before every build and refit. With
+    ``sbt_indices`` (uint32 per primitive), primitive ``i`` uses hit record
     ``sbt_indices[i]`` and ``flags`` holds one geometry flag per record.
     """
+    prepare = None
+    sources: tuple = ()
+    if bounds is None:
+        if lowers is None or uppers is None:
+            raise ValueError("aabbs() needs lowers and uppers, or packed bounds")
+        if lowers.dtype != wp.vec3 or uppers.dtype != wp.vec3 or lowers.shape != uppers.shape or lowers.ndim != 1:
+            raise ValueError("lowers and uppers must be 1-D vec3 arrays of equal size")
+        if lowers.device != uppers.device or not lowers.device.is_cuda:
+            raise ValueError("lowers and uppers must be CUDA arrays on the same device")
+        bounds = wp.empty((lowers.size, 6), dtype=wp.float32, device=lowers.device)
+        packed, sources = bounds, (lowers, uppers)
+
+        def prepare():
+            wp.launch(_pack_bounds, lowers.size, inputs=[lowers, uppers, packed], device=packed.device)
+
+    elif lowers is not None or uppers is not None:
+        raise ValueError("pass either lowers and uppers, or bounds, not both")
     if bounds.dtype != wp.float32 or bounds.size % 6 or not bounds.device.is_cuda or not bounds.is_contiguous:
         raise ValueError("bounds must be a contiguous CUDA float32 array of AABB sextuplets")
     flags = [int(f) for f in flags] if isinstance(flags, Sequence) else [int(flags)]
@@ -178,7 +273,7 @@ def aabbs(
         _validate_indices(sbt_indices, len(flags), bounds.device)
     descriptor = native.BuildInputCustomPrimitiveArray(
         aabbBuffers=[bounds.ptr],
-        numPrimitives=bounds.size * wp.types.type_size_in_bytes(bounds.dtype) // 24,
+        numPrimitives=bounds.size // 6,
         strideInBytes=24,
         flags=flags,
         numSbtRecords=len(flags),
@@ -186,25 +281,26 @@ def aabbs(
         sbtIndexOffsetSizeInBytes=0 if sbt_indices is None else 4,
         sbtIndexOffsetStrideInBytes=0 if sbt_indices is None else 4,
     )
-    return BuildInput(descriptor, (bounds,) if sbt_indices is None else (bounds, sbt_indices))
+    arrays = (bounds, *sources) if sbt_indices is None else (bounds, *sources, sbt_indices)
+    return BuildInput(descriptor, arrays, prepare=prepare)
 
 
 def curves(
-    vertices: wp.array | Sequence[wp.array],
+    points: wp.array | Sequence[wp.array],
     widths: wp.array | Sequence[wp.array],
     indices: wp.array,
     *,
     curve_type: int = PrimitiveType.ROUND_LINEAR,
     flags: int = GeometryFlags.DISABLE_ANYHIT,
-):
-    """Curve build input; ``indices`` holds the first control vertex of each segment.
+) -> BuildInput:
+    """Curve build input; ``indices`` holds the first control point of each segment.
 
     Creating the input reads indices back once to validate bounds. Keep indices
-    unchanged while reusing the input for builds and updates.
+    unchanged while reusing the input for builds and refits.
     """
-    vertex_keys = [vertices] if isinstance(vertices, wp.array) else list(vertices)
-    width_keys = [widths] * len(vertex_keys) if isinstance(widths, wp.array) else list(widths)
-    num_vertices = _vertex_count(vertex_keys)
+    point_keys = [points] if isinstance(points, wp.array) else list(points)
+    width_keys = [widths] * len(point_keys) if isinstance(widths, wp.array) else list(widths)
+    num_vertices = _vertex_count(point_keys)
     degree = 3
     for name, value in (
         ("ROUND_LINEAR", 1),
@@ -216,33 +312,33 @@ def curves(
         if primitive is not None and int(curve_type) == int(primitive):
             degree = value
             break
-    _validate_indices(indices, num_vertices - degree, vertex_keys[0].device)
-    if len(width_keys) != len(vertex_keys) or any(
+    _validate_indices(indices, num_vertices - degree, point_keys[0].device)
+    if len(width_keys) != len(point_keys) or any(
         key.dtype != wp.float32
         or key.size != num_vertices
         or not key.is_contiguous
-        or key.device != vertex_keys[0].device
+        or key.device != point_keys[0].device
         for key in width_keys
     ):
-        raise ValueError("widths must provide one float32 value per vertex on the vertex device")
+        raise ValueError("widths must provide one float32 value per point on the points device")
     descriptor = native.BuildInputCurveArray(
         curveType=native.PrimitiveType(int(curve_type)),
         numPrimitives=indices.size,
-        vertexBuffers=[key.ptr for key in vertex_keys],
+        vertexBuffers=[key.ptr for key in point_keys],
         numVertices=num_vertices,
         vertexStrideInBytes=12,
         widthBuffers=[key.ptr for key in width_keys],
         widthStrideInBytes=4,
-        normalBuffers=[0] * len(vertex_keys),
+        normalBuffers=[0] * len(point_keys),
         indexBuffer=indices.ptr,
         indexStrideInBytes=4,
         flag=int(flags),
     )
-    return BuildInput(descriptor, (*vertex_keys, *width_keys, indices))
+    return BuildInput(descriptor, (*point_keys, *width_keys, indices))
 
 
-def instances(records: wp.array):
-    """Instance input retaining its records; child handles must stay unchanged on updates."""
+def instances(records: wp.array) -> BuildInput:
+    """Instance input retaining its records; child ids must stay unchanged on refits."""
     if records.dtype is not Instance or not records.device.is_cuda or not records.is_contiguous:
         raise ValueError("records must be a contiguous CUDA array of Instance")
     return BuildInput(
@@ -253,146 +349,208 @@ def instances(records: wp.array):
 
 
 # ---------------------------------------------------------------------------
-# Build and update
+# Acceleration structures
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
 class Accel:
-    """An acceleration structure and the buffers needed to update it in place."""
+    """An OptiX acceleration structure; pass :attr:`id` to kernels.
 
-    handle: int
-    buffer: wp.array
-    scratch: wp.array | None
-    inputs: tuple
-    flags: int
-    motion: object | None
-    device: wp.Device
-    context: Context
-    dependencies: tuple = ()
+    Like ``wp.Mesh``/``wp.Bvh``, construction builds the structure. ``inputs`` come
+    from :func:`triangles`, :func:`curves`, :func:`aabbs`, or :func:`instances`.
+    ``device``/``stream`` follow the usual contract; with neither given, the
+    device of the inputs is used. Structures built with
+    ``BuildFlags.ALLOW_UPDATE`` keep their scratch buffer for :meth:`refit`;
+    others release it once the build has finished and allocate a temporary one
+    per :meth:`rebuild`. ``compact=True`` synchronizes ``stream`` once to shrink a
+    static structure; compacted structures cannot be refit or rebuilt.
 
-
-def build_accel(
-    ctx,
-    inputs: Sequence,
-    *,
-    flags: int = BuildFlags.PREFER_FAST_TRACE,
-    compact: bool = False,
-    motion=None,
-    stream: wp.Stream | None = None,
-    device=None,
-) -> Accel:
-    """Build an acceleration structure over ``inputs`` on ``stream``.
-
-    The result keeps its scratch buffer, sized for :func:`update_accel` refits
-    and in-place rebuilds, because freeing it could race the asynchronous build.
-    ``compact=True`` synchronizes ``stream`` once to shrink a static structure to
-    its final size and release that memory.
+    Release is automatic (``__del__``) or explicit with :meth:`close` or ``with``;
+    either way it is deferred until submitted OptiX work has finished.
     """
-    ctx = require_context(ctx)
-    device = ctx._device(device)
-    stream = ctx._stream(stream)
-    if stream.is_capturing:
-        raise RuntimeError(CAPTURE_ERROR)
-    flags = int(flags) | (BuildFlags.ALLOW_COMPACTION if compact else 0)
-    if compact and flags & BuildFlags.ALLOW_UPDATE:
-        raise ValueError("compacted acceleration structures cannot be updated")
 
-    with ctx._transaction(), wp.ScopedStream(stream):
-        options = native.AccelBuildOptions(buildFlags=flags, operation=native.BUILD_OPERATION_BUILD)
-        if motion is not None:
-            options.motionOptions = motion
+    def __init__(
+        self,
+        inputs: Sequence[BuildInput],
+        *,
+        flags: int = BuildFlags.PREFER_FAST_TRACE,
+        compact: bool = False,
+        motion: object | None = None,
+        device: wp.DeviceLike = None,
+        stream: wp.Stream | None = None,
+    ):
+        self._closed = True
         inputs = tuple(inputs)
-        dependencies = []
         for item in inputs:
             if not isinstance(item, BuildInput):
                 raise TypeError("inputs must be created with triangles(), curves(), aabbs(), or instances()")
-            ctx._check_arrays(item.arrays)
-            if item.instance_records is not None:
-                # Validate GPU-written child handles once. Transform-only updates
-                # retain this topology and do not need another host readback.
-                wp.synchronize_stream(stream)
-                for handle in item.instance_records.numpy()["traversable"].reshape(-1):
-                    if int(handle) == 0:
-                        continue
-                    dependency = ctx._accels.get(int(handle))
-                    if dependency is None:
-                        raise ValueError("Instance geometry must belong to this context")
-                    dependencies.append(dependency)
-        native_inputs = [item.native for item in inputs]
-        sizes = ctx.accelComputeMemoryUsage([options] * len(inputs), native_inputs)
-        scratch = wp.empty(max(sizes.tempSizeInBytes, sizes.tempUpdateSizeInBytes), dtype=wp.uint8, device=device)
-        buffer = wp.empty(sizes.outputSizeInBytes, dtype=wp.uint8, device=device)
-        compacted_size = wp.empty(1, dtype=wp.uint64, device=device) if compact else None
-        emitted = [native.AccelEmitDesc(compacted_size.ptr, native.PROPERTY_TYPE_COMPACTED_SIZE)] if compact else []
-        handle = ctx.accelBuild(
-            stream.cuda_stream,
-            [options] * len(inputs),
-            native_inputs,
-            scratch.ptr,
-            scratch.size,
-            buffer.ptr,
-            buffer.size,
-            emitted,
-        )
-        if compact:
-            size = int(compacted_size.numpy()[0])
-            if size < buffer.size:
-                output = wp.empty(size, dtype=wp.uint8, device=device)
-                handle = ctx.accelCompact(stream.cuda_stream, handle, output.ptr, size)
-                wp.synchronize_stream(stream)
-                buffer = output
-            scratch = None
+        if device is None and stream is None and inputs:
+            device = inputs[0].device
+        context, stream = resolve(device, stream)
+        context.check_arrays([item.arrays for item in inputs])
+        flags = int(flags) | (BuildFlags.ALLOW_COMPACTION if compact else 0)
+        if compact and flags & BuildFlags.ALLOW_UPDATE:
+            raise ValueError("compacted acceleration structures cannot be refit")
 
-        result = Accel(
-            handle=int(handle),
-            buffer=buffer,
-            scratch=scratch,
-            inputs=inputs,
-            flags=flags,
-            motion=motion,
-            device=device,
-            context=ctx,
-            dependencies=tuple(dependencies),
-        )
-        ctx._accels[result.handle] = result
-        return result
+        with wp.ScopedDevice(context.device), wp.ScopedStream(stream):
+            options = native.AccelBuildOptions(buildFlags=flags, operation=native.BUILD_OPERATION_BUILD)
+            if motion is not None:
+                options.motionOptions = motion
+            dependencies = []
+            for item in inputs:
+                if item.instance_records is not None:
+                    # Validate GPU-written child ids once. Refits keep this topology.
+                    wp.synchronize_stream(stream)
+                    for child_id in item.instance_records.numpy()["traversable"].reshape(-1):
+                        if int(child_id) == 0:
+                            continue
+                        child = context._accels.get(int(child_id))
+                        if child is None:
+                            raise ValueError("Instance children must be live acceleration structures on this device")
+                        # Keep the child's memory, not just the object, so closing the child cannot free it.
+                        dependencies.append((child, child._buffer))
+                if item.prepare is not None:
+                    item.prepare()
+            native_inputs = [item.native for item in inputs]
+            sizes = context.native.accelComputeMemoryUsage([options] * len(inputs), native_inputs)
+            scratch = wp.empty(
+                max(sizes.tempSizeInBytes, sizes.tempUpdateSizeInBytes), dtype=wp.uint8, device=context.device
+            )
+            buffer = wp.empty(sizes.outputSizeInBytes, dtype=wp.uint8, device=context.device)
+            compacted_size = wp.empty(1, dtype=wp.uint64, device=context.device) if compact else None
+            emitted = [native.AccelEmitDesc(compacted_size.ptr, native.PROPERTY_TYPE_COMPACTED_SIZE)] if compact else []
+            handle = context.native.accelBuild(
+                stream.cuda_stream,
+                [options] * len(inputs),
+                native_inputs,
+                scratch.ptr,
+                scratch.size,
+                buffer.ptr,
+                buffer.size,
+                emitted,
+            )
+            if compact:
+                size = int(compacted_size.numpy()[0])
+                if size < buffer.size:
+                    output = wp.empty(size, dtype=wp.uint8, device=context.device)
+                    handle = context.native.accelCompact(stream.cuda_stream, handle, output.ptr, size)
+                    wp.synchronize_stream(stream)
+                    buffer = output
+                scratch = None
 
+        self._context = context
+        self._id = int(handle)
+        self._buffer = buffer
+        # The build still reads the scratch buffer; retain() below keeps it alive until it finishes.
+        self._scratch = scratch if flags & BuildFlags.ALLOW_UPDATE else None
+        self._compacted = compact
+        self._inputs = inputs
+        self._flags = flags
+        self._motion = motion
+        self._dependencies = tuple(dependencies)
+        self._closed = False
+        context._accels[self._id] = self
+        context.retain(stream, (buffer, scratch, inputs))
 
-def update_accel(ctx, accel: Accel, *, rebuild: bool = False, stream: wp.Stream | None = None) -> Accel:
-    """Refit ``accel`` to its inputs' current contents, or rebuild it in place.
+    @property
+    def id(self) -> int:
+        """The traversable handle passed to kernels (``wp.uint64``)."""
+        self._check_open()
+        return self._id
 
-    Inputs must keep their primitive counts, indices, and instance child handles.
-    Rebuilding restores trace quality after many refits. Neither allocates nor
-    synchronizes the host on success.
-    """
-    ctx = require_context(ctx)
-    if accel.context is not ctx:
-        raise ValueError("Acceleration structure must belong to this context")
-    if not rebuild and not accel.flags & BuildFlags.ALLOW_UPDATE:
-        raise ValueError("refitting requires an acceleration structure built with BuildFlags.ALLOW_UPDATE")
-    if accel.scratch is None:
-        raise ValueError("compacted acceleration structures cannot be updated")
-    stream = ctx._stream(stream)
-    if stream.is_capturing:
-        raise RuntimeError(CAPTURE_ERROR)
-    with ctx._transaction(), wp.ScopedStream(stream):
-        options = native.AccelBuildOptions(
-            buildFlags=accel.flags,
-            operation=native.BUILD_OPERATION_BUILD if rebuild else native.BUILD_OPERATION_UPDATE,
-        )
-        if accel.motion is not None:
-            options.motionOptions = accel.motion
-        handle = ctx.accelBuild(
-            stream.cuda_stream,
-            [options] * len(accel.inputs),
-            [item.native for item in accel.inputs],
-            accel.scratch.ptr,
-            accel.scratch.size,
-            accel.buffer.ptr,
-            accel.buffer.size,
-            [],
-        )
-        result = dataclasses.replace(accel, handle=int(handle))
-        ctx._accels[result.handle] = result
-        return result
+    @property
+    def device(self) -> wp.Device:
+        return self._context.device
+
+    @property
+    def flags(self) -> int:
+        """The :class:`BuildFlags` the structure was built with."""
+        return self._flags
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def refit(self, stream: wp.Stream | None = None) -> None:
+        """Refit to the inputs' current contents; requires ``BuildFlags.ALLOW_UPDATE``.
+
+        Inputs must keep their primitive counts, indices, and instance child ids.
+        Neither allocates nor synchronizes the host.
+        """
+        self._update(rebuild=False, stream=stream)
+
+    def rebuild(self, stream: wp.Stream | None = None) -> None:
+        """Rebuild in place, restoring trace quality after many refits."""
+        self._update(rebuild=True, stream=stream)
+
+    def close(self) -> None:
+        """Make the structure unusable and release its memory once submitted work has finished."""
+        if self._closed:
+            return
+        self._closed = True
+        if self._context._accels.get(self._id) is self:
+            del self._context._accels[self._id]
+        references = (self._buffer, self._scratch, self._inputs, self._dependencies)
+        self._buffer = self._scratch = None
+        self._inputs = self._dependencies = ()
+        self._context.release(references=references)
+
+    def __enter__(self) -> Accel:
+        self._check_open()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def __del__(self):
+        if not getattr(self, "_closed", True):
+            try:
+                self.close()
+            except Exception:
+                pass
+
+    def __repr__(self):
+        state = "closed" if self._closed else f"id={self._id:#x}"
+        return f"Accel({state}, device={self.device.alias!r})"
+
+    def _check_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("The acceleration structure is closed")
+
+    def _update(self, *, rebuild: bool, stream: wp.Stream | None) -> None:
+        self._check_open()
+        if not rebuild and not self._flags & BuildFlags.ALLOW_UPDATE:
+            raise ValueError("refit() requires an acceleration structure built with BuildFlags.ALLOW_UPDATE")
+        if self._compacted:
+            raise ValueError("compacted acceleration structures cannot be refit or rebuilt")
+        context, stream = resolve(self.device, stream)
+        with wp.ScopedDevice(context.device), wp.ScopedStream(stream):
+            options = native.AccelBuildOptions(
+                buildFlags=self._flags,
+                operation=native.BUILD_OPERATION_BUILD if rebuild else native.BUILD_OPERATION_UPDATE,
+            )
+            if self._motion is not None:
+                options.motionOptions = self._motion
+            native_inputs = [item.native for item in self._inputs]
+            scratch = self._scratch
+            if scratch is None:
+                sizes = context.native.accelComputeMemoryUsage([options] * len(native_inputs), native_inputs)
+                scratch = wp.empty(sizes.tempSizeInBytes, dtype=wp.uint8, device=context.device)
+            for item in self._inputs:
+                if item.prepare is not None:
+                    item.prepare()
+            handle = context.native.accelBuild(
+                stream.cuda_stream,
+                [options] * len(native_inputs),
+                native_inputs,
+                scratch.ptr,
+                scratch.size,
+                self._buffer.ptr,
+                self._buffer.size,
+                [],
+            )
+        if context._accels.get(self._id) is self:
+            del context._accels[self._id]
+        self._id = int(handle)
+        context._accels[self._id] = self
+        context.retain(stream, (self._buffer, scratch, self._inputs))
