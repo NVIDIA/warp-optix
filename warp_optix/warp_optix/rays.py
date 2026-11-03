@@ -16,6 +16,10 @@ import warp as wp
 
 from warp_optix.enums import PrimitiveType, RayFlags
 
+# OPTIX_PRIMITIVE_TYPE_ROUND_*_ROCAPS (0x2508..0x250B) are round curves without PrimitiveType members.
+_ROCAPS_FIRST = 0x2508
+_ROCAPS_LAST = 0x250B
+
 
 @wp.struct
 class AccelQueryRay:
@@ -24,10 +28,11 @@ class AccelQueryRay:
     Attributes:
         result: Whether a hit was found in ``[min_t, max_t]``. On a miss, no other field is defined.
         t: Distance of the closest hit along the ray.
-        u: Triangles: barycentric u. Ribbons: the parameter along the curve. Other built-in curves: the
-            curve parameter. Custom primitives: the bits of the first reported attribute, as float.
-        v: Triangles: barycentric v. Ribbons: the parameter across the curve. Other built-in curves: 0.
-            Custom primitives: the bits of the second reported attribute, as float.
+        u: Triangles: barycentric u. Ribbons: the parameter along the curve. Round curves: the curve
+            parameter. Custom primitives: the bits of the first reported attribute, as float. Other
+            primitives (e.g. spheres): 0.
+        v: Triangles: barycentric v. Ribbons: the parameter across the curve. Custom primitives: the bits
+            of the second reported attribute, as float. Round curves and other primitives: 0.
         instance_id: User id of the hit instance (``0xFFFFFFFF`` when querying a geometry acceleration
             structure directly, which has no instance).
         primitive_index: Index of the hit primitive within its build input.
@@ -72,8 +77,16 @@ def accel_query_ray(
             uv = wp.optix_hit_object_get_ribbon_parameters()
             query.u = uv[0]
             query.v = uv[1]
-        else:
+        elif (
+            primitive == wp.uint32(PrimitiveType.ROUND_LINEAR)
+            or primitive == wp.uint32(PrimitiveType.ROUND_QUADRATIC_BSPLINE)
+            or primitive == wp.uint32(PrimitiveType.ROUND_CUBIC_BSPLINE)
+            or primitive == wp.uint32(PrimitiveType.ROUND_CATMULLROM)
+            or primitive == wp.uint32(PrimitiveType.ROUND_CUBIC_BEZIER)
+            or (primitive >= wp.uint32(_ROCAPS_FIRST) and primitive <= wp.uint32(_ROCAPS_LAST))
+        ):
             query.u = wp.optix_hit_object_get_curve_parameter()
+        # Other primitives (e.g. built-in spheres) have no hit parameters; u and v stay 0.
         query.instance_id = wp.optix_hit_object_get_instance_id()
         query.primitive_index = wp.optix_hit_object_get_primitive_index()
     return query

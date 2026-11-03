@@ -1261,10 +1261,12 @@ class Renderer:
         wp.synchronize_stream(self._render_stream)
         self._optix_graph_warmed = False
         self._destroy_optix_denoiser()
-        # Pipelines and acceleration structures release their native objects and
-        # memory once the work submitted on the render stream has finished.
+        # Close explicitly rather than relying on refcounting: other objects
+        # (e.g. a UsdScene handle held by the caller) may still reference the scene.
         if self._pipeline is not None:
             self._pipeline.close()
+        if self._scene is not None:
+            self._scene.close()
         self._ctx = None
         self._pipeline = None
         self._scene = None

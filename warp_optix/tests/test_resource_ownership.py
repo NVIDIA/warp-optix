@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Resource lifetime, deferred release, failed construction, and device/stream boundaries."""
+"""Resource lifetime, native-object release, failed construction, and device/stream boundaries."""
 
 import gc
 import subprocess
@@ -66,7 +66,7 @@ def geometry():
 
 
 def settle():
-    """Wait for all GPU work, then run every release whose work has completed."""
+    """Wait for all GPU work, then run every native release whose work has completed."""
     wp.synchronize()
     wo.get_context("cuda").collect()
     gc.collect()
@@ -131,14 +131,13 @@ def test_use_after_close_raises_and_with_closes_on_exception():
     assert "closed" in repr(accel) and "closed" in repr(pipeline)
 
 
-def test_pipeline_close_is_deferred_until_submitted_work_completes(destroyed):
+def test_pipeline_native_objects_outlive_submitted_launches(destroyed):
     settle()
     context = wo.get_context("cuda")
     stream = wp.Stream("cuda")
     pipeline = wo.Pipeline(write_value)
     owned = list(pipeline._owned)
     output = wp.zeros(1, dtype=float, device="cuda")
-    output_ref = weakref.ref(output)
     wo.launch(pipeline, 1, [wp.zeros(1, dtype=float, device="cuda")], stream=stream)
     occupy(stream)
     settle()
@@ -150,23 +149,37 @@ def test_pipeline_close_is_deferred_until_submitted_work_completes(destroyed):
     pipeline.close()
     assert pipeline.closed
     assert destroyed == []
-    assert len(context._releases) >= 1
-    del output
-    gc.collect()
-    assert output_ref() is not None
+    assert len(context._releases) == 1
     with pytest.raises(RuntimeError, match="closed"):
         wo.launch(pipeline, 1, [wp.zeros(1, dtype=float, device="cuda")])
 
-    output = output_ref()
     settle()
     assert context._releases == []
     assert {id(obj) for obj in destroyed} == {id(obj) for obj in owned}
     np.testing.assert_array_equal(output.numpy(), [42.0])
 
 
-def test_accel_close_is_deferred_and_releases_inputs():
+def test_dropping_a_launched_pipeline_releases_it_without_garbage_collection(destroyed):
+    output = wp.zeros(1, dtype=float, device="cuda")
+    pipeline = wo.Pipeline(write_value)
+    owned = list(pipeline._owned)
+    pipeline_ref = weakref.ref(pipeline)
+    records_ref = weakref.ref(pipeline._records)
+    wo.launch(pipeline, 1, [output])
+    wp.synchronize()
+    gc.disable()
+    try:
+        # Automatic parameter storage does not point back at the pipeline, so refcounting frees it.
+        del pipeline
+        assert pipeline_ref() is None and records_ref() is None
+        assert {id(obj) for obj in destroyed} == {id(obj) for obj in owned}
+    finally:
+        gc.enable()
+    np.testing.assert_array_equal(output.numpy(), [42.0])
+
+
+def test_accel_close_releases_memory_at_once_in_stream_order():
     settle()
-    context = wo.get_context("cuda")
     stream = wp.Stream("cuda")
     vertices, indices = geometry()
     vertex_ref, index_ref = weakref.ref(vertices), weakref.ref(indices)
@@ -185,16 +198,54 @@ def test_accel_close_is_deferred_and_releases_inputs():
     busy = occupy(stream)
     wo.launch(pipeline, 1, [gas.id, depth], stream=stream)
     assert not busy.is_complete, "busy kernel finished too early for this test"
+    # Like wp.Mesh: memory is released right away; Warp's stream-ordered free keeps
+    # it valid for the launch already submitted.
     gas.close()
-    gc.collect()
     assert gas.closed and gas._buffer is None
-    assert buffer_ref() is not None and vertex_ref() is not None
-    assert len(context._releases) >= 1
-
-    settle()
-    np.testing.assert_allclose(depth.numpy(), [5.0])
-    assert context._releases == []
     assert buffer_ref() is None and vertex_ref() is None and index_ref() is None
+
+    wp.synchronize_stream(stream)
+    np.testing.assert_allclose(depth.numpy(), [5.0])
+
+
+def test_native_release_runs_under_the_resource_device(destroyed):
+    devices = wp.get_cuda_devices()
+    if len(devices) < 2:
+        pytest.skip("requires two CUDA devices")
+    pipeline = wo.Pipeline(write_value, device=devices[1])
+    output = wp.zeros(1, dtype=float, device=devices[1])
+    wo.launch(pipeline, 1, [output])
+    wp.synchronize()
+    seen = []
+    original = native.Pipeline.destroy
+
+    def destroy(self):
+        seen.append(wp.get_device())
+        return original(self)
+
+    native.Pipeline.destroy = destroy
+    try:
+        with wp.ScopedDevice(devices[0]):
+            pipeline.close()
+    finally:
+        native.Pipeline.destroy = original
+    assert seen == [devices[1]]
+
+
+def test_native_release_waits_for_graph_capture_to_end(destroyed):
+    pipeline = wo.Pipeline(write_value)
+    owned = list(pipeline._owned)
+    output = wp.zeros(1, dtype=float, device="cuda")
+    wo.launch(pipeline, 1, [output])
+    wp.synchronize()
+    context = wo.get_context("cuda")
+    with wp.ScopedCapture(device="cuda"):
+        pipeline.close()
+        assert destroyed == []
+        assert len(context._releases) == 1
+    context.collect()
+    assert context._releases == []
+    assert {id(obj) for obj in destroyed} == {id(obj) for obj in owned}
 
 
 def test_instance_accel_keeps_closed_child_alive_and_traces():

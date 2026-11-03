@@ -3,7 +3,6 @@
 
 """Explicit parameter schemas, buffer ordering, and stage declarations."""
 
-import gc
 import weakref
 
 import numpy as np
@@ -163,7 +162,7 @@ def spin(iterations: int, sink: wp.array[float]):
     sink[0] = x
 
 
-def test_submitted_launch_retains_explicit_storage_and_nested_inputs():
+def test_dropping_launch_params_frees_storage_in_stream_order():
     pipeline = wo.Pipeline(write, params_type=Params)
     device = pipeline.device
     stream = wp.Stream(device)
@@ -181,17 +180,57 @@ def test_submitted_launch_retains_explicit_storage_and_nested_inputs():
     output = wp.empty(128, dtype=wp.uint32, device=device)
     launch_params = wo.LaunchParams(pipeline)
     storage_ref = weakref.ref(launch_params.data)
-    output_ref = weakref.ref(output)
     launch_params.assign(params(53, output), stream=stream)
     wo.launch(pipeline, (128,), params=launch_params, stream=stream)
     assert not busy.is_complete, "busy kernel finished too early for this test"
-    del launch_params, output
-    gc.collect()
-    # Pending operations retain storage even if the caller drops the parameter object.
-    assert storage_ref() is not None and output_ref() is not None
+    # Like a wp.array, the storage goes away with its last reference (no garbage collection
+    # needed); Warp frees the device memory in stream order, so the pending launch still reads it.
+    del launch_params
+    assert storage_ref() is None
     wp.synchronize_stream(stream)
-    np.testing.assert_array_equal(output_ref().numpy(), np.full(128, 53))
-    # Once the work has completed, nothing holds them.
-    wo.get_context(device).collect()
-    gc.collect()
-    assert storage_ref() is None and output_ref() is None
+    np.testing.assert_array_equal(output.numpy(), np.full(128, 53))
+
+
+def test_launch_params_close_and_with():
+    pipeline = wo.Pipeline(write, params_type=Params)
+    output = wp.zeros(16, dtype=wp.uint32, device=pipeline.device)
+    with wo.LaunchParams(pipeline) as launch_params:
+        storage_ref = weakref.ref(launch_params.data)
+        launch_params.assign(params(7, output))
+        wo.launch(pipeline, (16,), params=launch_params)
+    assert launch_params.closed and "closed" in repr(launch_params)
+    assert storage_ref() is None
+    np.testing.assert_array_equal(output.numpy(), np.full(16, 7))
+    launch_params.close()  # Idempotent.
+    for use in (
+        lambda: launch_params.data,
+        lambda: launch_params.assign(params(1, output)),
+        lambda: wo.launch(pipeline, (16,), params=launch_params),
+    ):
+        with pytest.raises(RuntimeError, match="closed"):
+            use()
+    with pytest.raises(RuntimeError, match="closed"):
+        with launch_params:
+            pass
+
+
+def test_launches_record_no_events(monkeypatch):
+    pipeline = wo.Pipeline(write)
+    device = pipeline.device
+    output = wp.empty(64, dtype=wp.uint32, device=device)
+    explicit = wo.LaunchParams(pipeline)
+    wo.launch(pipeline, (64,), [1, output])  # Warm-up.
+    recorded = []
+    original = wp.Stream.record_event
+
+    def record_event(self, *args, **kwargs):
+        recorded.append(self)
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(wp.Stream, "record_event", record_event)
+    for value in range(8):
+        wo.launch(pipeline, (64,), [value, output])
+        explicit.assign([value, output])
+        wo.launch(pipeline, (64,), params=explicit)
+    assert recorded == []
+    np.testing.assert_array_equal(output.numpy(), np.full(64, 7))

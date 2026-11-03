@@ -1389,6 +1389,18 @@ class Scene:
             np.array(texcoords, dtype=np.float32),
         )
 
+    def close(self):
+        """Release the acceleration structures now and clear the scene.
+
+        Dropping the scene also releases them; ``close()`` makes it deterministic
+        when other objects may still reference the scene.
+        """
+        if self._ias is not None:
+            self._ias.close()
+        for gas in self._gas:
+            gas.close()
+        self.clear()
+
     def clear(self):
         """Clear all meshes and instances."""
         self._meshes.clear()

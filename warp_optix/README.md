@@ -56,17 +56,21 @@ Constructors and free functions take `device=` and, where they submit work, `str
 `wo.Accel` without either uses the device of its inputs; `wo.launch` defaults to the pipeline's
 device. Methods of device-bound objects (`accel.refit()`, `params.assign()`) take only `stream=`.
 
-Resources (`wo.Accel`, `wo.Pipeline`, `wo.LaunchParams`) release themselves when garbage
-collected, or explicitly with `.close()` or `with`:
+Resources (`wo.Accel`, `wo.Pipeline`, `wo.LaunchParams`) follow Warp's lifetime model
+(`wp.Mesh`, `wp.array`): they release themselves when the last reference is dropped, or explicitly
+with `.close()` or `with`:
 
-- Every build, refit, and launch keeps the arrays, acceleration structures, pipeline, and parameter
-  block it reads alive until its CUDA event completes.
-- `close()` makes a resource unusable at once (`RuntimeError` on further use) and frees its memory and
-  native objects only after all OptiX work submitted before the close has finished. It never blocks
-  the host.
+- Builds, refits, and launches record no CUDA events and keep nothing alive for in-flight work.
+- `close()` makes a resource unusable at once (`RuntimeError` on further use) and frees its device
+  memory right away. That memory is `wp.array` storage, which Warp frees in stream order, so work
+  already submitted can still read it. It never blocks the host.
+- A pipeline's native OptiX objects (pipeline, module, program groups) are destroyed under the
+  device's CUDA context once the launches submitted before the close have finished, and never during
+  a graph capture on the device.
 - Kernels see an acceleration structure only as the integer `accel.id`. As with `wp.Mesh.id`, keep
-  the `wo.Accel` alive while work that reads the id may still be submitted, or pass the `wo.Accel`
-  object itself in launch inputs, which retains it.
+  the `wo.Accel` alive while work that reads the id may still be submitted. A `wo.Accel` passed in
+  launch inputs is referenced by the pipeline's parameter storage until the next launch on that
+  stream replaces it.
 - An instance structure keeps the memory of its child structures alive, even if a child is closed.
 - Failed pipeline construction destroys only the native objects it created.
 
@@ -172,9 +176,10 @@ wo.launch(pipeline, dim=(height, width), stream=stream, params=params)
 For inferred schemas, `assign()` takes the argument sequence instead.
 `LaunchParams` belongs to its pipeline (and its device) and must be assigned before use.
 Supply either `inputs` or `params`, never both. Updates and launches on shared
-parameters are ordered with CUDA events, including across streams. Separate
-`LaunchParams` objects allow independent concurrent launches. Referenced arrays remain retained;
-callers must still order their own writes to those arrays. Directly modifying
+parameters are ordered on the GPU, including across streams. Separate
+`LaunchParams` objects allow independent concurrent launches. Referenced arrays remain retained
+until replaced or until the `LaunchParams` is released (`close()`/`with`); callers must still order
+their own writes to those arrays. Directly modifying
 `params.data` bypasses the API's ordering and validation.
 
 An optional `@wo.kernel(kind=wo.ProgramKind.RAYGEN, module="unique")`
@@ -681,7 +686,7 @@ when direct registration is unavailable.
 ## Layout
 
 - `warp_optix/__init__.py` — public API.
-- `warp_optix/context.py` — implicit per-device contexts (`get_context`), device/stream resolution, and deferred release.
+- `warp_optix/context.py` — implicit per-device contexts (`get_context`), device/stream resolution, and native-object release.
 - `warp_optix/config.py` — global settings (`validation`, `log_level`).
 - `warp_optix/accel.py` — build inputs, `Accel`, and `Instance`/`make_instance`.
 - `warp_optix/pipeline.py` — `Pipeline`, `HitGroup`, `LaunchParams`, and `launch`.

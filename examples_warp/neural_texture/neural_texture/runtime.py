@@ -131,17 +131,19 @@ def upload_asset(
     weight_offsets = []
     matrix_sizes = []
     matrix_total = 0
-    for layer in asset.layers:
-        matrix_total = _align(matrix_total, ALIGNMENT)
-        weight_offsets.append(matrix_total)
-        size = context.coopVecMatrixComputeSize(
-            layer.weights.shape[0],
-            layer.weights.shape[1],
-            output_element_type,
-            native.COOP_VEC_MATRIX_LAYOUT_INFERENCING_OPTIMAL,
-        )
-        matrix_sizes.append(size)
-        matrix_total += size
+    # OptiX queries run under the target device's CUDA context, not whichever one is current.
+    with wp.ScopedDevice(device):
+        for layer in asset.layers:
+            matrix_total = _align(matrix_total, ALIGNMENT)
+            weight_offsets.append(matrix_total)
+            size = context.coopVecMatrixComputeSize(
+                layer.weights.shape[0],
+                layer.weights.shape[1],
+                output_element_type,
+                native.COOP_VEC_MATRIX_LAYOUT_INFERENCING_OPTIMAL,
+            )
+            matrix_sizes.append(size)
+            matrix_total += size
 
     bias_offsets = []
     bias_total = 0

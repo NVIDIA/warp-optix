@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -38,13 +39,21 @@ class UsdScene:
     """
 
     def __init__(self, scene: Scene, stage, source_path: str, paths: Iterable[str]):
-        self._scene = scene
+        # Weak, so the scene (which references this object as ``usd_scene``) is freed by refcounting.
+        self._scene_ref = weakref.ref(scene)
         self._stage = stage
         self._source_path = str(source_path)
         self._handles = tuple(UsdTransformHandle(index, str(path), id(self)) for index, path in enumerate(paths))
         self._path_to_handle = {handle.path: handle for handle in self._handles}
         self._local_transforms_device = None
         self._world_transforms_device = None
+
+    @property
+    def _scene(self) -> Scene:
+        scene = self._scene_ref()
+        if scene is None:
+            raise RuntimeError("USD scene handle was invalidated because its scene was released")
+        return scene
 
     def _attach_device_arrays(self, local_transforms, world_transforms):
         self._local_transforms_device = local_transforms

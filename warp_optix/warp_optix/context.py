@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Per-device OptiX contexts, device/stream resolution, and deferred release.
+"""Per-device OptiX contexts, device/stream resolution, and resource release.
 
 Like Warp's CUDA context, the OptiX device context is implicit: each CUDA
 device gets one, created on first use with the settings in
@@ -9,17 +9,21 @@ device gets one, created on first use with the settings in
 (:class:`~warp_optix.Accel`, :class:`~warp_optix.Pipeline`,
 :class:`~warp_optix.LaunchParams`) hold a reference to their context.
 
-Lifetime contract:
+Lifetime contract (the same as ``wp.Mesh`` and ``wp.array``):
 
-* Every build, refit, and launch records a CUDA event and keeps the arrays,
-  acceleration structures, pipelines, and parameter blocks it reads alive until
-  that event completes.
-* ``close()`` (also called by ``with`` and ``__del__``) makes a resource unusable
-  at once and releases its memory and native objects only after all OptiX work
-  submitted before the close has completed. It never blocks the host.
+* Builds, refits, and launches record no events and hold no references to
+  their inputs beyond what the resources themselves keep.
+* ``close()`` (also called by ``with``, and when the last reference is dropped)
+  makes a resource unusable at once and releases its device memory right away.
+  Device memory is ``wp.array`` storage, whose release is stream-ordered by
+  Warp, so work already submitted can still read it. It never blocks the host.
+* Native OptiX objects of a pipeline (pipeline, module, program groups) are
+  destroyed under the device's CUDA context once the launches submitted before
+  the close have finished; while a graph capture is running on the device,
+  destruction waits until it ends.
 * Kernels see an acceleration structure only as an integer ``id``. Keep the
-  :class:`~warp_optix.Accel` alive (or pass the object itself in launch inputs)
-  while work that reads the id may still be submitted, as with ``wp.Mesh.id``.
+  :class:`~warp_optix.Accel` alive while work that reads the id may still be
+  submitted, as with ``wp.Mesh.id``.
 * OptiX work cannot be captured into CUDA graphs; every entry point refuses
   capture.
 """
@@ -59,9 +63,8 @@ class Context:
         self._destroyed = False
         # Live acceleration structures by id, for validating instance children.
         self._accels: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
-        # (event, references) of submitted work, and (events, callback, references) of pending releases.
-        self._pending: list[tuple[wp.Event, tuple]] = []
-        self._releases: list[tuple[list[wp.Event], object, tuple]] = []
+        # Native destroys waiting for (events, streams, callback); events are recorded outside graph capture.
+        self._releases: list[tuple[list[wp.Event] | None, tuple, object]] = []
         owner = weakref.ref(self)
 
         def log(level, tag, message):
@@ -93,29 +96,34 @@ class Context:
         """The PyOptiX ``DeviceContext`` (borrowed; do not destroy)."""
         return self._native
 
-    def retain(self, stream: wp.Stream, references) -> None:
-        """Keep ``references`` alive until the work just submitted to ``stream`` completes."""
-        self.collect()
-        self._pending.append((stream.record_event(), tuple(references)))
+    def release(self, callback, streams=()) -> None:
+        """Run ``callback`` under this device's CUDA context once work submitted to ``streams`` has finished.
 
-    def release(self, callback=None, references=()) -> None:
-        """Run ``callback`` and drop ``references`` once all work submitted so far has completed."""
+        It runs immediately when that work is already done and no graph capture is
+        running on the device; otherwise it runs on a later OptiX call on this
+        device, or at interpreter exit.
+        """
         if self._destroyed:
             # The context, and every native object created from it, is already gone (interpreter exit).
             return
-        self._releases.append(([event for event, _ in self._pending], callback, tuple(references)))
+        self._releases.append((None, tuple(streams), callback))
         self.collect()
 
     def collect(self) -> None:
-        """Drop references of completed work and run releases whose work has finished."""
-        self._pending = [(event, refs) for event, refs in self._pending if not event.is_complete]
-        waiting = []
-        for events, callback, references in self._releases:
-            if all(event.is_complete for event in events):
-                _run(callback)
-            else:
-                waiting.append((events, callback, references))
-        self._releases = waiting
+        """Run pending releases whose work has finished, unless a graph capture is running."""
+        if not self._releases or self.device.is_capturing:
+            # Native destroys free device memory, which graph capture does not allow.
+            return
+        with wp.ScopedDevice(self.device):
+            waiting = []
+            for events, streams, callback in self._releases:
+                if events is None:
+                    events = [stream.record_event() for stream in streams]
+                if all(event.is_complete for event in events):
+                    _run(callback)
+                else:
+                    waiting.append((events, streams, callback))
+            self._releases = waiting
 
     def check_arrays(self, values) -> None:
         for value in _arrays(values):
@@ -125,10 +133,9 @@ class Context:
     def _shutdown(self) -> None:
         with wp.ScopedDevice(self.device):
             wp.synchronize_device(self.device)
-            for _, callback, _ in self._releases:
+            for _, _, callback in self._releases:
                 _run(callback)
             self._releases.clear()
-            self._pending.clear()
             self._accels.clear()
             self._native.destroy()
             self._destroyed = True
@@ -170,6 +177,7 @@ def resolve(device=None, stream=None) -> tuple[Context, wp.Stream]:
         stream = wp.get_stream(context.device)
     if stream.is_capturing:
         raise RuntimeError(CAPTURE_ERROR)
+    context.collect()
     return context, stream
 
 

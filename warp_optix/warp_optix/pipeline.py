@@ -68,8 +68,10 @@ class Pipeline:
     groups. This cannot be combined with ``miss``, ``hit_groups``, or
     ``ray_types``; the pipeline keeps the snapshot as :attr:`sbt_layout`.
 
-    Release is automatic (``__del__``) or explicit with :meth:`close` or ``with``;
-    either way it is deferred until submitted OptiX work has finished.
+    Release is automatic when the last reference is dropped, or explicit with
+    :meth:`close` or ``with``. Device memory is freed in stream order, like
+    ``wp.array``; the native OptiX objects are destroyed once the launches
+    submitted before the release have finished.
     """
 
     def __init__(
@@ -298,7 +300,8 @@ class Pipeline:
         self._params_type = params
         self._explicit_params = params_type is not None
         self._sbt_layout = layout
-        self._buffers: dict[int, LaunchParams] = {}  # automatic parameter storage per CUDA stream
+        self._buffers: dict[int, _ParamsStorage] = {}  # automatic parameter storage per CUDA stream
+        self._streams: dict[int, wp.Stream] = {}  # streams launched on, by CUDA stream handle
         self._closed = False
 
     @property
@@ -320,20 +323,22 @@ class Pipeline:
         return self._closed
 
     def close(self) -> None:
-        """Make the pipeline unusable and destroy it once submitted work has finished."""
+        """Make the pipeline unusable and release it; native objects outlive launches already submitted."""
         if self._closed:
             return
         self._closed = True
         owned = self._owned
-        references = (self._records, tuple(self._buffers.values()))
+        streams = tuple(self._streams.values())
         self._buffers = {}
+        self._streams = {}
         self._owned = ()
+        self._records = None
 
         def destroy():
             for obj in reversed(owned):
                 obj.destroy()
 
-        self._context.release(destroy, references)
+        self._context.release(destroy, streams)
 
     def __enter__(self) -> Pipeline:
         self._check_open()
@@ -357,36 +362,29 @@ class Pipeline:
             raise RuntimeError("The pipeline is closed")
 
 
-class LaunchParams:
-    """Launch-parameter storage for one pipeline, written with :meth:`assign`.
+class _ParamsStorage:
+    """A device launch-parameter block and the inputs written into it.
 
-    Pass it as ``launch(pipeline, dim, params=...)`` to launch with preset
-    parameters. The device comes from the pipeline. Reuse across streams is
-    ordered with CUDA events; use separate objects for independent concurrent
-    launches. Writing ``data`` directly bypasses that ordering.
+    Holds no reference to its pipeline, so a pipeline's automatic storage does
+    not form a reference cycle and ``del pipeline`` releases it at once.
     """
 
-    def __init__(self, pipeline: Pipeline):
-        if not isinstance(pipeline, Pipeline):
-            raise TypeError("LaunchParams needs a warp_optix.Pipeline")
-        pipeline._check_open()
-        if wp.get_stream(pipeline.device).is_capturing:
-            raise RuntimeError(CAPTURE_ERROR)
-        self.pipeline = pipeline
-        self.data = wp.empty(1, dtype=pipeline.params_type, device=pipeline.device)
-        self._event = None
-        self._inputs: tuple = ()
-        self._initialized = False
+    __slots__ = ("data", "initialized", "inputs", "stream")
 
-    def assign(self, values, stream: wp.Stream | None = None) -> None:
-        """Write a params-struct instance, or the raygen arguments as a sequence.
+    def __init__(self, params_type, device: wp.Device):
+        self.data = wp.empty(1, dtype=params_type, device=device)
+        self.inputs: tuple = ()
+        self.initialized = False
+        self.stream: wp.Stream | None = None
 
-        Waits on prior uses of this object on the GPU, never on the host. Arrays and
-        acceleration structures in ``values`` stay referenced until replaced.
-        """
-        pipeline = self.pipeline
-        pipeline._check_open()
-        context, stream = resolve(pipeline.device, stream)
+    def use(self, stream: wp.Stream) -> None:
+        """Order a use on ``stream`` after the previous use when that was on another stream."""
+        previous = self.stream
+        if previous is not None and previous.cuda_stream != stream.cuda_stream:
+            stream.wait_stream(previous)
+        self.stream = stream
+
+    def write(self, pipeline: Pipeline, context, stream: wp.Stream, values) -> None:
         if pipeline._explicit_params:
             if getattr(values, "_cls", None) is not pipeline.params_type:
                 raise TypeError("values must be an instance of the pipeline params_type")
@@ -396,13 +394,73 @@ class LaunchParams:
         inputs, accels = _replace_accels(inputs)
         context.check_arrays(inputs)
         with wp.ScopedDevice(context.device), wp.ScopedStream(stream):
-            if self._event is not None:
-                stream.wait_event(self._event)
-            wp.launch(pipeline._writer, dim=1, inputs=[*inputs, self.data], device=pipeline.device, stream=stream)
-            self._inputs = (*inputs, *accels)
-            self._initialized = True
-            self._event = stream.record_event()
-        context.retain(stream, (self.data, self._inputs))
+            self.use(stream)
+            wp.launch(pipeline._writer, dim=1, inputs=[*inputs, self.data], device=context.device, stream=stream)
+        self.inputs = (*inputs, *accels)
+        self.initialized = True
+
+
+class LaunchParams:
+    """Launch-parameter storage for one pipeline, written with :meth:`assign`.
+
+    Pass it as ``launch(pipeline, dim, params=...)`` to launch with preset
+    parameters. The device comes from the pipeline. Uses on different streams
+    are ordered on the GPU; use separate objects for independent concurrent
+    launches. Writing ``data`` directly bypasses that ordering.
+
+    Release is automatic when the last reference is dropped, or explicit with
+    :meth:`close` or ``with``; memory is freed in stream order, like ``wp.array``.
+    """
+
+    def __init__(self, pipeline: Pipeline):
+        if not isinstance(pipeline, Pipeline):
+            raise TypeError("LaunchParams needs a warp_optix.Pipeline")
+        pipeline._check_open()
+        if wp.get_stream(pipeline.device).is_capturing:
+            raise RuntimeError(CAPTURE_ERROR)
+        self.pipeline = pipeline
+        self._storage: _ParamsStorage | None = _ParamsStorage(pipeline.params_type, pipeline.device)
+
+    @property
+    def data(self) -> wp.array:
+        """The device parameter block (one ``params_type`` element)."""
+        return self._open_storage().data
+
+    @property
+    def closed(self) -> bool:
+        return self._storage is None
+
+    def assign(self, values, stream: wp.Stream | None = None) -> None:
+        """Write a params-struct instance, or the raygen arguments as a sequence.
+
+        Waits on prior uses of this object on other streams on the GPU, never on
+        the host. Arrays and acceleration structures in ``values`` stay referenced
+        until replaced or until this object is released.
+        """
+        storage = self._open_storage()
+        pipeline = self.pipeline
+        pipeline._check_open()
+        context, stream = resolve(pipeline.device, stream)
+        storage.write(pipeline, context, stream, values)
+
+    def close(self) -> None:
+        """Make the parameters unusable and release their memory and referenced inputs."""
+        self._storage = None
+
+    def __enter__(self) -> LaunchParams:
+        self._open_storage()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def __repr__(self):
+        return f"LaunchParams({'closed, ' if self.closed else ''}device={self.pipeline.device.alias!r})"
+
+    def _open_storage(self) -> _ParamsStorage:
+        if self._storage is None:
+            raise RuntimeError("The launch parameters are closed")
+        return self._storage
 
 
 def launch(
@@ -418,10 +476,11 @@ def launch(
 
     Pass the raygen arguments as ``inputs`` (or ``inputs=[struct]`` with an
     explicit ``params_type``), or preset :class:`LaunchParams` as ``params``.
-    ``wo.Accel`` objects in ``inputs`` are passed as their ``id`` and kept alive
-    for the launch. ``device`` defaults to the pipeline's device; a different
-    device is rejected. Automatic parameter storage is separate for each CUDA
-    stream. Calls from multiple host threads require external synchronization.
+    ``wo.Accel`` objects in ``inputs`` are passed as their ``id``. As with
+    ``wp.launch``, keep resources alive while submitted work may use them.
+    ``device`` defaults to the pipeline's device; a different device is
+    rejected. Automatic parameter storage is separate for each CUDA stream.
+    Calls from multiple host threads require external synchronization.
     """
     if not isinstance(pipeline, Pipeline):
         raise TypeError("pipeline must be a warp_optix.Pipeline")
@@ -434,40 +493,39 @@ def launch(
         raise ValueError("dim must contain one to three positive integers")
     if (inputs is None) == (params is None):
         raise ValueError("Provide exactly one of inputs or params")
+    key = stream.cuda_stream
     if params is not None:
         if not isinstance(params, LaunchParams) or params.pipeline is not pipeline:
             raise ValueError("params must be LaunchParams of this pipeline")
-        if not params._initialized:
+        storage = params._open_storage()
+        if not storage.initialized:
             raise ValueError("Assign launch parameters before launching with them")
-        buffer = params
     else:
         inputs = tuple(inputs)
-        key = stream.cuda_stream
-        buffer = pipeline._buffers.get(key)
-        if buffer is None:
-            buffer = pipeline._buffers[key] = LaunchParams(pipeline)
+        storage = pipeline._buffers.get(key)
+        if storage is None:
+            storage = pipeline._buffers[key] = _ParamsStorage(pipeline.params_type, context.device)
         if pipeline._explicit_params:
             if len(inputs) != 1:
                 raise ValueError("Explicit params_type requires inputs=[struct_instance]")
-            buffer.assign(inputs[0], stream)
+            storage.write(pipeline, context, stream, inputs[0])
         else:
-            buffer.assign(inputs, stream)
+            storage.write(pipeline, context, stream, inputs)
     with wp.ScopedDevice(context.device), wp.ScopedStream(stream):
-        if buffer._event is not None:
-            stream.wait_event(buffer._event)
+        storage.use(stream)
         width, height, depth = [*reversed(dim), 1, 1][:3]
         native.launch(
             pipeline._native,
             stream.cuda_stream,
-            buffer.data.ptr,
+            storage.data.ptr,
             pipeline._params_size,
             pipeline._sbt,
             width,
             height,
             depth,
         )
-        buffer._event = stream.record_event()
-    context.retain(stream, (pipeline, buffer, buffer.data, buffer._inputs))
+    # Remembered so close() can wait for these launches before destroying the native pipeline.
+    pipeline._streams[key] = stream
 
 
 def _replace_accels(values: tuple) -> tuple[tuple, tuple]:

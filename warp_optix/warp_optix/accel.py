@@ -367,8 +367,8 @@ class Accel:
     per :meth:`rebuild`. ``compact=True`` synchronizes ``stream`` once to shrink a
     static structure; compacted structures cannot be refit or rebuilt.
 
-    Release is automatic (``__del__``) or explicit with :meth:`close` or ``with``;
-    either way it is deferred until submitted OptiX work has finished.
+    Release is automatic when the last reference is dropped, or explicit with
+    :meth:`close` or ``with``; memory is freed in stream order, like ``wp.array``.
     """
 
     def __init__(
@@ -443,7 +443,7 @@ class Accel:
         self._context = context
         self._id = int(handle)
         self._buffer = buffer
-        # The build still reads the scratch buffer; retain() below keeps it alive until it finishes.
+        # Dropping a scratch buffer the build still reads is safe: Warp frees device memory in stream order.
         self._scratch = scratch if flags & BuildFlags.ALLOW_UPDATE else None
         self._compacted = compact
         self._inputs = inputs
@@ -452,7 +452,6 @@ class Accel:
         self._dependencies = tuple(dependencies)
         self._closed = False
         context._accels[self._id] = self
-        context.retain(stream, (buffer, scratch, inputs))
 
     @property
     def id(self) -> int:
@@ -486,16 +485,14 @@ class Accel:
         self._update(rebuild=True, stream=stream)
 
     def close(self) -> None:
-        """Make the structure unusable and release its memory once submitted work has finished."""
+        """Make the structure unusable and release its memory (stream-ordered, like ``wp.array``)."""
         if self._closed:
             return
         self._closed = True
         if self._context._accels.get(self._id) is self:
             del self._context._accels[self._id]
-        references = (self._buffer, self._scratch, self._inputs, self._dependencies)
         self._buffer = self._scratch = None
         self._inputs = self._dependencies = ()
-        self._context.release(references=references)
 
     def __enter__(self) -> Accel:
         self._check_open()
@@ -555,4 +552,3 @@ class Accel:
             del context._accels[self._id]
         self._id = int(handle)
         context._accels[self._id] = self
-        context.retain(stream, (self._buffer, scratch, self._inputs))
