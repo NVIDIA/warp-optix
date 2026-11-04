@@ -166,6 +166,8 @@ extend-exclude = ["third_party", "uv.lock", "licenses", "*_LICENSE.txt", "LICENS
 lod = "lod"
 mis = "mis"
 metalness = "metalness"
+# PTX instruction (set predicate), inspected in generated-code tests
+setp = "setp"
 # Unreal Engine material names (OmniUe4Translucent)
 ue = "ue"
 Ue = "Ue"

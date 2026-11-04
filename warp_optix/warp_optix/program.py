@@ -44,23 +44,24 @@ class ProgramKind(enum.Enum):
     CONTINUATION_CALLABLE = "__continuation_callable__"
 
 
-# Public stage-declaration enum.
-OptixKernelType = ProgramKind
+def kernel(func=None, *, kind: ProgramKind, **options):
+    """Declare a Warp kernel as an OptiX program of ``kind``, like ``@wp.kernel``.
 
-
-def optix_kernel(kind: ProgramKind, **options):
-    """Declare a stage on a Warp kernel; pipeline construction validates it."""
+    Use as ``@wo.kernel(kind=wo.ProgramKind.MISS)``; ``options`` are forwarded to
+    ``wp.kernel``. The result is an ordinary Warp kernel. Pipeline construction
+    checks that it occupies a slot of the declared kind.
+    """
     if not isinstance(kind, ProgramKind):
-        raise TypeError("kind must be an OptixKernelType")
+        raise TypeError("kind must be a ProgramKind")
 
     def decorate(func):
         if isinstance(func, wp.Kernel) and options:
             raise TypeError("Set Warp kernel options on @wp.kernel when decorating an existing kernel")
-        kernel = func if isinstance(func, wp.Kernel) else wp.kernel(func, **options)
-        kernel._optix_kind = kind
-        return kernel
+        result = func if isinstance(func, wp.Kernel) else wp.kernel(func, **options)
+        result._optix_kind = kind
+        return result
 
-    return decorate
+    return decorate if func is None else decorate(func)
 
 
 def kernel_signature(kernel: wp.Kernel) -> dict[str, type]:

@@ -45,7 +45,7 @@ uv run --no-sync python examples_warp/example_warp_optix_pathtraced_hairball.py
 ```python
 import warp as wp
 import warp_optix as wo
-from warp_optix.pathtracing import PathTracerAPI
+from warp_optix.pathtracing import PathTracer
 ```
 
 For custom ray tracers, OptiX programs are ordinary Warp kernels and launches
@@ -55,28 +55,28 @@ mirror `wp.launch`:
 @wp.kernel(module="unique")
 def render(scene: wp.uint64, image: wp.array2d[float]):
     y, x = wp.tid()
-    origin = wp.vec3(float(x), float(y), 10.0)
-    hit = wo.closest_hit(scene, origin, wp.vec3(0.0, 0.0, -1.0), 0.0, 100.0, wp.uint32(0xFF), wp.uint32(0))
-    image[y, x] = hit.t
+    start = wp.vec3(float(x), float(y), 10.0)
+    query = wo.accel_query_ray(scene, start, wp.vec3(0.0, 0.0, -1.0), 100.0)
+    image[y, x] = query.t if query.result else 0.0
 
 
-ctx = wo.create_context("cuda:0")
-gas = wo.build_accel(ctx, [wo.triangles(vertices, indices)])  # Warp device arrays
-pipeline = wo.create_pipeline(ctx, render)
-wo.launch(pipeline, dim=(480, 640), inputs=[gas.handle, image])
-wo.destroy_context(ctx)
+accel = wo.Accel([wo.triangles(points, indices)])  # Warp device arrays, like wp.Mesh
+pipeline = wo.Pipeline(render)
+wo.launch(pipeline, dim=(480, 640), inputs=[accel.id, image])
 ```
 
-The raygen kernel's arguments are the launch parameters. Managed contexts retain
-pipelines, acceleration structures, and their input buffers until closure.
-Use `with wo.create_context(...) as ctx:` or call `wo.destroy_context(ctx)` for
-synchronized cleanup. Instances are written with `wo.make_instance()` and refit
-with `wo.update_accel()`. Initial instance builds validate child handles with a
-host readback; compaction also synchronizes. Transform-only refits and launches
-remain asynchronous on the selected Warp stream.
+The raygen kernel's arguments are the launch parameters. Like Warp's CUDA context,
+the OptiX context is implicit (one per device, configured through `wo.config`).
+`wo.Accel`, `wo.Pipeline`, and `wo.LaunchParams` release themselves when the last
+reference is dropped, or explicitly with `close()`/`with`. As with `wp.Mesh` and
+`wp.array`, device memory is freed in stream order; a pipeline's native OptiX objects
+are destroyed once its submitted launches have finished. Instances are written
+with `wo.make_instance()` and refit with `accel.refit()`. Initial instance builds
+validate child ids with a host readback; compaction also synchronizes. Refits and
+launches remain asynchronous on the selected Warp stream.
 
 SBT records are built automatically. For named ray types and explicit hit-group
-layouts, pass a `wo.SbtBuilder` to `create_pipeline(..., sbt=builder)`.
+layouts, pass a `wo.SbtBuilder` to `wo.Pipeline(..., sbt=builder)`.
 
 See the [API guide](warp_optix/README.md) and runnable [examples](examples_warp/README.md).
 
@@ -87,9 +87,9 @@ from warp_optix import native
 ```
 
 `native` exposes PyOptiX's API plus the supplemental bindings. Native
-objects use explicit destruction. `create_context()` returns a managed
-`Context`; `ctx.native_handle` provides borrowed access to its PyOptiX
-`DeviceContext`. Do not destroy that borrowed handle separately.
+objects use explicit destruction. `wo.get_context(device).native` provides
+borrowed access to a device's PyOptiX `DeviceContext`. Do not destroy that
+borrowed handle separately.
 Standard objects are the dependency's actual `optix` types; both packages can
 be imported in either order. The supplement adds methods and fields to those
 types and repairs module-metadata and continuation-callable handling. Keep
@@ -149,7 +149,7 @@ OptiX launch capture is currently unsupported. Tests on the RTX 3080 with
 driver 610.74 reproduced illegal memory access during graph replay and invalid
 resource events during context destruction; on Blackwell with driver 595.99,
 OptiX launches and acceleration-structure builds are not recorded into the
-captured graph at all. `launch()`, `build_accel()`, `update_accel()`, and
-`create_pipeline()` reject an active capture before submitting native work.
+captured graph at all. `wo.launch()`, `wo.Accel`, `refit()`/`rebuild()`, and
+`wo.Pipeline` reject an active capture before submitting native work.
 Capture ordinary Warp work in graphs and submit OptiX work between those
 graphs on the same stream. CUDA stream ordering is supported.

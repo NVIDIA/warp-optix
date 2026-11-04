@@ -4,7 +4,7 @@
 import numpy as np
 import pytest
 import warp as wp
-from warp_optix.pathtracing import PathTracerAPI
+from warp_optix.pathtracing import PathTracer
 
 pytestmark = [pytest.mark.gpu, pytest.mark.render]
 
@@ -13,7 +13,7 @@ def _new_gpu_api(width=64, height=48):
     if not wp.is_cuda_available():
         pytest.skip("CUDA device unavailable")
 
-    api = PathTracerAPI(
+    api = PathTracer(
         width=width,
         height=height,
         denoiser="none",

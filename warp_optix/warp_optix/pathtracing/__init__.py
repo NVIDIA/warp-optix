@@ -37,12 +37,12 @@ from .defaults import (
 )
 from .denoising import DenoiserInputs, OptixDenoiser
 from .materials import MaterialManager
-from .pathtracer_api import PathTracerAPI
-from .pathtracing_viewer import PathTracingViewer as PathTracingRenderer
+from .pathtracer_api import PathTracer
+from .pathtracing_viewer import Renderer
 from .scene import Curve, Mesh, Scene
 from .tonemap import Tonemapper
-from .usd_scene import USDScene, USDTransformHandle
-from .viewer import PathTracingViewer, PathTracingViewerBackend
+from .usd_scene import UsdScene, UsdTransformHandle
+from .viewer import Viewer, ViewerBackend
 
 __all__ = [
     "DEFAULT_VIEWER_HEIGHT",
@@ -55,12 +55,12 @@ __all__ = [
     "MaterialManager",
     "Mesh",
     "OptixDenoiser",
-    "PathTracerAPI",
-    "PathTracingRenderer",
-    "PathTracingViewer",
-    "PathTracingViewerBackend",
+    "PathTracer",
+    "Renderer",
+    "Viewer",
+    "ViewerBackend",
     "Scene",
     "Tonemapper",
-    "USDScene",
-    "USDTransformHandle",
+    "UsdScene",
+    "UsdTransformHandle",
 ]

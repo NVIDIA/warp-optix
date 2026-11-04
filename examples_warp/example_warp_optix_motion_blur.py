@@ -30,9 +30,9 @@ def _to_u8(value: float) -> wp.uint32:
 
 @wp.func
 def _store_color(color: wp.vec3):
-    wp.optix_set_payload_0(_to_u8(color[0]))
-    wp.optix_set_payload_1(_to_u8(color[1]))
-    wp.optix_set_payload_2(_to_u8(color[2]))
+    wp.optix_set_payload(0, _to_u8(color[0]))
+    wp.optix_set_payload(1, _to_u8(color[1]))
+    wp.optix_set_payload(2, _to_u8(color[2]))
 
 
 @wp.func
@@ -65,20 +65,7 @@ def raygen(scene: wp.uint64, samples: int, image: wp.array2d[wp.uint32]):
     for sample in range(samples):
         payload = Payload()
         ray_time = (float(sample) + 0.5) / float(samples)
-        wp.optix_trace(
-            scene,
-            origin,
-            direction,
-            0.001,
-            1.0e16,
-            ray_time,
-            wp.uint32(255),
-            wp.uint32(0),
-            wp.uint32(0),
-            wp.uint32(1),
-            wp.uint32(0),
-            payload,
-        )
+        wp.optix_trace(scene, origin, direction, 1.0e16, payload, 0.001, ray_time)
         total += wp.vec3(float(payload.red), float(payload.green), float(payload.blue))
 
     mean = total * (1.0 / float(samples))
@@ -130,18 +117,15 @@ def main() -> None:
         parser.error("--samples must be at least 1")
 
     with wp.ScopedDevice(args.device):
-        ctx = wo.create_context()
-
         # Two motion keys: the top triangle slides from left to right over the shutter interval.
         moving = np.array([[-0.38, 0.12, 0.0], [0.38, 0.12, 0.0], [0.0, 0.92, 0.0]], dtype=np.float32)
         static = np.array([[-0.38, -1.0, 0.0], [0.38, -1.0, 0.0], [0.0, -0.20, 0.0]], dtype=np.float32)
         keys = [wp.array(np.concatenate((moving + [dx, 0.0, 0.0], static)), dtype=wp.vec3) for dx in (-1.15, 1.15)]
         indices = wp.array([0, 1, 2, 3, 4, 5], dtype=wp.uint32)
         motion = native.MotionOptions(numKeys=2, flags=native.MOTION_FLAG_NONE, timeBegin=0.0, timeEnd=1.0)
-        gas = wo.build_accel(ctx, [wo.triangles(keys, indices)], motion=motion)
+        accel = wo.Accel([wo.triangles(keys, indices)], motion=motion)
 
-        pipeline = wo.create_pipeline(
-            ctx,
+        pipeline = wo.Pipeline(
             raygen,
             miss=[miss],
             hit_groups=[wo.HitGroup(closest_hit=closest_hit)],
@@ -149,7 +133,7 @@ def main() -> None:
             motion_blur=True,
         )
         image = wp.empty((args.height, args.width), dtype=wp.uint32)
-        wo.launch(pipeline, dim=image.shape, inputs=[gas.handle, args.samples, image])
+        wo.launch(pipeline, dim=image.shape, inputs=[accel, args.samples, image])
 
         pixels = image.numpy()
         _save_bmp(args.output, pixels)

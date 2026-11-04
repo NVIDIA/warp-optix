@@ -36,7 +36,7 @@ from .arrows import (
     update_arrow_curves_host_count,
 )
 from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH
-from .pathtracing_viewer import PathTracingViewer as PathTracingRenderer
+from .pathtracing_viewer import Renderer
 from .ptx_compiler import get_optix_include_dir
 from .scene import Curve, Mesh
 from .transform_utils import build_transform_matrix
@@ -55,7 +55,7 @@ def _validate_material_ids(scene, material_ids: np.ndarray | None):
     return values
 
 
-class PathTracerAPI:
+class PathTracer:
     """High-level API for driving the OptiX path tracer directly from Python."""
 
     def __init__(
@@ -75,7 +75,7 @@ class PathTracerAPI:
     ):
         self.width = int(width)
         self.height = int(height)
-        self._viewer = PathTracingRenderer(
+        self._viewer = Renderer(
             width=self.width,
             height=self.height,
             scene_setup=lambda _scene: None,
@@ -101,7 +101,7 @@ class PathTracerAPI:
         optix_sdk_env = os.environ.get("OPTIX_SDK_INCLUDE_DIR")
         optix_sdk_auto = get_optix_include_dir()
         return (
-            "PathTracerAPI initialization failed.\n"
+            "PathTracer initialization failed.\n"
             f"- python executable: {sys.executable}\n"
             f"- optix module importable: {optix_available}\n"
             f"- OPTIX_SDK_INCLUDE_DIR: {optix_sdk_env!r}\n"
@@ -110,7 +110,7 @@ class PathTracerAPI:
         )
 
     @property
-    def viewer(self) -> PathTracingRenderer:
+    def viewer(self) -> Renderer:
         return self._viewer
 
     @property

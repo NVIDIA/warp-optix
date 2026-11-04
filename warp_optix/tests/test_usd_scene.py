@@ -27,7 +27,7 @@ def _write_transform_stage(path):
 def test_usd_scene_retains_paths_and_local_geometry(tmp_path):
     path = tmp_path / "transform.usda"
     _write_transform_stage(path)
-    scene = Scene(None)
+    scene = Scene()
 
     assert scene.load_from_usd(path, apply_stage_units=False)
     usd_scene = scene.usd_scene
@@ -157,7 +157,7 @@ def test_sphere_light_imports_as_five_centimeter_analytic_light(tmp_path):
     mesh.CreateFaceVertexIndicesAttr([0, 1, 2])
     stage.GetRootLayer().Save()
 
-    scene = Scene(None)
+    scene = Scene()
     assert scene.load_from_usd(path, convert_up_axis=False, load_usd_lights=True)
     assert scene.mesh_count == 1
     assert len(scene._instances) == 1
@@ -169,7 +169,7 @@ def test_sphere_light_imports_as_five_centimeter_analytic_light(tmp_path):
     assert intensity == pytest.approx(20.0 / 80000.0)
     assert scene.usd_scene.instance_ids(scene.usd_scene.require_transform("/Light")) == ()
 
-    disabled_scene = Scene(None)
+    disabled_scene = Scene()
     assert disabled_scene.load_from_usd(path, load_usd_lights=False)
     assert disabled_scene.mesh_count == 1
     assert disabled_scene.light_count == 0
@@ -189,12 +189,12 @@ def test_sphere_light_proxy_preserves_authored_power(tmp_path):
     mesh.CreateFaceVertexIndicesAttr([0, 1, 2])
     stage.GetRootLayer().Save()
 
-    authored_scene = Scene(None)
+    authored_scene = Scene()
     assert authored_scene.load_from_usd(path, convert_up_axis=False, load_usd_lights=True)
     assert authored_scene._sphere_lights[0][1] == pytest.approx(0.04)
     assert authored_scene._sphere_lights[0][3] == pytest.approx(100.0 / 80000.0)
 
-    scene = Scene(None)
+    scene = Scene()
     assert scene.load_from_usd(
         path,
         convert_up_axis=False,
@@ -205,7 +205,7 @@ def test_sphere_light_proxy_preserves_authored_power(tmp_path):
 
     light.CreateNormalizeAttr(True)
     stage.GetRootLayer().Save()
-    normalized_scene = Scene(None)
+    normalized_scene = Scene()
     assert normalized_scene.load_from_usd(path, convert_up_axis=False, load_usd_lights=True)
     assert normalized_scene._sphere_lights[0][1] == pytest.approx(0.04)
     assert normalized_scene._sphere_lights[0][3] == pytest.approx(100.0 / (80000.0 * 4.0 * np.pi * 0.04**2))
@@ -225,7 +225,7 @@ def test_reflected_face_varying_mesh_keeps_world_shading_frame_aligned(tmp_path)
     )
     stage.GetRootLayer().Save()
 
-    scene = Scene(None)
+    scene = Scene()
     assert scene.load_from_usd(path, apply_stage_units=False, convert_up_axis=False)
     loaded = scene._meshes[0]
     world = scene._instance_transform_cache[0]
@@ -262,13 +262,13 @@ def test_authored_normals_are_preserved_in_robust_two_sided_mode(tmp_path):
     )
     stage.GetRootLayer().Save()
 
-    scene = Scene(None)
+    scene = Scene()
     assert scene.load_from_usd(path, apply_stage_units=False, convert_up_axis=False)
     np.testing.assert_allclose(scene._meshes[0].normals, ((0.0, 0.0, -1.0),) * 3)
     np.testing.assert_array_equal(scene._meshes[0].indices[0], (0, 1, 2))
     assert scene._instances[0].double_sided
 
-    strict_scene = Scene(None)
+    strict_scene = Scene()
     assert strict_scene.load_from_usd(path, apply_stage_units=False, convert_up_axis=False, strict_sidedness=True)
     assert not strict_scene._instances[0].double_sided
 
@@ -284,7 +284,7 @@ def test_left_handed_winding_and_double_sided_are_converted_for_optix(tmp_path):
     mesh.CreateDoubleSidedAttr(True)
     stage.GetRootLayer().Save()
 
-    scene = Scene(None)
+    scene = Scene()
     assert scene.load_from_usd(path, apply_stage_units=False, convert_up_axis=False)
     np.testing.assert_array_equal(scene._meshes[0].indices[0], (0, 2, 1))
     np.testing.assert_allclose(scene._meshes[0].normals, ((0.0, 0.0, -1.0),) * 3)

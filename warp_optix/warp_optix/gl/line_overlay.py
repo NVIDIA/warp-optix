@@ -501,7 +501,7 @@ class GLLineOverlay:
         self._depth_texture = None
         self._depth_shape = None
 
-    def destroy(self) -> None:
+    def close(self) -> None:
         """Release CUDA registrations and OpenGL objects while context is current."""
         if self._destroyed:
             return

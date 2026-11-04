@@ -203,20 +203,7 @@ def tiny_raygen(
     payload.rand0 = _hash_u32(rng_base ^ wp.uint32(2891336453))
     payload.rand1 = _hash_u32(rng_base ^ wp.uint32(1181783497))
 
-    wp.optix_trace(
-        scene,
-        ray_origin,
-        ray_direction,
-        0.001,
-        1.0e16,
-        0.0,
-        wp.uint32(255),
-        wp.uint32(0),
-        wp.uint32(0),
-        wp.uint32(1),
-        wp.uint32(0),
-        payload,
-    )
+    wp.optix_trace(scene, ray_origin, ray_direction, 1.0e16, payload, 0.001)
 
     hit_color = wp.vec3(float(payload.r_u8) / 255.0, float(payload.g_u8) / 255.0, float(payload.b_u8) / 255.0)
     color = hit_color
@@ -253,10 +240,10 @@ def tiny_raygen(
 
 @wp.kernel(module="unique")
 def tiny_miss():
-    wp.optix_set_payload_0(wp.uint32(0))
-    wp.optix_set_payload_1(wp.uint32(0))
-    wp.optix_set_payload_2(wp.uint32(0))
-    wp.optix_set_payload_3(wp.uint32(0))
+    wp.optix_set_payload(0, wp.uint32(0))
+    wp.optix_set_payload(1, wp.uint32(0))
+    wp.optix_set_payload(2, wp.uint32(0))
+    wp.optix_set_payload(3, wp.uint32(0))
 
 
 @wp.kernel(module="unique")
@@ -341,8 +328,8 @@ def tiny_closest_hit():
     fill = wp.max(wp.dot(n, fill_dir), 0.0) * 0.08
     ambient = 0.08
 
-    u1 = _u32_to_unit_float(wp.optix_get_payload_4())
-    u2 = _u32_to_unit_float(wp.optix_get_payload_5())
+    u1 = _u32_to_unit_float(wp.optix_get_payload(4))
+    u2 = _u32_to_unit_float(wp.optix_get_payload(5))
     bounce_dir = _cosine_sample_hemisphere(n, u1, u2)
     bounce_p = p + n * 0.002
     bounce_radiance = _room_radiance(bounce_p, bounce_dir)
@@ -351,10 +338,10 @@ def tiny_closest_hit():
     lit = albedo * wp.min(ambient + key + fill, 1.35) + indirect + emissive
     color = wp.vec3(wp.min(lit[0], 1.0), wp.min(lit[1], 1.0), wp.min(lit[2], 1.0))
 
-    wp.optix_set_payload_0(wp.uint32(1))
-    wp.optix_set_payload_1(_to_u8(color[0]))
-    wp.optix_set_payload_2(_to_u8(color[1]))
-    wp.optix_set_payload_3(_to_u8(color[2]))
+    wp.optix_set_payload(0, wp.uint32(1))
+    wp.optix_set_payload(1, _to_u8(color[0]))
+    wp.optix_set_payload(2, _to_u8(color[1]))
+    wp.optix_set_payload(3, _to_u8(color[2]))
 
 
 def _save_bmp(path: str, pixels_rgba_u32: np.ndarray, width: int, height: int):
@@ -569,13 +556,11 @@ def main():
     args = parser.parse_args()
 
     with wp.ScopedDevice(args.device):
-        ctx = wo.create_context()
         vertices, indices = _build_cornell_box_mesh()
         vertices = wp.array(vertices, dtype=wp.vec3)
         indices = wp.array(indices, dtype=wp.uint32)
-        gas = wo.build_accel(ctx, [wo.triangles(vertices, indices)], compact=True)
-        pipeline = wo.create_pipeline(
-            ctx,
+        accel = wo.Accel([wo.triangles(vertices, indices)], compact=True)
+        pipeline = wo.Pipeline(
             tiny_raygen,
             miss=[tiny_miss],
             hit_groups=[wo.HitGroup(closest_hit=tiny_closest_hit)],
@@ -615,7 +600,7 @@ def main():
                 wo.launch(
                     pipeline,
                     dim=accum.shape,
-                    inputs=[gas.handle, controller.camera, wp.uint32(sample_count), seed, accum, mapped_image],
+                    inputs=[accel, controller.camera, wp.uint32(sample_count), seed, accum, mapped_image],
                 )
                 sample_count += 1
 
@@ -627,7 +612,7 @@ def main():
                 np.array([0.0, 0.05, 2.5], dtype=np.float32), 180.0, -4.0, 50.0, args.width, args.height
             )
             image = wp.empty(args.width * args.height, dtype=wp.uint32)
-            wo.launch(pipeline, dim=accum.shape, inputs=[gas.handle, camera, wp.uint32(0), seed, accum, image])
+            wo.launch(pipeline, dim=accum.shape, inputs=[accel, camera, wp.uint32(0), seed, accum, image])
             pixels = image.numpy()
             _save_bmp(args.output, pixels, args.width, args.height)
             print(f"Image checksum: {int(np.bitwise_xor.reduce(pixels))}")

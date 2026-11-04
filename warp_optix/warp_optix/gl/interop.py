@@ -24,7 +24,7 @@ from collections.abc import Callable
 import warp as wp
 
 
-class OptixGLInteropViewer:
+class GLInteropViewer:
     @staticmethod
     def _create_texture_2d_compat(pyglet_module, gl_module, width: int, height: int):
         try:

@@ -28,11 +28,13 @@ The kernels, curves, motion-blur, mixed-geometry, and tiny-raytracer examples
 use the core `warp_optix` API directly (see the [package README](../warp_optix/README.md)):
 OptiX programs are ordinary `@wp.kernel(module="unique")` kernels, the raygen
 kernel's arguments are the launch parameters, acceleration structures are built
-from Warp device arrays with `wo.build_accel()`, and `wo.launch()` mirrors
-`wp.launch()`. `example_warp_optix_kernels.py` is the smallest complete
+from Warp device arrays with `wo.Accel(...)` (pass `accel.id` or the `Accel`
+itself to a launch), `wo.Pipeline(...)` links the programs, and `wo.launch()`
+mirrors `wp.launch()`. As in Warp, the OptiX context is implicit (one per CUDA
+device), and resources release themselves or with `.close()`. `example_warp_optix_kernels.py` is the smallest complete
 pipeline; `example_warp_optix_mixed_geometry.py` combines triangle, built-in
 curve, and custom-intersection geometry under instances written on the GPU with
-`wo.make_instance()`; `example_warp_optix_motion_blur.py` builds a two-key
+`wo.make_instance(wp.transform(...), accel_id, ...)`; `example_warp_optix_motion_blur.py` builds a two-key
 motion GAS. The image examples write a BMP (`--output`); the tiny ray tracer
 opens an OpenGL viewer with `--live` (`--max-frames N` exits after N frames).
 
@@ -59,8 +61,8 @@ the depth-aware CUDA/OpenGL overlay API. It is intended for the fastest dynamic
 contact visualization and does not add those lines to the path-traced scene.
 
 Triangle backfaces are culled by default for camera, bounce, and shadow rays.
-Pass `backface_culling=False` to `PathTracerAPI`, `PathTracingRenderer`, or
-`PathTracingViewerBackend` for globally two-sided traversal. The setting can be
+Pass `backface_culling=False` to `PathTracer`, `Renderer`, or
+`ViewerBackend` for globally two-sided traversal. The setting can be
 changed at runtime with `api.set_backface_culling(False)`. The glTF and USD
 examples expose the same behavior as `--no-backface-culling`.
 
@@ -71,9 +73,9 @@ triangle meshes:
 ```python
 import numpy as np
 
-from warp_optix.pathtracing import PathTracerAPI
+from warp_optix.pathtracing import PathTracer
 
-api = PathTracerAPI()
+api = PathTracer()
 api.initialize()
 material = api.create_pbr_material((0.8, 0.2, 0.05), roughness=0.35, metallic=0.0)
 
@@ -155,6 +157,7 @@ light types are not currently imported.
 ### Explicit launch parameters
 
 `example_warp_optix_explicit_params.py` produces the same result as
-`example_warp_optix_kernels.py` using an explicit shared schema, optional shader
-stage declarations, `SbtBuilder`, and independently managed launch buffers on
-two CUDA streams. Run it with `python examples_warp/example_warp_optix_explicit_params.py`.
+`example_warp_optix_kernels.py` using an explicit shared schema, shader stage
+declarations with `@wo.kernel(kind=wo.ProgramKind...)`, `SbtBuilder`, and
+independent `wo.LaunchParams` objects written with `.assign()` and launched with
+`wo.launch(..., params=...)` on two CUDA streams. Run it with `python examples_warp/example_warp_optix_explicit_params.py`.

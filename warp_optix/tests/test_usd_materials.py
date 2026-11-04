@@ -149,7 +149,7 @@ def test_referenced_mdl_udim_resolves_from_authoring_layer(tmp_path):
     referenced_root.GetPrim().GetReferences().AddReference(str(asset_path))
     stage.GetRootLayer().Save()
 
-    scene = Scene(None)
+    scene = Scene()
     assert scene.load_from_usd(scene_path, apply_stage_units=False, max_texture_memory_bytes=1 << 20)
     assert scene.texture_count == 1
     np.testing.assert_array_equal(scene._gltf_textures[0][0, 0], (90, 48, 20, 255))

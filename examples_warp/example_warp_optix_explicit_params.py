@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Explicit schema, stage declarations, named SBT, and independent launch buffers.
+"""Explicit schema, stage declarations, named SBT, and independent LaunchParams.
 
 Produces the same output as example_warp_optix_kernels.py. Only the miss
 program needs scale; the shared schema defines it independently of raygen.
@@ -36,48 +36,34 @@ class LaunchParams:
     values: wp.array2d[wp.uint32]
 
 
-@wo.optix_kernel(wo.OptixKernelType.RAYGEN, module="unique")
+@wo.kernel(kind=wo.ProgramKind.RAYGEN, module="unique")
 def raygen(values: wp.array2d[wp.uint32]):
     y, x = wp.tid()
     payload = Payload()
-    wp.optix_trace(
-        wp.uint64(0),
-        wp.vec3(0.0),
-        wp.vec3(0.0, 0.0, -1.0),
-        0.0,
-        1.0,
-        0.0,
-        wp.uint32(255),
-        wp.uint32(0),
-        wp.uint32(0),
-        wp.uint32(1),
-        wp.uint32(0),
-        payload,
-    )
+    wp.optix_trace(wp.uint64(0), wp.vec3(0.0), wp.vec3(0.0, 0.0, -1.0), 1.0, payload)
     values[y, x] = payload.value
 
 
-@wo.optix_kernel(wo.OptixKernelType.MISS, module="unique")
+@wo.kernel(kind=wo.ProgramKind.MISS, module="unique")
 def miss(scale: wp.uint32):
     index = wp.optix_get_launch_index()
-    wp.optix_set_payload_0(scale * index[1] + index[0])
+    wp.optix_set_payload(0, scale * index[1] + index[0])
 
 
 def main() -> None:
-    with wo.create_context() as ctx:
-        sbt = wo.SbtBuilder(["radiance"])
-        sbt.set_miss("radiance", miss)
-        pipeline = wo.create_pipeline(ctx, raygen, sbt=sbt, params_type=LaunchParams, payload_words=1)
+    sbt = wo.SbtBuilder(["radiance"])
+    sbt.set_miss("radiance", miss)
+    with wo.Pipeline(raygen, sbt=sbt, params_type=LaunchParams, payload_words=1) as pipeline:
         outputs = []
         for scale in (100, 200):
-            stream = wp.Stream(ctx.device)
-            values = wp.empty((4, 8), dtype=wp.uint32, device=ctx.device)
-            params = LaunchParams()
-            params.scale = wp.uint32(scale)
-            params.values = values
-            buffer = wo.create_launch_params_buffer(pipeline)
-            wo.write_launch_params(buffer, params, stream=stream)
-            wo.launch(pipeline, dim=values.shape, params_buffer=buffer, stream=stream)
+            stream = wp.Stream(pipeline.device)
+            values = wp.empty((4, 8), dtype=wp.uint32, device=pipeline.device)
+            fields = LaunchParams()
+            fields.scale = wp.uint32(scale)
+            fields.values = values
+            params = wo.LaunchParams(pipeline)
+            params.assign(fields, stream=stream)
+            wo.launch(pipeline, dim=values.shape, stream=stream, params=params)
             outputs.append((scale, values, stream))
         for scale, values, stream in outputs:
             wp.synchronize_stream(stream)

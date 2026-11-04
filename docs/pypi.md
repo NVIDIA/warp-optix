@@ -36,7 +36,7 @@ pip install "warp-optix[training]"
 ```python
 import warp as wp
 import warp_optix as wo
-from warp_optix.pathtracing import PathTracerAPI
+from warp_optix.pathtracing import PathTracer
 ```
 
 Follow the [API guide](https://github.com/NVIDIA/warp-optix/blob/main/warp_optix/README.md)

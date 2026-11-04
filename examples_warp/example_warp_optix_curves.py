@@ -29,9 +29,9 @@ def _to_u8(value: float) -> wp.uint32:
 
 @wp.func
 def _store_color(color: wp.vec3):
-    wp.optix_set_payload_0(_to_u8(color[0]))
-    wp.optix_set_payload_1(_to_u8(color[1]))
-    wp.optix_set_payload_2(_to_u8(color[2]))
+    wp.optix_set_payload(0, _to_u8(color[0]))
+    wp.optix_set_payload(1, _to_u8(color[1]))
+    wp.optix_set_payload(2, _to_u8(color[2]))
 
 
 @wp.func
@@ -64,20 +64,7 @@ def raygen(
     sy = 2.0 * (float(y) + 0.5) / float(height) - 1.0
 
     payload = Payload()
-    wp.optix_trace(
-        scene,
-        wp.vec3(0.0, 0.0, 4.0),
-        wp.normalize(wp.vec3(sx, sy, -3.0)),
-        0.001,
-        1.0e16,
-        0.0,
-        wp.uint32(255),
-        wp.uint32(0),
-        wp.uint32(0),
-        wp.uint32(1),
-        wp.uint32(0),
-        payload,
-    )
+    wp.optix_trace(scene, wp.vec3(0.0, 0.0, 4.0), wp.normalize(wp.vec3(sx, sy, -3.0)), 1.0e16, payload, 0.001)
     image[y, x] = (
         wp.uint32(255) << wp.uint32(24) | payload.blue << wp.uint32(16) | payload.green << wp.uint32(8) | payload.red
     )
@@ -94,7 +81,7 @@ def curve_closest_hit(curve_vertices: wp.array[wp.vec3], curve_indices: wp.array
     vertex = int(curve_indices[primitive])
     u = wp.optix_get_curve_parameter()
     center = curve_vertices[vertex] * (1.0 - u) + curve_vertices[vertex + 1] * u
-    world_center = wp.optix_transform_point_from_object_to_world_space(center)
+    world_center = wp.optix_transform_point_object_to_world(center)
     hit = wp.optix_get_world_ray_origin() + wp.optix_get_ray_tmax() * wp.optix_get_world_ray_direction()
     normal = wp.normalize(hit - world_center)
 
@@ -128,17 +115,14 @@ def main() -> None:
     args = parser.parse_args()
 
     with wp.ScopedDevice(args.device):
-        ctx = wo.create_context()
-
         x = np.linspace(-1.65, 1.65, 49, dtype=np.float32)
         vertices = wp.array(np.stack((x, 0.62 * np.sin(2.4 * x), 0.16 * np.cos(1.8 * x)), axis=1), dtype=wp.vec3)
         widths = wp.array(0.075 + 0.035 * (0.5 + 0.5 * np.sin(4.0 * x)), dtype=wp.float32)
         segment_indices = wp.array(np.arange(x.size - 1), dtype=wp.uint32)
         curve_type = wo.PrimitiveType.ROUND_LINEAR
-        gas = wo.build_accel(ctx, [wo.curves(vertices, widths, segment_indices, curve_type=curve_type)])
+        accel = wo.Accel([wo.curves(vertices, widths, segment_indices, curve_type=curve_type)])
 
-        pipeline = wo.create_pipeline(
-            ctx,
+        pipeline = wo.Pipeline(
             raygen,
             miss=[miss],
             hit_groups=[wo.HitGroup(closest_hit=curve_closest_hit, builtin=curve_type)],
@@ -146,7 +130,7 @@ def main() -> None:
             attribute_words=1,
         )
         image = wp.empty((args.height, args.width), dtype=wp.uint32)
-        wo.launch(pipeline, dim=image.shape, inputs=[gas.handle, vertices, segment_indices, image])
+        wo.launch(pipeline, dim=image.shape, inputs=[accel, vertices, segment_indices, image])
 
         pixels = image.numpy()
         _save_bmp(args.output, pixels)

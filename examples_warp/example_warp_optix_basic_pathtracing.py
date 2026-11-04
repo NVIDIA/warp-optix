@@ -27,7 +27,7 @@ from warp_optix.gl import GLInteropViewer
 from warp_optix.pathtracing import (
     DEFAULT_VIEWER_HEIGHT,
     DEFAULT_VIEWER_WIDTH,
-    PathTracerAPI,
+    PathTracer,
 )
 
 
@@ -112,9 +112,7 @@ def _resolve_scene_gltf(scene_gltf_arg: str | None) -> Path | None:
 class FreeCameraController:
     """Newton-style interactive camera controls for the basic pathtracing example."""
 
-    def __init__(
-        self, viewer, api: PathTracerAPI, position, yaw: float, pitch: float, fov: float, movement_speed: float
-    ):
+    def __init__(self, viewer, api: PathTracer, position, yaw: float, pitch: float, fov: float, movement_speed: float):
         self.window = viewer.window
         self.pyglet = viewer.pyglet
         self.api = api
@@ -231,7 +229,7 @@ def main():
 
     wp.init()
 
-    api = PathTracerAPI(
+    api = PathTracer(
         width=args.width,
         height=args.height,
         denoiser=args.denoiser,

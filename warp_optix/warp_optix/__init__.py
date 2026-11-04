@@ -8,12 +8,12 @@ ordinary Warp kernels, and launches mirror ``wp.launch``::
 
     import warp_optix as wo
 
-    ctx = wo.create_context()
-    gas = wo.build_accel(ctx, [wo.triangles(vertices, indices)])
-    pipeline = wo.create_pipeline(ctx, raygen=render)
-    wo.launch(pipeline, dim=(height, width), inputs=[gas.handle, image])
-    wo.destroy_context(ctx)
+    accel = wo.Accel([wo.triangles(points, indices)])
+    pipeline = wo.Pipeline(render)
+    wo.launch(pipeline, dim=(height, width), inputs=[accel.id, image])
 
+Like Warp's CUDA context, the OptiX context is implicit: one per device,
+created on first use with the settings in :mod:`warp_optix.config`.
 ``warp_optix.native`` gives advanced access to PyOptiX and the supplemental bindings.
 """
 
@@ -23,78 +23,66 @@ register_with_warp()
 
 __version__ = "0.2.0"
 
-from warp_optix import constants as constants
+from warp_optix import config as config
 from warp_optix.accel import Accel as Accel
+from warp_optix.accel import BuildInput as BuildInput
 from warp_optix.accel import Instance as Instance
 from warp_optix.accel import aabbs as aabbs
-from warp_optix.accel import build_accel as build_accel
 from warp_optix.accel import curves as curves
 from warp_optix.accel import instances as instances
 from warp_optix.accel import make_instance as make_instance
 from warp_optix.accel import triangles as triangles
-from warp_optix.accel import update_accel as update_accel
-from warp_optix.context import Context as Context
+from warp_optix.context import get_context as get_context
 from warp_optix.enums import BuildFlags as BuildFlags
 from warp_optix.enums import ExceptionFlags as ExceptionFlags
 from warp_optix.enums import GeometryFlags as GeometryFlags
+from warp_optix.enums import HitKind as HitKind
 from warp_optix.enums import InstanceFlags as InstanceFlags
 from warp_optix.enums import PrimitiveType as PrimitiveType
+from warp_optix.enums import RayFlags as RayFlags
 from warp_optix.enums import TraversableGraphFlags as TraversableGraphFlags
 from warp_optix.pipeline import HitGroup as HitGroup
-from warp_optix.pipeline import LaunchParamsBuffer as LaunchParamsBuffer
+from warp_optix.pipeline import LaunchParams as LaunchParams
 from warp_optix.pipeline import Pipeline as Pipeline
-from warp_optix.pipeline import create_context as create_context
-from warp_optix.pipeline import create_launch_params_buffer as create_launch_params_buffer
-from warp_optix.pipeline import create_pipeline as create_pipeline
-from warp_optix.pipeline import destroy_context as destroy_context
 from warp_optix.pipeline import launch as launch
-from warp_optix.pipeline import write_launch_params as write_launch_params
-from warp_optix.program import OptixKernelType as OptixKernelType
 from warp_optix.program import ProgramKind as ProgramKind
-from warp_optix.program import optix_kernel as optix_kernel
-from warp_optix.rays import MISS as MISS
-from warp_optix.rays import Hit as Hit
-from warp_optix.rays import any_hit as any_hit
-from warp_optix.rays import closest_hit as closest_hit
+from warp_optix.program import kernel as kernel
+from warp_optix.rays import AccelQueryRay as AccelQueryRay
+from warp_optix.rays import accel_query_ray as accel_query_ray
+from warp_optix.rays import accel_query_ray_anyhit as accel_query_ray_anyhit
 from warp_optix.sbt import HitGroupHandle as HitGroupHandle
 from warp_optix.sbt import SbtBuilder as SbtBuilder
 from warp_optix.sbt import SbtLayout as SbtLayout
 
 __all__ = [
-    "optix_kernel",
-    "OptixKernelType",
-    "write_launch_params",
-    "create_launch_params_buffer",
-    "LaunchParamsBuffer",
-    "MISS",
     "Accel",
+    "AccelQueryRay",
     "BuildFlags",
-    "Context",
+    "BuildInput",
     "ExceptionFlags",
     "GeometryFlags",
-    "Hit",
     "HitGroup",
     "HitGroupHandle",
+    "HitKind",
     "Instance",
     "InstanceFlags",
+    "LaunchParams",
     "Pipeline",
     "PrimitiveType",
     "ProgramKind",
+    "RayFlags",
     "SbtBuilder",
     "SbtLayout",
     "TraversableGraphFlags",
     "aabbs",
-    "any_hit",
-    "build_accel",
-    "closest_hit",
-    "constants",
-    "create_context",
-    "create_pipeline",
+    "accel_query_ray",
+    "accel_query_ray_anyhit",
+    "config",
     "curves",
-    "destroy_context",
+    "get_context",
     "instances",
+    "kernel",
     "launch",
     "make_instance",
     "triangles",
-    "update_accel",
 ]

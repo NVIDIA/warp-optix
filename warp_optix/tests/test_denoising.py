@@ -9,16 +9,14 @@ import warp as wp
 from warp_optix.pathtracing import (
     DenoiserInputs,
     OptixDenoiser,
-    PathTracerAPI,
-    PathTracingRenderer,
+    PathTracer,
+    Renderer,
 )
 from warp_optix.pathtracing import pathtracing_viewer as renderer_module
 
-import warp_optix as wo
-
 
 def _renderer(monkeypatch, mode):
-    renderer = PathTracingRenderer.__new__(PathTracingRenderer)
+    renderer = Renderer.__new__(Renderer)
     renderer.width, renderer.height = 64, 48
     renderer._render_width, renderer._render_height = 64, 48
     renderer.denoiser = mode
@@ -86,7 +84,7 @@ requires_gpu = pytest.mark.skipif(not wp.is_cuda_available(), reason="requires a
 
 
 def _cornell_api(**kwargs):
-    api = PathTracerAPI(enable_set=False, **kwargs)
+    api = PathTracer(enable_set=False, **kwargs)
     assert api.initialize()
     api.scene.create_cornell_box()
     api.build_scene()
@@ -97,7 +95,6 @@ def _cornell_api(**kwargs):
 @requires_gpu
 @pytest.mark.parametrize("upscale", [False, True])
 def test_optix_gpu_denoises_and_resets_history(upscale):
-    context = wo.create_context("cuda", validation=True)
     rng = np.random.default_rng(42)
     noisy = np.ones((48, 64, 4), dtype=np.float32)
     noisy[..., :3] += rng.normal(0.0, 0.15, (48, 64, 3)).astype(np.float32)
@@ -109,7 +106,7 @@ def test_optix_gpu_denoises_and_resets_history(upscale):
         albedo=wp.ones((48, 64), dtype=wp.vec4, device="cuda"),
         motion=wp.zeros((48, 64), dtype=wp.vec2, device="cuda"),
     )
-    denoiser = OptixDenoiser(context, 64, 48, upscale=upscale)
+    denoiser = OptixDenoiser(64, 48, upscale=upscale, device="cuda")
     try:
         first = denoiser.apply(inputs).numpy()
         scale = 2 if upscale else 1
@@ -121,7 +118,6 @@ def test_optix_gpu_denoises_and_resets_history(upscale):
         np.testing.assert_allclose(reset, first, rtol=1e-5, atol=1e-5)
     finally:
         denoiser.close()
-        context.destroy()
 
 
 @pytest.mark.gpu
@@ -169,7 +165,7 @@ def test_renderer_gpu_optix_samples_motion_switch_and_resize():
 @requires_gpu
 def test_optix_gpu_frame_is_ordered_when_called_from_another_stream():
     def first_frame(caller):
-        api = PathTracerAPI(
+        api = PathTracer(
             width=384,
             height=256,
             denoiser="optix",
@@ -198,7 +194,7 @@ def test_optix_gpu_frame_is_ordered_when_called_from_another_stream():
 @requires_gpu
 @pytest.mark.parametrize("cuda_graphs", [False, True])
 def test_optix_gpu_frames_and_camera_advance(cuda_graphs):
-    api = PathTracerAPI(
+    api = PathTracer(
         width=96,
         height=64,
         denoiser="optix",
@@ -229,7 +225,7 @@ def test_optix_gpu_frames_and_camera_advance(cuda_graphs):
 
 
 def test_public_denoiser_properties():
-    api = PathTracerAPI.__new__(PathTracerAPI)
+    api = PathTracer.__new__(PathTracer)
     api._viewer = SimpleNamespace(
         denoiser="auto", active_denoiser="optix", denoiser_error=None, _optix_launch_graph=None
     )

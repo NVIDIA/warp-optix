@@ -29,9 +29,9 @@ def _to_u8(value: float) -> wp.uint32:
 
 @wp.func
 def _store_color(color: wp.vec3):
-    wp.optix_set_payload_0(_to_u8(color[0]))
-    wp.optix_set_payload_1(_to_u8(color[1]))
-    wp.optix_set_payload_2(_to_u8(color[2]))
+    wp.optix_set_payload(0, _to_u8(color[0]))
+    wp.optix_set_payload(1, _to_u8(color[1]))
+    wp.optix_set_payload(2, _to_u8(color[2]))
 
 
 @wp.func
@@ -73,20 +73,7 @@ def raygen(
     direction = wp.normalize(wp.vec3(sx, sy, -3.2))
 
     payload = Payload()
-    wp.optix_trace(
-        scene,
-        origin,
-        direction,
-        0.001,
-        1.0e16,
-        0.0,
-        wp.uint32(255),
-        wp.uint32(0),
-        wp.uint32(0),
-        wp.uint32(1),
-        wp.uint32(0),
-        payload,
-    )
+    wp.optix_trace(scene, origin, direction, 1.0e16, payload, 0.001)
     image[y, x] = (
         wp.uint32(255) << wp.uint32(24) | payload.blue << wp.uint32(16) | payload.green << wp.uint32(8) | payload.red
     )
@@ -102,7 +89,7 @@ def triangle_closest_hit():
     barycentrics = wp.optix_get_triangle_barycentrics()
     vertices = wp.optix_get_triangle_vertex_data()
     object_normal = wp.normalize(wp.cross(vertices[1] - vertices[0], vertices[2] - vertices[0]))
-    normal = wp.optix_transform_normal_from_object_to_world_space(object_normal)
+    normal = wp.optix_transform_normal_object_to_world(object_normal)
     light = wp.normalize(wp.vec3(-0.4, 0.8, 0.6))
     panel = 0.955 + 0.012 * barycentrics[0] + 0.018 * wp.max(wp.dot(wp.normalize(normal), light), 0.0)
     _store_color(_background(wp.normalize(wp.optix_get_world_ray_direction())) * panel)
@@ -114,9 +101,9 @@ def _report_hit(t: float, normal: wp.vec3):
         wp.optix_report_intersection(
             t,
             wp.uint32(0),
-            wp.float_to_uint32(normal[0]),
-            wp.float_to_uint32(normal[1]),
-            wp.float_to_uint32(normal[2]),
+            wp.optix_float_as_uint32(normal[0]),
+            wp.optix_float_as_uint32(normal[1]),
+            wp.optix_float_as_uint32(normal[2]),
         )
 
 
@@ -283,11 +270,11 @@ def analytical_intersection():
 @wp.kernel(module="unique")
 def analytical_closest_hit():
     object_normal = wp.vec3(
-        wp.uint32_to_float(wp.optix_get_attribute_0()),
-        wp.uint32_to_float(wp.optix_get_attribute_1()),
-        wp.uint32_to_float(wp.optix_get_attribute_2()),
+        wp.optix_uint32_as_float(wp.optix_get_attribute(0)),
+        wp.optix_uint32_as_float(wp.optix_get_attribute(1)),
+        wp.optix_uint32_as_float(wp.optix_get_attribute(2)),
     )
-    world_normal = wp.optix_transform_normal_from_object_to_world_space(object_normal)
+    world_normal = wp.optix_transform_normal_object_to_world(object_normal)
     shape = int(wp.optix_get_instance_id())
     albedo = wp.vec3(0.20, 0.48, 0.95)
     if shape == 2:
@@ -308,28 +295,21 @@ def curve_closest_hit(curve_vertices: wp.array[wp.vec3], curve_indices: wp.array
     vertex = int(curve_indices[int(wp.optix_get_primitive_index())])
     u = wp.optix_get_curve_parameter()
     center = curve_vertices[vertex] * (1.0 - u) + curve_vertices[vertex + 1] * u
-    world_center = wp.optix_transform_point_from_object_to_world_space(center)
+    world_center = wp.optix_transform_point_object_to_world(center)
     hit = wp.optix_get_world_ray_origin() + wp.optix_get_ray_tmax() * wp.optix_get_world_ray_direction()
     _store_color(_shade(wp.normalize(hit - world_center), wp.vec3(0.95, 0.72, 0.12)))
 
 
 @wp.kernel
 def write_instances(
-    traversables: wp.array[wp.uint64],
+    accel_ids: wp.array[wp.uint64],
     translations: wp.array[wp.vec3],
     sbt_offsets: wp.array[wp.uint32],
     records: wp.array[wo.Instance],
 ):
     i = wp.tid()
-    records[i] = wo.make_instance(
-        wp.identity(3, float),
-        translations[i],
-        traversables[i],
-        wp.uint32(i),
-        sbt_offsets[i],
-        wp.uint32(255),
-        wp.uint32(0),
-    )
+    xform = wp.transform(translations[i], wp.quat_identity())
+    records[i] = wo.make_instance(xform, accel_ids[i], i, sbt_offsets[i])
 
 
 def _save_bmp(path: Path, pixels: np.ndarray) -> None:
@@ -355,16 +335,14 @@ def main() -> None:
     args = parser.parse_args()
 
     with wp.ScopedDevice(args.device):
-        ctx = wo.create_context()
-
         panel_vertices = wp.array(
             [[-2.1, -1.35, -0.7], [2.1, -1.35, -0.7], [2.1, 1.35, -0.7], [-2.1, 1.35, -0.7]], dtype=wp.vec3
         )
         panel_indices = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.uint32)
-        triangle_gas = wo.build_accel(ctx, [wo.triangles(panel_vertices, panel_indices)], compact=True)
+        triangle_accel = wo.Accel([wo.triangles(panel_vertices, panel_indices)], compact=True)
 
         shape_bounds = wp.array([[-0.55, -0.55, -0.55, 0.55, 0.55, 0.55]], dtype=wp.float32)
-        shape_gas = wo.build_accel(ctx, [wo.aabbs(shape_bounds)], compact=True)
+        shape_accel = wo.Accel([wo.aabbs(bounds=shape_bounds)], compact=True)
 
         curve_x = np.linspace(-1.85, 1.85, 17, dtype=np.float32)
         curve_vertices = wp.array(
@@ -373,8 +351,8 @@ def main() -> None:
         curve_widths = wp.full(curve_x.size, 0.045, dtype=wp.float32)
         curve_indices = wp.array(np.arange(curve_x.size - 1), dtype=wp.uint32)
         curve_type = wo.PrimitiveType.ROUND_LINEAR
-        curve_gas = wo.build_accel(
-            ctx, [wo.curves(curve_vertices, curve_widths, curve_indices, curve_type=curve_type)], compact=True
+        curve_accel = wo.Accel(
+            [wo.curves(curve_vertices, curve_widths, curve_indices, curve_type=curve_type)], compact=True
         )
 
         sbt = wo.SbtBuilder()
@@ -385,8 +363,7 @@ def main() -> None:
             radiance=wo.HitGroup(closest_hit=analytical_closest_hit, intersection=analytical_intersection),
         )
         curves = sbt.add_hit_group("curves", radiance=wo.HitGroup(closest_hit=curve_closest_hit, builtin=curve_type))
-        pipeline = wo.create_pipeline(
-            ctx,
+        pipeline = wo.Pipeline(
             raygen,
             sbt=sbt,
             payload_words=3,
@@ -396,28 +373,28 @@ def main() -> None:
 
         # Instance i has instance ID i; the analytical shapes (IDs 1-6) select their surface by ID.
         shape_positions = [(-1.15, 0.57), (0.0, 0.57), (1.15, 0.57), (-1.15, -0.57), (0.0, -0.57), (1.15, -0.57)]
-        traversables = [triangle_gas.handle] + [shape_gas.handle] * 6 + [curve_gas.handle]
+        accel_ids = [triangle_accel.id] + [shape_accel.id] * 6 + [curve_accel.id]
         translations = [(0.0, 0.0, 0.0)] + [(x, y, 0.0) for x, y in shape_positions] + [(0.0, 0.0, 0.0)]
         layout = pipeline.sbt_layout
         print(layout.describe())
         sbt_offsets = (
             [layout.get_sbt_offset(triangles)] + [layout.get_sbt_offset(shapes)] * 6 + [layout.get_sbt_offset(curves)]
         )
-        records = wp.empty(len(traversables), dtype=wo.Instance)
+        records = wp.empty(len(accel_ids), dtype=wo.Instance)
         wp.launch(
             write_instances,
             dim=records.shape,
             inputs=[
-                wp.array(traversables, dtype=wp.uint64),
+                wp.array(accel_ids, dtype=wp.uint64),
                 wp.array(translations, dtype=wp.vec3),
                 wp.array(sbt_offsets, dtype=wp.uint32),
                 records,
             ],
         )
-        ias = wo.build_accel(ctx, [wo.instances(records)])
+        scene = wo.Accel([wo.instances(records)])
 
         image = wp.empty((args.height, args.width), dtype=wp.uint32)
-        wo.launch(pipeline, dim=image.shape, inputs=[ias.handle, curve_vertices, curve_indices, image])
+        wo.launch(pipeline, dim=image.shape, inputs=[scene, curve_vertices, curve_indices, image])
 
         pixels = image.numpy()
         _save_bmp(args.output, pixels)
