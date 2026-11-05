@@ -459,14 +459,22 @@ to the PyOptiX dependency's denoiser bindings. `context` is the context from `wo
 DLSS Ray Reconstruction (RR) denoises and, in its upscaling quality modes,
 reconstructs a lower-resolution render at the output resolution. warp-optix uses
 the RR runtime that ships with the NVIDIA driver since R620
-(`ngx-builtins/nvngx_dlssd`), the same way Blender Cycles does: it compiles the
-NGX SDK in header-only mode (`NVSDK_NGX_HEADER_ONLY`), links no NVIDIA library,
-and distributes no DLSS binary.
+(`ngx-builtins/nvngx_dlssd`), as Blender Cycles does. No NVIDIA code is compiled
+in or linked and no DLSS binary is distributed:
 
-DLSS support is **off by default** because header-only mode still compiles
-NVIDIA's proprietary NGX loader (`nvsdk_ngx_loader.h`) into the extension. Build
-it in explicitly; the SDK headers (7 files, pinned commit, SHA-256 verified) are
-fetched at build time into the git-ignored `third_party/` and never committed:
+- warp-optix's own loader opens the driver's NGX core from the folder of the
+  loaded CUDA driver (`_nvngx.dll` next to `nvcuda64.dll` on Windows,
+  `libnvidia-ngx.so.1` on Linux) and calls its exported `NVSDK_NGX_CUDA_*`
+  functions. The SDK's loader (`NVSDK_NGX_HEADER_ONLY`) and static library are
+  not used.
+- Three DLSS SDK headers (`nvsdk_ngx_defs.h`, `nvsdk_ngx_params.h`,
+  `nvsdk_ngx_defs_dlssd.h`) supply declarations only: types, enums, and parameter
+  names. They are pinned to SDK 310.9.1 (fixed commit, SHA-256 verified),
+  fetched at build time into the git-ignored `third_party/`, and never committed
+  or packaged. The pin also fixes the NGX API version warp-optix requests.
+
+DLSS support is **off by default** until its release is approved. Build it in
+explicitly:
 
 ```bash
 WARP_OPTIX_ENABLE_DLSS=ON pip install .

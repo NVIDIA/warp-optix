@@ -80,13 +80,14 @@ endif()
 # Optional DLSS Ray Reconstruction (NGX header-only mode)
 #------------------------------------------------------------------------------
 
-# Off by default: header-only mode compiles NVIDIA's proprietary NGX loader
-# (nvsdk_ngx_loader.h) into _ext, which needs release approval. Nothing else of
-# DLSS is linked or shipped; the driver (R620+) provides the runtime.
+# Off by default until release approval. When on, the build uses three DLSS SDK
+# headers for declarations only; no NVIDIA code is compiled in, linked, or
+# shipped. warp-optix loads the driver's NGX core itself, and the driver (R620+)
+# provides the Ray Reconstruction runtime.
 if(NOT DEFINED WARP_OPTIX_ENABLE_DLSS AND DEFINED ENV{WARP_OPTIX_ENABLE_DLSS})
   set(WARP_OPTIX_ENABLE_DLSS "$ENV{WARP_OPTIX_ENABLE_DLSS}")
 endif()
-option(WARP_OPTIX_ENABLE_DLSS "Build DLSS Ray Reconstruction bindings (NGX header-only)" OFF)
+option(WARP_OPTIX_ENABLE_DLSS "Build DLSS Ray Reconstruction bindings (driver NGX runtime)" OFF)
 if(WARP_OPTIX_ENABLE_DLSS)
   include(FetchDLSSHeaders)
 endif()
@@ -110,11 +111,6 @@ target_link_libraries(_ext PRIVATE
 if(WARP_OPTIX_ENABLE_DLSS)
   target_compile_definitions(_ext PRIVATE WARP_OPTIX_ENABLE_DLSS=1)
   target_link_libraries(_ext PRIVATE DLSS::Headers)
-  # The NGX header-only shims forward __VA_ARGS__ through nested macros, which
-  # needs MSVC's standards-conforming preprocessor.
-  if(MSVC)
-    set_source_files_properties(src/dlss.cpp PROPERTIES COMPILE_OPTIONS "/Zc:preprocessor")
-  endif()
 endif()
 
 target_compile_features(_ext PRIVATE cxx_std_17)
