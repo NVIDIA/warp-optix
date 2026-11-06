@@ -49,16 +49,7 @@ try:
 except ImportError:
     Image = None
 
-# Initialize warp
-wp.init()
-
 logger = logging.getLogger(__name__)
-
-
-@wp.kernel
-def _reset_accum_buffer(accum: wp.array2d(dtype=wp.vec4)):
-    x, y = wp.tid()
-    accum[y, x] = wp.vec4(0.0, 0.0, 0.0, 0.0)
 
 
 @wp.kernel
@@ -67,11 +58,13 @@ def _accumulate_sample(
     accum: wp.array2d(dtype=wp.vec4),
     sample_index: int,
 ):
-    x, y = wp.tid()
+    y, x = wp.tid()
     s = sample[y, x]
-    a = accum[y, x]
-    t = 1.0 / float(sample_index + 1)
-    accum[y, x] = a + (s - a) * t
+    if sample_index == 0:
+        accum[y, x] = s
+    else:
+        a = accum[y, x]
+        accum[y, x] = a + (s - a) / float(sample_index + 1)
 
 
 @wp.kernel(enable_backward=False)
@@ -946,7 +939,7 @@ class Renderer:
         if self._env_map is None and sky_state != self._sky_lut_state:
             wp.launch(
                 generate_physical_sky_lut,
-                dim=(self._sky_lut_buffer.shape[1], self._sky_lut_buffer.shape[0]),
+                dim=self._sky_lut_buffer.shape,
                 inputs=[sky],
                 outputs=[self._sky_lut_buffer],
                 device="cuda",
@@ -1045,26 +1038,8 @@ class Renderer:
             or (not np.allclose(current_proj, self._last_accum_proj))
         )
 
-        if use_external_accum:
-            if reset_temporal:
-                wp.launch(
-                    _reset_accum_buffer,
-                    dim=(self._render_width, self._render_height),
-                    inputs=[self._accum_buffer],
-                    device="cuda",
-                    stream=self._render_stream,
-                )
-                self.frame_index = 0
-            return bool(reset_temporal)
-
-        # No persistent external accumulation for this mode.
-        wp.launch(
-            _reset_accum_buffer,
-            dim=(self._render_width, self._render_height),
-            inputs=[self._accum_buffer],
-            device="cuda",
-            stream=self._render_stream,
-        )
+        if use_external_accum and reset_temporal:
+            self.frame_index = 0
         return bool(reset_temporal)
 
     def _launch_samples(
@@ -1114,7 +1089,7 @@ class Renderer:
                 self._volume_params = p
                 wp.launch(
                     composite_volume,
-                    dim=(self._render_width, self._render_height),
+                    dim=(self._render_height, self._render_width),
                     inputs=[self._launch_params, self._volume_params],
                     device="cuda",
                     stream=self._render_stream,
@@ -1123,7 +1098,7 @@ class Renderer:
             accum_sample_index = int(self.frame_index if use_external_accum else s)
             wp.launch(
                 _accumulate_sample,
-                dim=(self._render_width, self._render_height),
+                dim=(self._render_height, self._render_width),
                 inputs=[self._color_buffer, self._accum_buffer, accum_sample_index],
                 device="cuda",
                 stream=self._render_stream,
