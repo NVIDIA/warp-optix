@@ -6,7 +6,6 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import warp as wp
-from PIL import Image
 from warp_optix.pathtracing import (
     PathTracer,
     Renderer,
@@ -509,6 +508,7 @@ def test_debug_and_bridge_transform_compatibility():
 
 
 def test_screenshot_exports_display_orientation(tmp_path):
+    Image = pytest.importorskip("PIL.Image")
     api = _FakePathTracer()
     frame = np.zeros((2, 3, 4), dtype=np.uint8)
     frame[0, :, 0] = 255
