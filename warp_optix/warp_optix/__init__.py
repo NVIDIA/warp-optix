@@ -41,7 +41,6 @@ from warp_optix.enums import InstanceFlags as InstanceFlags
 from warp_optix.enums import PrimitiveType as PrimitiveType
 from warp_optix.enums import RayFlags as RayFlags
 from warp_optix.enums import TraversableGraphFlags as TraversableGraphFlags
-from warp_optix.pipeline import HitGroup as HitGroup
 from warp_optix.pipeline import LaunchParams as LaunchParams
 from warp_optix.pipeline import Pipeline as Pipeline
 from warp_optix.pipeline import launch as launch
@@ -50,8 +49,8 @@ from warp_optix.program import kernel as kernel
 from warp_optix.rays import AccelQueryRay as AccelQueryRay
 from warp_optix.rays import accel_query_ray as accel_query_ray
 from warp_optix.rays import accel_query_ray_anyhit as accel_query_ray_anyhit
-from warp_optix.sbt import HitGroupHandle as HitGroupHandle
-from warp_optix.sbt import SbtBuilder as SbtBuilder
+from warp_optix.sbt import HitGroup as HitGroup
+from warp_optix.sbt import Record as Record
 from warp_optix.sbt import SbtLayout as SbtLayout
 
 __all__ = [
@@ -62,7 +61,6 @@ __all__ = [
     "ExceptionFlags",
     "GeometryFlags",
     "HitGroup",
-    "HitGroupHandle",
     "HitKind",
     "Instance",
     "InstanceFlags",
@@ -71,7 +69,7 @@ __all__ = [
     "PrimitiveType",
     "ProgramKind",
     "RayFlags",
-    "SbtBuilder",
+    "Record",
     "SbtLayout",
     "TraversableGraphFlags",
     "aabbs",

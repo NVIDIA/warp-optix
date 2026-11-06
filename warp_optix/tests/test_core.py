@@ -177,7 +177,11 @@ def test_custom_primitive_intersection_program_binds_raygen_arguments_by_name():
     device = wp.get_device("cuda")
     bounds = wp.array([[-1.0, -1.0, -1.0, 1.0, 1.0, 1.0]], dtype=float, device=device)
     gas = wo.Accel([wo.aabbs(bounds=bounds)], device=device)
-    pipeline = wo.Pipeline(sphere_raygen, hit_groups=[wo.HitGroup(intersection=sphere_intersection)], device=device)
+    pipeline = wo.Pipeline(
+        sphere_raygen,
+        sbt=wo.SbtLayout(hit_groups={"spheres": wo.HitGroup(intersection=sphere_intersection)}),
+        device=device,
+    )
     radii = wp.array([0.5], dtype=float, device=device)
     depth = wp.zeros(3, dtype=float, device=device)
     wo.launch(pipeline, dim=(3,), inputs=[gas.id, radii, depth])
@@ -216,7 +220,9 @@ def test_aabbs_from_lowers_uppers_and_packed_bounds_hit_and_refit():
     separate = wo.Accel([wo.aabbs(lowers, uppers)], flags=wo.BuildFlags.ALLOW_UPDATE, device=device)
     packed = wo.Accel([wo.aabbs(bounds=bounds)], device=device)
     pipeline = wo.Pipeline(
-        moving_sphere_raygen, hit_groups=[wo.HitGroup(intersection=moving_sphere_intersection)], device=device
+        moving_sphere_raygen,
+        sbt=wo.SbtLayout(hit_groups={"spheres": wo.HitGroup(intersection=moving_sphere_intersection)}),
+        device=device,
     )
     xs = wp.array([0.0, 3.0, 6.0, 9.0], dtype=float, device=device)
     depth = wp.zeros(4, dtype=float, device=device)
@@ -478,8 +484,7 @@ def test_trace_with_payload_closest_hit_and_miss_programs(raygen, expected):
     gas = wo.Accel([wo.triangles(vertices, indices)], device=device)
     pipeline = wo.Pipeline(
         raygen,
-        miss=[shaded_miss],
-        hit_groups=[wo.HitGroup(closest_hit=shaded_closest_hit)],
+        sbt=wo.SbtLayout(miss=shaded_miss, hit_groups={"triangles": wo.HitGroup(closest_hit=shaded_closest_hit)}),
         payload_words=3,
         device=device,
     )
@@ -515,7 +520,9 @@ def test_accel_query_ray_reports_curve_parameter():
     indices = wp.array([0], dtype=wp.int32, device=device)
     gas = wo.Accel([wo.curves(points, widths, indices)], device=device)
     pipeline = wo.Pipeline(
-        curve_query_raygen, hit_groups=[wo.HitGroup(builtin=wo.PrimitiveType.ROUND_LINEAR)], device=device
+        curve_query_raygen,
+        sbt=wo.SbtLayout(hit_groups={"curves": wo.HitGroup(builtin=wo.PrimitiveType.ROUND_LINEAR)}),
+        device=device,
     )
     results = wp.full(4, -7.0, dtype=float, device=device)
     wo.launch(pipeline, dim=1, inputs=[gas, results])

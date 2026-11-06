@@ -51,8 +51,7 @@ def miss(scale: wp.uint32):
 
 
 def main() -> None:
-    sbt = wo.SbtBuilder(["radiance"])
-    sbt.set_miss("radiance", miss)
+    sbt = wo.SbtLayout(ray_types=["radiance"], miss={"radiance": miss})
     with wo.Pipeline(raygen, sbt=sbt, params_type=LaunchParams, payload_words=1) as pipeline:
         outputs = []
         for scale in (100, 200):

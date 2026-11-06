@@ -78,8 +78,11 @@ with `wo.make_instance()` and refit with `accel.refit()`. Initial instance build
 validate child ids with a host readback; compaction also synchronizes. Refits and
 launches remain asynchronous on the selected Warp stream.
 
-SBT records are built automatically. For named ray types and explicit hit-group
-layouts, pass a `wo.SbtBuilder` to `wo.Pipeline(..., sbt=builder)`.
+Miss records and hit groups are described by one `wo.SbtLayout` of named ray types
+and hit groups, passed as `wo.Pipeline(..., sbt=layout)`; it also gives the instance
+SBT offsets. Hit groups, miss, and callable records can carry a `@wp.struct` instance
+(`wo.HitGroup(..., data=material)`), read on the device with
+`wp.optix_load_sbt_data(material)`.
 
 See the [API guide](warp_optix/README.md) and runnable [examples](examples_warp/README.md).
 

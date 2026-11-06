@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import warp as wp
 
-from warp_optix.enums import RayFlags
+from warp_optix.enums import PrimitiveType, RayFlags
+from warp_optix.sbt import HitGroup, SbtLayout
 
 from .func_common import Mat16f, Vec6f
 
@@ -3980,3 +3981,23 @@ def secondary_any_hit(params: PathtraceLaunchParams):
     payload.visible = wp.uint32(0)
     wp.optix_store_payload(payload)
     wp.optix_terminate_ray()
+
+
+def _hit_groups(primary_closest_hit, builtin=None):
+    return {
+        "primary": HitGroup(primary_closest_hit, primary_any_hit, builtin=builtin),
+        "secondary": HitGroup(secondary_closest_hit, secondary_any_hit, builtin=builtin),
+    }
+
+
+# Raygen traces with ray index 0/1 and stride 2; hit groups are named by the
+# scene geometry's primitive_type.
+SBT = SbtLayout(
+    ray_types=("primary", "secondary"),
+    miss={"primary": primary_miss, "secondary": secondary_miss},
+    hit_groups={
+        "triangles": _hit_groups(primary_closest_hit),
+        "round_linear": _hit_groups(curve_primary_closest_hit, PrimitiveType.ROUND_LINEAR),
+        "round_cubic_bezier": _hit_groups(curve_primary_closest_hit, PrimitiveType.ROUND_CUBIC_BEZIER),
+    },
+)

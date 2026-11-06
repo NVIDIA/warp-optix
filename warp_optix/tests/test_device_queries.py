@@ -340,8 +340,8 @@ def test_common_device_queries_on_gpu():
     ias = wo.Accel([wo.instances(records)], device=device)
 
     single_level = wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING
-    hit = wo.HitGroup(closest_hit=query_closest_hit)
-    pipeline = wo.Pipeline(query_raygen, miss=[query_miss], hit_groups=[hit], payload_words=1, graph_flags=single_level)
+    sbt = wo.SbtLayout(miss=query_miss, hit_groups={"triangles": wo.HitGroup(closest_hit=query_closest_hit)})
+    pipeline = wo.Pipeline(query_raygen, sbt=sbt, payload_words=1, graph_flags=single_level)
     output = wp.zeros(15, dtype=wp.uint32, device=device)
     result = _launch(pipeline, ias.id, output)
     assert result[0] == 77
@@ -356,9 +356,7 @@ def test_common_device_queries_on_gpu():
     assert int(result[9]) | (int(result[10]) << 32) == gas.id
     assert result[11] == 0
 
-    reorder_pipeline = wo.Pipeline(
-        reorder_raygen, miss=[query_miss], hit_groups=[hit], payload_words=1, graph_flags=single_level
-    )
+    reorder_pipeline = wo.Pipeline(reorder_raygen, sbt=sbt, payload_words=1, graph_flags=single_level)
     reorder_result = _launch(reorder_pipeline, ias.id, output)
     assert tuple(reorder_result[:5]) == tuple(result[:5])
     assert tuple(reorder_result[7:12]) == tuple(result[7:12])
@@ -400,8 +398,7 @@ def test_motion_blur_triangles_on_gpu():
     gas = wo.Accel([wo.triangles(keys, indices)], motion=motion, device=device)
     pipeline = wo.Pipeline(
         motion_raygen,
-        miss=[query_miss],
-        hit_groups=[wo.HitGroup(closest_hit=motion_closest_hit)],
+        sbt=wo.SbtLayout(miss=query_miss, hit_groups={"triangles": wo.HitGroup(closest_hit=motion_closest_hit)}),
         payload_words=1,
         motion_blur=True,
     )
@@ -419,8 +416,10 @@ def test_round_linear_curve_queries_on_gpu():
     gas = wo.Accel([wo.curves(vertices, widths, indices)], flags=RANDOM_ACCESS, device=device)
     pipeline = wo.Pipeline(
         curve_raygen,
-        miss=[query_miss],
-        hit_groups=[wo.HitGroup(closest_hit=curve_closest_hit, builtin=wo.PrimitiveType.ROUND_LINEAR)],
+        sbt=wo.SbtLayout(
+            miss=query_miss,
+            hit_groups={"curves": wo.HitGroup(closest_hit=curve_closest_hit, builtin=wo.PrimitiveType.ROUND_LINEAR)},
+        ),
         payload_words=1,
     )
     result = _launch(pipeline, gas.id, wp.zeros(7, dtype=wp.uint32, device=device))
@@ -452,8 +451,10 @@ def test_higher_order_curve_vertex_data_on_gpu(curve_type, control_points):
     gas = wo.Accel([wo.curves(vertices, widths, indices, curve_type=curve_type)], flags=RANDOM_ACCESS, device=device)
     pipeline = wo.Pipeline(
         curve_raygen,
-        miss=[query_miss],
-        hit_groups=[wo.HitGroup(closest_hit=higher_order_curve_closest_hit, builtin=curve_type)],
+        sbt=wo.SbtLayout(
+            miss=query_miss,
+            hit_groups={"curves": wo.HitGroup(closest_hit=higher_order_curve_closest_hit, builtin=curve_type)},
+        ),
         payload_words=1,
     )
     assert _launch(pipeline, gas.id, wp.zeros(1, dtype=wp.uint32, device=device))[0] == 0
@@ -469,4 +470,4 @@ def test_higher_order_curve_vertex_data_on_gpu(curve_type, control_points):
 )
 def test_programs_must_bind_raygen_arguments(miss, message):
     with pytest.raises(TypeError, match=message):
-        wo.Pipeline(query_raygen, miss=[miss])
+        wo.Pipeline(query_raygen, sbt=wo.SbtLayout(miss=miss))

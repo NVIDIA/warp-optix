@@ -53,7 +53,6 @@ def test_public_surface():
         "ExceptionFlags",
         "GeometryFlags",
         "HitGroup",
-        "HitGroupHandle",
         "HitKind",
         "Instance",
         "InstanceFlags",
@@ -62,7 +61,7 @@ def test_public_surface():
         "PrimitiveType",
         "ProgramKind",
         "RayFlags",
-        "SbtBuilder",
+        "Record",
         "SbtLayout",
         "TraversableGraphFlags",
         "aabbs",
@@ -95,6 +94,8 @@ def test_public_surface():
         "Hit",
         "MISS",
         "constants",
+        "SbtBuilder",
+        "HitGroupHandle",
     ]
     assert [name for name in removed if hasattr(wo, name)] == []
     assert wo.config.validation is False or wo.config.validation is True

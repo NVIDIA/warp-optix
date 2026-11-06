@@ -31,6 +31,7 @@ import warp as wp
 import warp_optix as wo
 from warp_optix import native
 
+from . import pathtracing_warp_kernels as pwk
 from .color_utils import srgb_to_linear_u8
 from .materials import ALPHA_OPAQUE, MaterialManager
 
@@ -259,7 +260,6 @@ class Mesh:
     """Represents a mesh with vertices, indices, and GPU buffers."""
 
     primitive_type = "triangles"
-    sbt_offset = 0
 
     def __init__(
         self,
@@ -445,8 +445,8 @@ class Curve:
     """
 
     _BASIS_SPECS = {
-        "linear": ("round_linear", 2, 2, 1),
-        "cubic_bezier": ("round_cubic_bezier", 4, 4, 2),
+        "linear": ("round_linear", 2, 1),
+        "cubic_bezier": ("round_cubic_bezier", 4, 2),
     }
 
     def __init__(
@@ -462,7 +462,7 @@ class Curve:
         basis = str(basis).lower()
         if basis not in self._BASIS_SPECS:
             raise ValueError("curve basis must be 'linear' or 'cubic_bezier'")
-        primitive_type, control_point_count, sbt_offset, geometry_type = self._BASIS_SPECS[basis]
+        primitive_type, control_point_count, geometry_type = self._BASIS_SPECS[basis]
         vertices = np.asarray(vertices, dtype=np.float32)
         if vertices.ndim != 2 or vertices.shape[1] != 3:
             raise ValueError("curve vertices must have shape (N, 3)")
@@ -501,7 +501,6 @@ class Curve:
         self.basis = basis
         self.primitive_type = primitive_type
         self.control_point_count = control_point_count
-        self.sbt_offset = sbt_offset
         self.geometry_type = geometry_type
         self.vertices = np.ascontiguousarray(vertices, dtype=np.float32)
         self.radii = np.ascontiguousarray(radii, dtype=np.float32)
@@ -1679,7 +1678,9 @@ class Scene:
                         native.INSTANCE_FLAG_DISABLE_ANYHIT if override_opaque else native.INSTANCE_FLAG_ENFORCE_ANYHIT
                     )
             handles = np.array([gas.id for gas in self._gas], dtype=np.uint64)
-            sbt_offsets = np.array([geometry.sbt_offset for geometry in self._meshes], dtype=np.uint32)
+            sbt_offsets = np.array(
+                [pwk.SBT.get_sbt_offset(geometry.primitive_type) for geometry in self._meshes], dtype=np.uint32
+            )
             self._instance_traversables = wp.array(handles[mesh_indices], dtype=wp.uint64, device=self.device)
             self._instance_sbt_offsets = wp.array(sbt_offsets[mesh_indices], dtype=wp.uint32, device=self.device)
             self._instance_flags = wp.array(flags, dtype=wp.uint32, device=self.device)

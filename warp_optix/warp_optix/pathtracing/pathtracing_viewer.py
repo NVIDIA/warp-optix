@@ -690,24 +690,13 @@ class Renderer:
     def _create_pipeline(self):
         """Create the OptiX pipeline with primary and shadow/visibility ray types.
 
-        Geometry SBT offsets select the hit groups: triangles 0, round linear
-        curves 2, and round cubic Bezier curves 4. Bounces iterate in raygen,
-        so hit and miss programs never trace recursively.
+        The scene takes each geometry's instance SBT offset from the same
+        ``pwk.SBT`` layout. Bounces iterate in raygen, so hit and miss programs
+        never trace recursively.
         """
-        linear = native.PRIMITIVE_TYPE_ROUND_LINEAR
-        bezier = native.PRIMITIVE_TYPE_ROUND_CUBIC_BEZIER
         self._pipeline = wo.Pipeline(
             pwk.primary_raygen,
-            miss=[pwk.primary_miss, pwk.secondary_miss],
-            hit_groups=[
-                wo.HitGroup(pwk.primary_closest_hit, pwk.primary_any_hit),
-                wo.HitGroup(pwk.secondary_closest_hit, pwk.secondary_any_hit),
-                wo.HitGroup(pwk.curve_primary_closest_hit, pwk.primary_any_hit, builtin=linear),
-                wo.HitGroup(pwk.secondary_closest_hit, pwk.secondary_any_hit, builtin=linear),
-                wo.HitGroup(pwk.curve_primary_closest_hit, pwk.primary_any_hit, builtin=bezier),
-                wo.HitGroup(pwk.secondary_closest_hit, pwk.secondary_any_hit, builtin=bezier),
-            ],
-            ray_types=2,
+            sbt=pwk.SBT,
             payload_words=19,
             graph_flags=wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
             device=self._ctx.device,
