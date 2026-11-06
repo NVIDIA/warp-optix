@@ -64,55 +64,27 @@ jobs:
         with:
           name: wheel-windows-x86_64
           path: wheels/windows-x86_64
-      - name: Verify the wheels and match the release tag
+      # Stage the distributions only if their version matches the tag and each
+      # wheel is exactly what its GitHub-hosted build job produced.
+      - name: Verify the distributions and match the release tag
         env:
           RELEASE_TAG: ${{ github.ref_name }}
           LINUX_WHEEL_SHA256: ${{ needs.linux.outputs.wheel-sha256 }}
           WINDOWS_WHEEL_SHA256: ${{ needs.windows.outputs.wheel-sha256 }}
         run: |
-          uv run --no-project python -I - <<'PY'
-          import hashlib
-          import os
-          import shutil
-          import tarfile
-          import zipfile
-          from email.parser import BytesParser
-          from pathlib import Path
-
-          expected_tag = os.environ["RELEASE_TAG"]
-          out = Path("publish-dist")
-          out.mkdir()
-
-
-          def check(name, metadata):
-              if metadata["Name"] != "warp-optix":
-                  raise SystemExit(f"{name}: unexpected distribution {metadata['Name']}")
-              if expected_tag != f"v{metadata['Version']}":
-                  raise SystemExit(f"Tag must be v{metadata['Version']}, got {expected_tag}")
-
-
-          # Each wheel must be exactly what its GitHub-hosted build job produced.
-          for platform, pattern, digest_env in (
-              ("linux-x86_64", "warp_optix-*-cp312-cp312-*manylinux_2_28_x86_64.whl", "LINUX_WHEEL_SHA256"),
-              ("windows-x86_64", "warp_optix-*-cp312-cp312-win_amd64.whl", "WINDOWS_WHEEL_SHA256"),
-          ):
-              wheels = list(Path("wheels", platform).glob(pattern))
-              if len(wheels) != 1:
-                  raise SystemExit(f"Expected one {pattern}, found {[w.name for w in wheels]}")
-              wheel = wheels[0]
-              if hashlib.sha256(wheel.read_bytes()).hexdigest() != os.environ[digest_env]:
-                  raise SystemExit(f"{wheel.name} does not match the GitHub-hosted build output")
-              with zipfile.ZipFile(wheel) as archive:
-                  (metadata_file,) = [n for n in archive.namelist() if n.endswith(".dist-info/METADATA")]
-                  check(wheel.name, BytesParser().parsebytes(archive.read(metadata_file)))
-              shutil.copy2(wheel, out / wheel.name)
-
-          (sdist,) = Path("sdist").glob("warp_optix-*.tar.gz")
-          with tarfile.open(sdist) as archive:
-              (pkg_info,) = [m for m in archive.getmembers() if m.name.count("/") == 1 and m.name.endswith("/PKG-INFO")]
-              check(sdist.name, BytesParser().parsebytes(archive.extractfile(pkg_info).read()))
-          shutil.copy2(sdist, out / sdist.name)
-          PY
+          version=$(uv version --short)
+          if [ "$RELEASE_TAG" != "v$version" ]; then
+            echo "::error::Tag must be v$version, got $RELEASE_TAG"
+            exit 1
+          fi
+          mkdir publish-dist
+          stage() {
+            echo "$2  $1" | sha256sum --check --strict
+            cp "$1" publish-dist/
+          }
+          stage wheels/linux-x86_64/warp_optix-"$version"-cp312-cp312-*manylinux_2_28_x86_64.whl "$LINUX_WHEEL_SHA256"
+          stage wheels/windows-x86_64/warp_optix-"$version"-cp312-cp312-win_amd64.whl "$WINDOWS_WHEEL_SHA256"
+          cp sdist/warp_optix-"$version".tar.gz publish-dist/
       - name: Check package metadata
         run: uvx twine==7.0.0 check --strict publish-dist/*
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
