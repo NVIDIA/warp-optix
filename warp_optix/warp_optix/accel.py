@@ -5,21 +5,24 @@
 
 :class:`Accel` mirrors ``wp.Mesh``/``wp.Bvh``: construct it from build inputs,
 pass ``accel.id`` to kernels, and update it with :meth:`Accel.refit` or
-:meth:`Accel.rebuild`. Build inputs retain their device arrays. Initial
-instance builds validate child ids with a host readback; compaction also
-synchronizes. Refits remain asynchronous. See :mod:`warp_optix.context` for
-the lifetime contract.
+:meth:`Accel.rebuild`. Build inputs retain their device arrays. Instance
+builds copy their child ids to the host asynchronously to keep the children
+alive; with ``config.verify_instances`` they also synchronize to check them.
+Compaction synchronizes. Refits remain asynchronous. See
+:mod:`warp_optix.context` for the lifetime contract.
 """
 
 from __future__ import annotations
 
 import ctypes
+import weakref
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+import numpy as np
 import warp as wp
 
-from warp_optix import native
+from warp_optix import config, native
 from warp_optix.context import CAPTURE_ERROR, resolve
 from warp_optix.enums import BuildFlags, GeometryFlags, PrimitiveType
 
@@ -339,6 +342,61 @@ def curves(
     return BuildInput(descriptor, (*point_keys, *width_keys, indices))
 
 
+def _copy_child_ids(context, records: wp.array) -> tuple[wp.array, int]:
+    """Copy the child ids of ``records`` to a pinned host buffer on the current stream."""
+    # Pinned buffers are reused: freeing pinned memory synchronizes the device.
+    host = next((buffer for buffer in context._child_id_buffers if buffer.size >= records.size), None)
+    if host is None:
+        host = wp.empty(records.size, dtype=wp.uint64, device="cpu", pinned=True)
+    else:
+        context._child_id_buffers.remove(host)
+    ids = wp.array(
+        ptr=records.ptr + Instance.ctype.traversable.offset,
+        dtype=wp.uint64,
+        shape=(records.size,),
+        strides=(ctypes.sizeof(Instance.ctype),),
+        device=records.device,
+    )
+    wp.copy(host, ids, count=records.size)
+    return host, records.size
+
+
+def _children(context, readback, *, strict: bool, closing: Accel | None = None) -> tuple:
+    """Dependencies keeping the children named by a ``(event, host ids)`` readback alive."""
+    event, copies = readback
+    wp.synchronize_event(event)
+    child_ids = np.unique(np.concatenate([host.numpy()[:count] for host, count in copies]))
+    context._child_id_buffers += [host for host, _ in copies]
+    dependencies = []
+    for child_id in child_ids.tolist():
+        if child_id == 0:
+            continue
+        child = context._accels.get(child_id)
+        if child is None and closing is not None and closing._id == child_id:
+            # The garbage collector may clear the registry entry before finalizing ``closing``.
+            child = closing
+        if child is None:
+            if strict:
+                raise ValueError("Instance children must be live acceleration structures on this device")
+            continue
+        # Keep the child's memory, not just the object, so closing the child cannot free it.
+        dependencies.append((child, child._buffer, child._dependencies))
+    return tuple(dependencies)
+
+
+def _resolve_children(context, *, wait: bool, closing: Accel | None = None) -> None:
+    """Turn finished child-id readbacks into dependencies, oldest first so children precede parents."""
+    queue = context._unresolved
+    while queue:
+        accel = queue[0]()
+        if accel is not None and accel._pending is not None:
+            if not wait and not accel._pending[0].is_complete:
+                return
+            accel._dependencies += _children(context, accel._pending, strict=False, closing=closing)
+            accel._pending = None
+        queue.pop(0)
+
+
 def instances(records: wp.array) -> BuildInput:
     """Instance input retaining its records; child ids must stay unchanged on refits."""
     if records.dtype is not Instance or not records.device.is_cuda or not records.is_contiguous:
@@ -390,6 +448,7 @@ class Accel:
             device = inputs[0].device
         context, stream = resolve(device, stream)
         context.check_arrays([item.arrays for item in inputs])
+        _resolve_children(context, wait=False)
         flags = int(flags) | (BuildFlags.ALLOW_COMPACTION if compact else 0)
         if compact and flags & BuildFlags.ALLOW_UPDATE:
             raise ValueError("compacted acceleration structures cannot be refit")
@@ -398,21 +457,16 @@ class Accel:
             options = native.AccelBuildOptions(buildFlags=flags, operation=native.BUILD_OPERATION_BUILD)
             if motion is not None:
                 options.motionOptions = motion
-            dependencies = []
+            child_ids = []
             for item in inputs:
                 if item.instance_records is not None:
-                    # Validate GPU-written child ids once. Refits keep this topology.
-                    wp.synchronize_stream(stream)
-                    for child_id in item.instance_records.numpy()["traversable"].reshape(-1):
-                        if int(child_id) == 0:
-                            continue
-                        child = context._accels.get(int(child_id))
-                        if child is None:
-                            raise ValueError("Instance children must be live acceleration structures on this device")
-                        # Keep the child's memory, not just the object, so closing the child cannot free it.
-                        dependencies.append((child, child._buffer))
+                    child_ids.append(_copy_child_ids(context, item.instance_records))
                 if item.prepare is not None:
                     item.prepare()
+            pending = (stream.record_event(), child_ids) if child_ids else None
+            dependencies = ()
+            if pending is not None and config.verify_instances:
+                dependencies, pending = _children(context, pending, strict=True), None
             native_inputs = [item.native for item in inputs]
             sizes = context.native.accelComputeMemoryUsage([options] * len(inputs), native_inputs)
             scratch = wp.empty(
@@ -449,9 +503,13 @@ class Accel:
         self._inputs = inputs
         self._flags = flags
         self._motion = motion
-        self._dependencies = tuple(dependencies)
+        self._dependencies = dependencies
+        # Child ids still being copied to the host; resolved into dependencies by _resolve_children().
+        self._pending = pending
         self._closed = False
         context._accels[self._id] = self
+        if pending is not None:
+            context._unresolved.append(weakref.ref(self))
 
     @property
     def id(self) -> int:
@@ -481,13 +539,18 @@ class Accel:
         self._update(rebuild=False, stream=stream)
 
     def rebuild(self, stream: wp.Stream | None = None) -> None:
-        """Rebuild in place, restoring trace quality after many refits."""
+        """Rebuild in place, restoring trace quality after many refits.
+
+        With ``config.verify_instances``, instance child ids are checked again.
+        """
         self._update(rebuild=True, stream=stream)
 
     def close(self) -> None:
         """Make the structure unusable and release its memory (stream-ordered, like ``wp.array``)."""
         if self._closed:
             return
+        # Parents whose child ids are still in flight must take this structure's memory first.
+        _resolve_children(self._context, wait=True, closing=self)
         self._closed = True
         if self._context._accels.get(self._id) is self:
             del self._context._accels[self._id]
@@ -523,7 +586,17 @@ class Accel:
         if self._compacted:
             raise ValueError("compacted acceleration structures cannot be refit or rebuilt")
         context, stream = resolve(self.device, stream)
+        _resolve_children(context, wait=False)
         with wp.ScopedDevice(context.device), wp.ScopedStream(stream):
+            if rebuild and config.verify_instances:
+                child_ids = [
+                    _copy_child_ids(context, item.instance_records)
+                    for item in self._inputs
+                    if item.instance_records is not None
+                ]
+                if child_ids:
+                    self._dependencies = _children(context, (stream.record_event(), child_ids), strict=True)
+                    self._pending = None
             options = native.AccelBuildOptions(
                 buildFlags=self._flags,
                 operation=native.BUILD_OPERATION_BUILD if rebuild else native.BUILD_OPERATION_UPDATE,

@@ -3,9 +3,10 @@
 
 """Global warp-optix settings, mirroring ``wp.config``.
 
-Settings are read when a device's OptiX context is first created, i.e. on the
-first OptiX operation on that device. Later changes only affect devices whose
-context does not exist yet.
+``validation`` and ``log_level`` are read when a device's OptiX context is
+first created, i.e. on the first OptiX operation on that device. Later changes
+only affect devices whose context does not exist yet. ``verify_instances`` is
+read on every instance build and rebuild.
 """
 
 validation: bool = False
@@ -13,3 +14,6 @@ validation: bool = False
 
 log_level: int = 4
 """OptiX log level: 0 disables logging, 1 fatal, 2 error, 3 warning, 4 print (forwarded to ``logging``)."""
+
+verify_instances: bool = False
+"""Check instance child ids on every instance build and rebuild (synchronizes the build stream)."""

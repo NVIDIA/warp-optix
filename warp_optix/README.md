@@ -43,6 +43,8 @@ Like Warp's CUDA context, the OptiX device context is implicit: each CUDA device
 on first use and destroyed at interpreter exit. Its settings come from `wo.config`
 (`wo.config.validation = True`, `wo.config.log_level = 4`), which is read when a device's context is
 first created; later changes only affect devices whose context does not exist yet.
+`wo.config.verify_instances = True` checks instance child ids on every instance build and rebuild,
+like `wp.config.verify_cuda`; it is read on each build.
 `wo.get_context(device).native` gives the PyOptiX `DeviceContext` for advanced calls; it is borrowed
 and must not be destroyed.
 
@@ -64,14 +66,17 @@ with `.close()` or `with`:
 - `close()` makes a resource unusable at once (`RuntimeError` on further use) and frees its device
   memory right away. That memory is `wp.array` storage, which Warp frees in stream order, so work
   already submitted can still read it. It never blocks the host.
-- A pipeline's native OptiX objects (pipeline, module, program groups) are destroyed under the
-  device's CUDA context once the launches submitted before the close have finished, and never during
-  a graph capture on the device.
+- A pipeline's native OptiX objects (pipeline, module, program groups), its shader binding table,
+  and its automatic parameter storage are released under the device's CUDA context once the launches
+  submitted before the close have finished, on whichever streams they ran, and never during a graph
+  capture on the device.
 - Kernels see an acceleration structure only as the integer `accel.id`. As with `wp.Mesh.id`, keep
   the `wo.Accel` alive while work that reads the id may still be submitted. A `wo.Accel` passed in
   launch inputs is referenced by the pipeline's parameter storage until the next launch on that
   stream replaces it.
-- An instance structure keeps the memory of its child structures alive, even if a child is closed.
+- An instance structure keeps the memory of its child structures alive, at every level of nesting,
+  even if a child is closed. It learns its children from an asynchronous copy of the child ids;
+  closing a structure while such a copy is still in flight waits for it.
 - Failed pipeline construction destroys only the native objects it created.
 
 ## Programs and pipelines
@@ -289,8 +294,10 @@ Keep those indices unchanged when reusing a build input; create a new input
 after changing topology. Point-only refits do not repeat this validation.
 
 `wo.Accel(inputs, *, flags=, compact=, motion=, device=, stream=)` builds on a Warp stream and
-exposes `.id` (the `wp.uint64` passed to kernels), `.device`, and `.flags`. Initial instance builds
-read child ids back once to verify that every child is a live structure on the same device.
+exposes `.id` (the `wp.uint64` passed to kernels), `.device`, and `.flags`. Instance builds do not
+synchronize: an instance whose child is not a live structure on the same device faults the build
+(a sticky CUDA error). Set `wo.config.verify_instances = True` while developing to have builds and
+rebuilds synchronize their stream, read the child ids back, and raise `ValueError` instead.
 `compact=True` also synchronizes to shrink static structures. `accel.refit(stream=)` refits a
 structure built with `wo.BuildFlags.ALLOW_UPDATE` to its inputs' current contents using the
 retained scratch buffer, so it neither allocates nor synchronizes on success; `accel.rebuild(stream=)`
@@ -687,7 +694,7 @@ when direct registration is unavailable.
 
 - `warp_optix/__init__.py` — public API.
 - `warp_optix/context.py` — implicit per-device contexts (`get_context`), device/stream resolution, and native-object release.
-- `warp_optix/config.py` — global settings (`validation`, `log_level`).
+- `warp_optix/config.py` — global settings (`validation`, `log_level`, `verify_instances`).
 - `warp_optix/accel.py` — build inputs, `Accel`, and `Instance`/`make_instance`.
 - `warp_optix/pipeline.py` — `Pipeline`, `HitGroup`, `LaunchParams`, and `launch`.
 - `warp_optix/program.py` — rewrites Warp kernels into OptiX programs (`ProgramKind`, `kernel`).
