@@ -127,7 +127,7 @@ class PathTracer:
 
     @property
     def denoiser(self) -> str:
-        """Requested backend: 'auto', 'optix', or 'none'."""
+        """Requested backend: 'auto' (OptiX, then none), 'dlss', 'optix', or 'none'."""
         return self._viewer.denoiser
 
     @property

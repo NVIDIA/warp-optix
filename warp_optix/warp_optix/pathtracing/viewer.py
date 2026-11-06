@@ -371,6 +371,8 @@ class ViewerBackend:
             except (RuntimeError, ValueError) as exc:
                 logger.warning("Could not switch denoiser: %s", exc)
         if self.active_denoiser == "dlss":
+            # Attribution required by the DLSS SDK license (RTX supplement 7.1(b)).
+            imgui.text_disabled("Powered by NVIDIA DLSS Ray Reconstruction")
             qualities = list(DLSS_QUALITY_MODES)
             changed, selected = imgui.combo("DLSS Quality", qualities.index(self.dlss_quality), qualities)
             if changed:

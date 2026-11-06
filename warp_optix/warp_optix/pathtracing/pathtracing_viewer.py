@@ -348,8 +348,10 @@ class Renderer:
     def set_denoiser(self, denoiser: str, *, optix_upscale: bool | None = None, dlss_quality: str | None = None):
         """Switch reconstruction backends without rebuilding the scene.
 
-        Explicit selections require the backend; 'auto' tries DLSS Ray
-        Reconstruction (driver R620+), then OptiX, then raw rendering. Backend-specific resolution settings are retained.
+        Explicit selections require the backend; 'auto' tries OptiX, then raw
+        rendering. DLSS Ray Reconstruction (driver R620+) is used only when
+        selected explicitly, because its use is subject to the NVIDIA RTX SDKs
+        License. Backend-specific resolution settings are retained.
         """
         mode = self._normalize_denoiser(denoiser)
         upscale = self.optix_upscale if optix_upscale is None else bool(optix_upscale)
@@ -398,10 +400,11 @@ class Renderer:
         if self._optix is None:
             self._set_render_resolution(self.width, self.height)
             return
-        if self.denoiser in ("dlss", "auto"):
+        # DLSS is opt-in: its license restricts some deployments (for example
+        # cloud services without NVIDIA vGPU), so 'auto' never selects it.
+        if self.denoiser == "dlss":
             self._init_dlss_denoiser()
-            if self._dlss_denoiser is not None:
-                return
+            return
         if self.denoiser in ("optix", "auto"):
             try:
                 scale = 2 if self.optix_upscale else 1
@@ -428,20 +431,13 @@ class Renderer:
             self._set_render_resolution(self.width, self.height)
 
     def _init_dlss_denoiser(self):
-        """Create the DLSS Ray Reconstruction backend, or record why it is unavailable.
-
-        In 'auto' mode, missing DLSS support (a build without DLSS, or a driver
-        older than R620) is the normal case and is not reported as an error.
-        """
+        """Create the DLSS Ray Reconstruction backend for an explicit 'dlss' selection."""
         requirements = dlss_rr_requirements(self._render_stream.device)
-        if not requirements["supported"] and self.denoiser != "dlss":
-            logger.debug("DLSS Ray Reconstruction not used: %s", requirements["reason"])
-            return
+        if not requirements["supported"]:
+            raise RuntimeError(f"DLSS Ray Reconstruction unavailable: {requirements['reason']}")
+        render_width, render_height = DlssDenoiser.optimal_render_size((self.width, self.height), self.dlss_quality)
+        self._set_render_resolution(render_width, render_height)
         try:
-            if not requirements["supported"]:
-                raise RuntimeError(requirements["reason"])
-            render_width, render_height = DlssDenoiser.optimal_render_size((self.width, self.height), self.dlss_quality)
-            self._set_render_resolution(render_width, render_height)
             self._dlss_denoiser = DlssDenoiser(
                 self._render_width,
                 self._render_height,
@@ -449,12 +445,9 @@ class Renderer:
                 quality=self.dlss_quality,
                 stream=self._render_stream,
             )
-        except Exception as exc:
-            if self.denoiser == "dlss":
-                raise
-            self.denoiser_error = f"DLSS Ray Reconstruction unavailable: {exc}"
-            logger.info("Denoiser fallback: %s", self.denoiser_error)
+        except Exception:
             self._set_render_resolution(self.width, self.height)
+            raise
 
     def _denoiser_inputs(self, color=None) -> DenoiserInputs:
         return DenoiserInputs(

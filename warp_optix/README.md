@@ -447,9 +447,9 @@ api.set_denoiser("none")  # Raw rendering.
 api.set_denoiser("optix", optix_upscale=False)  # Native-resolution denoising.
 ```
 
-The default `denoiser="auto"` selects DLSS Ray Reconstruction when it is
-available (see below), then OptiX, with raw rendering as the last fallback.
-Explicit `"dlss"` or `"optix"` selection requires successful initialization;
+The default `denoiser="auto"` selects OptiX, with raw rendering as the
+fallback. DLSS Ray Reconstruction (see below) is opt-in and is never chosen by
+`"auto"`. Explicit `"dlss"` or `"optix"` selection requires successful initialization;
 `"none"` disables denoising. Inspect `active_denoiser` and `denoiser_error` for
 the active backend and fallback diagnostics.
 
@@ -485,22 +485,16 @@ constructors and uses that device's implicit OptiX context.
 DLSS Ray Reconstruction (RR) denoises and, in its upscaling quality modes,
 reconstructs a lower-resolution render at the output resolution. warp-optix uses
 the RR runtime that ships with the NVIDIA driver since R620
-(`ngx-builtins/nvngx_dlssd`), as Blender Cycles does. No NVIDIA code is compiled
-in or linked and no DLSS binary is distributed:
+(`ngx-builtins/nvngx_dlssd`), the same way Blender Cycles does: it compiles the
+NGX SDK in header-only mode (`NVSDK_NGX_HEADER_ONLY`), links no NVIDIA library,
+and distributes no DLSS binary.
 
-- warp-optix's own loader opens the driver's NGX core from the folder of the
-  loaded CUDA driver (`_nvngx.dll` next to `nvcuda64.dll` on Windows,
-  `libnvidia-ngx.so.1` on Linux) and calls its exported `NVSDK_NGX_CUDA_*`
-  functions. The SDK's loader (`NVSDK_NGX_HEADER_ONLY`) and static library are
-  not used.
-- Three DLSS SDK headers (`nvsdk_ngx_defs.h`, `nvsdk_ngx_params.h`,
-  `nvsdk_ngx_defs_dlssd.h`) supply declarations only: types, enums, and parameter
-  names. They are pinned to SDK 310.9.1 (fixed commit, SHA-256 verified),
-  fetched at build time into the git-ignored `third_party/`, and never committed
-  or packaged. The pin also fixes the NGX API version warp-optix requests.
-
-DLSS support is **off by default** until its release is approved. Build it in
-explicitly:
+DLSS support is **off by default**, and published wheels are built without it.
+Header-only mode compiles portions of the proprietary DLSS SDK into the
+extension: the NGX runtime loader (`nvsdk_ngx_loader.h`) and the SDK's
+declarations and parameter names. Build it in explicitly; the SDK headers and
+license (8 files, pinned commit, SHA-256 verified) are fetched at build time
+into the git-ignored `third_party/` and never committed:
 
 ```bash
 WARP_OPTIX_ENABLE_DLSS=ON pip install .
@@ -519,8 +513,8 @@ api = PathTracer(denoiser="dlss", dlss_quality="balanced")
 at full resolution), `"max_quality"`, `"max_perf"`, or `"ultra_performance"`; the
 upscaling modes render at the size NGX recommends for the output and
 reconstruct to full resolution. The model preset defaults to `F` (the DLSS 4.5
-transformer model). Without a DLSS build or on older drivers, `"auto"` falls
-back to OptiX and `dlss_rr_requirements()` reports why.
+transformer model). Without a DLSS build or on older drivers, selecting `"dlss"`
+raises, and `dlss_rr_requirements()` reports why.
 
 Custom renderers use `DlssDenoiser` directly. It needs every guide of
 `DenoiserInputs`, including linear `depth` and `specular_albedo`, plus the
@@ -540,8 +534,44 @@ generation. Measured for the reconstruction step alone at 1920x1080 output on an
 RTX 3080 Laptop GPU (Ampere): about 60 ms per frame in DLAA mode and 24 ms in
 balanced mode. Newer GPUs run the model much faster.
 
-warp-optix identifies itself to NGX with a project ID rather than an
-NVIDIA-issued application ID.
+By default warp-optix identifies itself to NGX with its own project ID, shared
+by every application built on it. Applications that enable DLSS should register
+their own GUID before creating a DLSS denoiser:
+
+```python
+from warp_optix.pathtracing import set_dlss_project_id
+
+set_dlss_project_id("a0f57b54-1daf-4934-90ae-c4035c19df04")  # your app's fixed GUID
+```
+
+`feature_search_path` (on `DlssDenoiser` and `dlss_rr_requirements`) names a
+folder with an application-supplied `nvngx_dlssd` library that takes precedence
+over the driver's runtime. Distributing that library is governed by your own
+DLSS SDK license, and its NVIDIA signature must stay intact.
+
+#### DLSS licensing
+
+The DLSS SDK is licensed under the NVIDIA RTX SDKs License, not Apache-2.0.
+Building with `WARP_OPTIX_ENABLE_DLSS=ON` means using the SDK and accepting its
+license (`third_party/dlss-headers-*/LICENSE.txt`), and DLSS-enabled builds
+install it as `warp_optix/licenses/NVIDIA_RTX_SDKs_LICENSE.txt`. Among other
+terms, DLSS:
+
+- is licensed for systems with NVIDIA GPUs only;
+- may be deployed in a cloud service only on systems that consume NVIDIA vGPU
+  software;
+- may not be used where its failure could cause personal injury, death, or
+  catastrophic loss (for example avionics, navigation, military, medical, or
+  life-support applications) without a separate agreement with NVIDIA.
+
+If you distribute an application that uses DLSS through warp-optix, the license
+also requires you to notify NVIDIA before its commercial release
+(https://developer.nvidia.com/sw-notification) and to credit NVIDIA DLSS in its
+about box or credits, if it has one. See `THIRD_PARTY_NOTICES.txt`; license
+questions go to nvidia-rtx-license-questions@nvidia.com.
+
+NVIDIA, DLSS, and DLSS-RR are trademarks and/or registered trademarks of NVIDIA
+Corporation in the U.S. and other countries.
 
 ### Interactive viewer features
 

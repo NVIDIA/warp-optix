@@ -16,6 +16,33 @@ alongside the headers. The headers remain under NVIDIA SDK terms, not Apache-2.0
 Redistribution of these unmodified headers in the public warp-optix pip package
 has been approved.
 
+NVIDIA DLSS SDK (builds with WARP_OPTIX_ENABLE_DLSS=ON only)
+-------------------------------------------------------------
+NVIDIA DLSS SDK 310.9.1: https://github.com/NVIDIA/DLSS/tree/v310.9.1
+Copyright NVIDIA Corporation. License: NVIDIA RTX SDKs License
+(LicenseRef-NVIDIA-RTX-SDK), not Apache-2.0.
+DLSS support is disabled by default, and builds without it contain no part of
+the DLSS SDK. When it is enabled, the SDK headers are fetched at build time
+(never committed to this repository or included in the sdist) and the
+compiled extension (warp_optix/_ext) incorporates, in object code, the SDK's
+header-only NGX runtime loader and the SDK's declarations and parameter-name
+strings. No SDK library or DLSS binary is linked or distributed; the Ray
+Reconstruction runtime is part of the NVIDIA display driver (R620 or newer).
+Such builds install the full license text as
+warp_optix/licenses/NVIDIA_RTX_SDKs_LICENSE.txt.
+Use of the DLSS functionality of such a build is subject to that license,
+including that it is licensed for systems with NVIDIA GPUs only; that cloud
+deployment is permitted only on systems that consume NVIDIA vGPU software; that
+it may not be used in systems where its failure could result in personal
+injury, death, or catastrophic loss (for example avionics, navigation,
+military, medical, or life-support applications) without a separate agreement
+with NVIDIA; and that the SDK may not be reverse engineered, decompiled, or
+disassembled.
+Distribution of DLSS-enabled builds requires release approval and has not yet
+been approved; published warp-optix wheels are built without DLSS.
+NVIDIA, the NVIDIA logo, DLSS, and DLSS-RR are trademarks and/or registered
+trademarks of NVIDIA Corporation in the U.S. and other countries.
+
 pybind11
 --------
 https://github.com/pybind/pybind11

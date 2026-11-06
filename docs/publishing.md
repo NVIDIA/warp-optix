@@ -92,6 +92,25 @@ Use an unused version for the next release, for example 0.2.1 or 0.2.1a1.
 7. After the first successful Trusted Publishing release, revoke the temporary
    account-wide token used for the initial manual upload.
 
+## Releasing with DLSS enabled
+
+Published wheels are built without DLSS (`WARP_OPTIX_ENABLE_DLSS` is off), so
+they contain no part of the DLSS SDK. A DLSS-enabled wheel incorporates portions
+of the SDK and is governed by the NVIDIA RTX SDKs License. Before the release
+workflow enables DLSS:
+
+1. Obtain release approval for distributing the DLSS SDK portions, then update
+   the DLSS entry in `THIRD_PARTY_NOTICES.txt` (it currently says approval is
+   pending) and add `LicenseRef-NVIDIA-RTX-SDK` to `[project].license` in
+   `pyproject.toml`.
+2. Notify NVIDIA of the release before it ships, as the RTX SDK supplement
+   (section 4) requires: https://developer.nvidia.com/sw-notification.
+3. Ask NVIDIA DevTech for an NVIDIA Application ID and, if granted, use it
+   instead of the default project ID in `src/dlss.cpp`.
+4. Confirm the wheel contains `warp_optix/licenses/NVIDIA_RTX_SDKs_LICENSE.txt`.
+
+License questions go to nvidia-rtx-license-questions@nvidia.com.
+
 ## Troubleshooting
 
 - No **Settings** or environment controls: ask a repository administrator to do

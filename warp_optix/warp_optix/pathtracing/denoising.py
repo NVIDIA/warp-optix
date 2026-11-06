@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from contextlib import suppress
 from dataclasses import dataclass
 
@@ -283,6 +284,26 @@ DLSS_QUALITY_MODES = {
 }
 
 
+_GUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+# NGX identity passed at initialization; None keeps the extension's default.
+_dlss_identity: dict[str, str] = {}
+
+
+def set_dlss_project_id(project_id: str, engine_version: str = "1.0.0") -> None:
+    """Identify your application to NGX with its own project ID.
+
+    By default warp-optix initializes NGX with its own project ID, shared by
+    every application built on it. Applications that enable DLSS should pass
+    a GUID of their own (for example ``str(uuid.uuid4())``, generated once and
+    kept fixed) so that NVIDIA can tell them apart. NGX is initialized once per
+    process, so call this before creating any DLSS denoiser.
+    """
+    project_id = str(project_id).strip()
+    if not _GUID.fullmatch(project_id):
+        raise ValueError("project_id must be a GUID such as 'a0f57b54-1daf-4934-90ae-c4035c19df04'")
+    _dlss_identity.update(projectId=project_id, engineVersion=str(engine_version))
+
+
 def dlss_rr_requirements(device=None, *, feature_search_path: str | None = None) -> dict:
     """Ask the driver whether DLSS Ray Reconstruction can run on a CUDA device.
 
@@ -296,7 +317,11 @@ def dlss_rr_requirements(device=None, *, feature_search_path: str | None = None)
     device = wp.get_device(device if device is not None else "cuda")
     if not device.is_cuda:
         return {"supported": False, "reason": "DLSS Ray Reconstruction requires a CUDA device"}
-    info = dict(native.dlssRRQueryRequirements(cudaDevice=device.ordinal, featureSearchPath=feature_search_path or ""))
+    info = dict(
+        native.dlssRRQueryRequirements(
+            cudaDevice=device.ordinal, featureSearchPath=feature_search_path or "", **_dlss_identity
+        )
+    )
     if not info["supported"]:
         info["reason"] = (
             f"driver reports DLSS Ray Reconstruction unsupported ({info['result_string']}); "
@@ -327,7 +352,11 @@ class DlssDenoiser:
     """DLSS Ray Reconstruction: denoising, optionally with upscaling, on one CUDA stream.
 
     Uses the NGX runtime that ships with the NVIDIA driver (R620+); warp-optix
-    distributes no DLSS binary. ``width``/``height`` are the render (input) size and
+    distributes no DLSS binary. Use of DLSS is subject to the NVIDIA RTX SDKs
+    License (see THIRD_PARTY_NOTICES.txt). ``feature_search_path`` names a folder
+    with an application-supplied ``nvngx_dlssd`` library that takes precedence
+    over the driver's; distributing that library is governed by your own DLSS
+    SDK license, and its NVIDIA signature must stay intact. ``width``/``height`` are the render (input) size and
     ``output_size`` the reconstructed size; pick the render size for a quality mode
     with :meth:`optimal_render_size`. ``device``/``stream``: neither given uses the
     current CUDA device and its current stream; only ``stream`` uses its device;
@@ -375,7 +404,9 @@ class DlssDenoiser:
         with wp.ScopedStream(self.stream):
             try:
                 self._context = native.DlssRRContext()
-                self._context.init(featureSearchPath=feature_search_path or "", enableLogging=enable_logging)
+                self._context.init(
+                    featureSearchPath=feature_search_path or "", enableLogging=enable_logging, **_dlss_identity
+                )
                 if not self._context.isDlssRRAvailable():
                     raise RuntimeError(
                         "DLSS Ray Reconstruction is not available; the driver's built-in runtime "
@@ -435,7 +466,7 @@ class DlssDenoiser:
             return int(output_size[0]), int(output_size[1])
         quality_value = _dlss_quality(quality)
         context = native.DlssRRContext()
-        context.init(featureSearchPath=feature_search_path or "")
+        context.init(featureSearchPath=feature_search_path or "", **_dlss_identity)
         try:
             sizes = context.querySupportedDlssInputSizes(int(output_size[0]), int(output_size[1]), quality_value)
             return int(sizes.optimalWidth), int(sizes.optimalHeight)

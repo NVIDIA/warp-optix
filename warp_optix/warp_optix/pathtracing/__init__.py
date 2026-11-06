@@ -35,7 +35,14 @@ from .defaults import (
     DEFAULT_VIEWER_SIZE,
     DEFAULT_VIEWER_WIDTH,
 )
-from .denoising import DenoiserInputs, DlssDenoiser, OptixDenoiser, dlss_rr_available, dlss_rr_requirements
+from .denoising import (
+    DenoiserInputs,
+    DlssDenoiser,
+    OptixDenoiser,
+    dlss_rr_available,
+    dlss_rr_requirements,
+    set_dlss_project_id,
+)
 from .materials import MaterialManager
 from .pathtracer_api import PathTracer
 from .pathtracing_viewer import Renderer
@@ -66,4 +73,5 @@ __all__ = [
     "UsdTransformHandle",
     "dlss_rr_available",
     "dlss_rr_requirements",
+    "set_dlss_project_id",
 ]

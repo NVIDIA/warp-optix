@@ -1,22 +1,25 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //
-// DLSS Ray Reconstruction bindings on the NVIDIA driver's NGX runtime.
+// DLSS Ray Reconstruction bindings in NGX header-only mode.
 //
-// No NVIDIA code is compiled in or linked, and no NVIDIA binary is shipped:
-// - The driver's NGX core (_nvngx.dll / libnvidia-ngx.so.1) is located and
-//   loaded by the small loader below, written for warp-optix, and its exported
-//   NVSDK_NGX_CUDA_* entry points are called through function pointers.
-// - Since driver R620 the driver also ships the Ray Reconstruction runtime
-//   (ngx-builtins/nvngx_dlssd), which NGX loads itself.
-// - Only declarations come from the DLSS SDK: types, enums, and parameter-name
-//   macros in nvsdk_ngx_defs.h, nvsdk_ngx_params.h and nvsdk_ngx_defs_dlssd.h,
-//   pinned to SDK 310.9.1 and fetched at build time (never committed). The
-//   SDK's own loader (NVSDK_NGX_HEADER_ONLY) and static library are not used.
+// NVSDK_NGX_HEADER_ONLY compiles the SDK's runtime loader (nvsdk_ngx_loader.h)
+// instead of linking NVIDIA's static library: it locates the driver's NGX core
+// (_nvngx.dll / libnvidia-ngx.so.1) at run time. Since driver R620 the driver
+// also ships the Ray Reconstruction runtime (ngx-builtins/nvngx_dlssd), so no
+// NVIDIA binary is linked or distributed. The loader defines non-inline
+// functions, so this must remain the only translation unit that includes it.
 //
-// The driver exports no C parameter setters (NVSDK_NGX_Parameter_SetUI, ...),
-// so parameters are set through the NVSDK_NGX_Parameter virtual interface, as
-// Blender Cycles does.
+// Licensing: the loader and the SDK's declarations and parameter-name strings
+// are compiled into _ext, so a build with WARP_OPTIX_ENABLE_DLSS contains
+// portions of the DLSS SDK and is governed by the NVIDIA RTX SDKs License (see
+// THIRD_PARTY_NOTICES.txt). The SDK headers are fetched at build time and are
+// not part of this repository. This file's own code is Apache-2.0.
+//
+// Header-only mode only provides the NVSDK_NGX_CUDA_* entry points. The C
+// parameter functions (NVSDK_NGX_Parameter_SetUI, ...) and the helper macros
+// built on them are static-library exports, so parameters are set through the
+// NVSDK_NGX_Parameter virtual interface instead, as Blender Cycles does.
 
 #ifdef WARP_OPTIX_ENABLE_DLSS
 
@@ -29,21 +32,11 @@
 #endif
 #include <cuda.h>
 
-#include <nvsdk_ngx_defs.h>
+#define NVSDK_NGX_HEADER_ONLY
+#include <nvsdk_ngx.h>
 #include <nvsdk_ngx_defs_dlssd.h>
-#include <nvsdk_ngx_params.h>
-
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#else
-#include <dlfcn.h>
-#endif
 
 #include <array>
-#include <type_traits>
 #include <cerrno>
 #include <cstdlib>
 #include <filesystem>
@@ -64,121 +57,9 @@ namespace py = pybind11;
 namespace {
 
 // warp-optix has no NVIDIA-issued application ID, so NGX identifies it by project ID.
+// Applications built on warp-optix should pass their own project ID (Python:
+// warp_optix.pathtracing.set_dlss_project_id) so NGX can tell them apart.
 constexpr const char* kDefaultProjectId = "dddbee68-a452-4fab-9371-f9575480a154";
-
-// ---------------------------------------------------------------------------
-// NGX core loader
-// ---------------------------------------------------------------------------
-
-// Exported entry points of the driver's NGX core, by exported symbol name.
-struct NgxCore {
-    NVSDK_NGX_Result(NVSDK_CONV* Init_ProjectID)(const char*, NVSDK_NGX_EngineType, const char*, const wchar_t*,
-                                                 NVSDK_NGX_Version, const NVSDK_NGX_FeatureCommonInfo*) = nullptr;
-    NVSDK_NGX_Result(NVSDK_CONV* Shutdown)() = nullptr;
-    NVSDK_NGX_Result(NVSDK_CONV* GetCapabilityParameters)(NVSDK_NGX_Parameter**) = nullptr;
-    NVSDK_NGX_Result(NVSDK_CONV* AllocateParameters)(NVSDK_NGX_Parameter**) = nullptr;
-    NVSDK_NGX_Result(NVSDK_CONV* DestroyParameters)(NVSDK_NGX_Parameter*) = nullptr;
-    NVSDK_NGX_Result(NVSDK_CONV* CreateFeature)(NVSDK_NGX_Feature, const NVSDK_NGX_Parameter*,
-                                                NVSDK_NGX_Handle**) = nullptr;
-    // The progress callback is unused and always null.
-    NVSDK_NGX_Result(NVSDK_CONV* EvaluateFeature)(const NVSDK_NGX_Handle*, const NVSDK_NGX_Parameter*, void*) = nullptr;
-    NVSDK_NGX_Result(NVSDK_CONV* ReleaseFeature)(NVSDK_NGX_Handle*) = nullptr;
-    NVSDK_NGX_Result(NVSDK_CONV* GetFeatureRequirements)(int, const NVSDK_NGX_FeatureDiscoveryInfo*,
-                                                         NVSDK_NGX_FeatureRequirement*) = nullptr;
-    std::string error; // why loading failed; empty on success
-};
-
-#ifdef _WIN32
-// The NGX core sits in the display driver's DriverStore folder, next to the CUDA
-// driver (nvcuda64.dll) that is already loaded into the process. Using that exact
-// folder ties NGX to the driver CUDA runs on and never searches writable paths.
-std::wstring driverStoreFolder() {
-    for (const wchar_t* name : {L"nvcuda64.dll", L"nvcuda.dll"}) {
-        HMODULE module = GetModuleHandleW(name);
-        if (!module)
-            continue;
-        std::wstring path(MAX_PATH, L'\0');
-        for (;;) {
-            const DWORD size = GetModuleFileNameW(module, path.data(), static_cast<DWORD>(path.size()));
-            if (size == 0)
-                break;
-            if (size < path.size()) {
-                path.resize(size);
-                const std::filesystem::path folder = std::filesystem::path(path).parent_path();
-                if (std::filesystem::exists(folder / L"_nvngx.dll"))
-                    return folder.wstring();
-                break;
-            }
-            path.resize(path.size() * 2);
-        }
-    }
-    return {};
-}
-#endif
-
-NgxCore loadCore() {
-    NgxCore core;
-    // The CUDA driver must be loaded first: it locates the NGX core on Windows,
-    // and NGX itself requires an initialized CUDA driver.
-    if (cuInit(0) != CUDA_SUCCESS) {
-        core.error = "the CUDA driver could not be initialized";
-        return core;
-    }
-#ifdef _WIN32
-    const std::wstring folder = driverStoreFolder();
-    if (folder.empty()) {
-        core.error = "the NVIDIA driver's NGX library (_nvngx.dll) was not found next to the CUDA driver";
-        return core;
-    }
-    const std::wstring path = folder + L"\\_nvngx.dll";
-    // Resolve the core's own dependencies from its folder and System32 only.
-    HMODULE library =
-        LoadLibraryExW(path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
-    auto symbol = [&](const char* name) { return reinterpret_cast<void*>(GetProcAddress(library, name)); };
-#else
-    void* library = dlopen("libnvidia-ngx.so.1", RTLD_NOW | RTLD_LOCAL);
-    auto symbol = [&](const char* name) { return dlsym(library, name); };
-#endif
-    if (!library) {
-        core.error = "the NVIDIA driver's NGX library could not be loaded";
-        return core;
-    }
-    // The library stays loaded for the life of the process.
-    auto bind = [&](auto& function, const char* name) {
-        function = reinterpret_cast<std::remove_reference_t<decltype(function)>>(symbol(name));
-        if (!function && core.error.empty())
-            core.error = std::string("the NVIDIA driver's NGX library lacks ") + name + " (driver too old)";
-    };
-    bind(core.Init_ProjectID, "NVSDK_NGX_CUDA_Init_ProjectID");
-    bind(core.Shutdown, "NVSDK_NGX_CUDA_Shutdown");
-    bind(core.GetCapabilityParameters, "NVSDK_NGX_CUDA_GetCapabilityParameters");
-    bind(core.AllocateParameters, "NVSDK_NGX_CUDA_AllocateParameters");
-    bind(core.DestroyParameters, "NVSDK_NGX_CUDA_DestroyParameters");
-    bind(core.CreateFeature, "NVSDK_NGX_CUDA_CreateFeature");
-    bind(core.EvaluateFeature, "NVSDK_NGX_CUDA_EvaluateFeature");
-    bind(core.ReleaseFeature, "NVSDK_NGX_CUDA_ReleaseFeature");
-    bind(core.GetFeatureRequirements, "NVSDK_NGX_CUDA_GetFeatureRequirements");
-    return core;
-}
-
-// Loaded once per process; returns null (with the reason in *error) if unavailable.
-const NgxCore* ngxCore(std::string* error = nullptr) {
-    static const NgxCore core = loadCore();
-    if (!core.error.empty()) {
-        if (error)
-            *error = core.error;
-        return nullptr;
-    }
-    return &core;
-}
-
-const NgxCore& requireCore() {
-    std::string error;
-    const NgxCore* core = ngxCore(&error);
-    if (!core)
-        throw std::runtime_error("DLSS Ray Reconstruction is unavailable: " + error);
-    return *core;
-}
 
 // GetNGXResultAsString is a static-library export, so name the results here.
 std::string resultString(NVSDK_NGX_Result result) {
@@ -234,7 +115,7 @@ struct Parameters {
     Parameters& operator=(const Parameters&) = delete;
     ~Parameters() {
         if (params)
-            requireCore().DestroyParameters(params);
+            NVSDK_NGX_CUDA_DestroyParameters(params);
     }
     NVSDK_NGX_Parameter* operator->() const { return params; }
 };
@@ -246,7 +127,7 @@ void check(NVSDK_NGX_Result result, const char* what) {
 }
 
 Parameters::Parameters() {
-    check(requireCore().AllocateParameters(&params), "NGX parameter allocation");
+    check(NVSDK_NGX_CUDA_AllocateParameters(&params), "NGX parameter allocation");
 }
 
 std::wstring toWide(const std::string& value) {
@@ -333,7 +214,7 @@ struct DlssRRContext {
     DlssRRContext& operator=(const DlssRRContext&) = delete;
     ~DlssRRContext() {
         if (ngxParams)
-            requireCore().DestroyParameters(ngxParams);
+            NVSDK_NGX_CUDA_DestroyParameters(ngxParams);
         if (initialized)
             releaseSdk();
     }
@@ -343,7 +224,7 @@ struct DlssRRContext {
     static unsigned int activeContexts;
     static void releaseSdk() {
         if (--activeContexts == 0)
-            requireCore().Shutdown();
+            NVSDK_NGX_CUDA_Shutdown();
     }
 };
 unsigned int DlssRRContext::activeContexts = 0;
@@ -369,7 +250,7 @@ struct DlssRRDenoiser {
           outputWidth(other.outputWidth), outputHeight(other.outputHeight) {}
     ~DlssRRDenoiser() {
         if (handle) {
-            requireCore().ReleaseFeature(handle);
+            NVSDK_NGX_CUDA_ReleaseFeature(handle);
             if (context)
                 --context->activeDenoisers;
         }
@@ -428,20 +309,13 @@ py::dict queryRequirements(int cudaDevice, const std::string& applicationDataPat
     discovery.ApplicationDataPath = data.c_str();
     discovery.FeatureInfo = &featureInfo;
 
-    py::dict out;
-    std::string error;
-    const NgxCore* core = ngxCore(&error);
-    if (!core) {
-        out["supported"] = false;
-        out["result_string"] = error;
-        return out;
-    }
     NVSDK_NGX_FeatureRequirement requirement = {};
     NVSDK_NGX_Result result;
     {
         py::gil_scoped_release release;
-        result = core->GetFeatureRequirements(cudaDevice, &discovery, &requirement);
+        result = NVSDK_NGX_CUDA_GetFeatureRequirements(cudaDevice, &discovery, &requirement);
     }
+    py::dict out;
     out["result"] = static_cast<unsigned int>(result);
     out["result_string"] = resultString(result);
     out["supported"] =
@@ -470,16 +344,15 @@ void contextInit(DlssRRContext& context, const std::string& applicationDataPath,
 
     const bool startSdk = DlssRRContext::activeContexts == 0;
     if (startSdk)
-        // The core's argument order differs from the SDK's NVSDK_NGX_CUDA_Init_with_ProjectID wrapper.
-        check(requireCore().Init_ProjectID(projectId.c_str(), NVSDK_NGX_ENGINE_TYPE_CUSTOM, engineVersion.c_str(),
-                                           data.c_str(), NVSDK_NGX_Version_API, &featureInfo),
+        check(NVSDK_NGX_CUDA_Init_with_ProjectID(projectId.c_str(), NVSDK_NGX_ENGINE_TYPE_CUSTOM, engineVersion.c_str(),
+                                                 data.c_str(), &featureInfo),
               "NGX initialization");
     try {
-        check(requireCore().GetCapabilityParameters(&context.ngxParams), "NGX capability query");
+        check(NVSDK_NGX_CUDA_GetCapabilityParameters(&context.ngxParams), "NGX capability query");
     } catch (...) {
         context.ngxParams = nullptr;
         if (startSdk)
-            requireCore().Shutdown();
+            NVSDK_NGX_CUDA_Shutdown();
         throw;
     }
     context.initialized = true;
@@ -490,7 +363,7 @@ void contextDeinit(DlssRRContext& context) {
     if (context.activeDenoisers != 0)
         throw std::runtime_error("Deinitialize all DLSS RR denoisers before the context.");
     if (context.ngxParams) {
-        requireCore().DestroyParameters(context.ngxParams);
+        NVSDK_NGX_CUDA_DestroyParameters(context.ngxParams);
         context.ngxParams = nullptr;
     }
     if (context.initialized) {
@@ -616,7 +489,7 @@ DlssRRDenoiser create(DlssRRContext& context, const DlssRRInitInfo& initInfo, ui
     // Release internal resources at once instead of deferring; callers order the
     // release after the feature's stream work.
     params->Set(NVSDK_NGX_Parameter_FreeMemOnReleaseFeature, 1);
-    check(requireCore().CreateFeature(NVSDK_NGX_Feature_RayReconstruction, params.params, &denoiser.handle),
+    check(NVSDK_NGX_CUDA_CreateFeature(NVSDK_NGX_Feature_RayReconstruction, params.params, &denoiser.handle),
           "DLSS RR feature creation");
     denoiser.context = &context;
     ++context.activeDenoisers;
@@ -626,7 +499,7 @@ DlssRRDenoiser create(DlssRRContext& context, const DlssRRInitInfo& initInfo, ui
 void destroy(DlssRRDenoiser& denoiser) {
     if (!denoiser.handle)
         return;
-    check(requireCore().ReleaseFeature(denoiser.handle), "DLSS RR release");
+    check(NVSDK_NGX_CUDA_ReleaseFeature(denoiser.handle), "DLSS RR release");
     denoiser.handle = nullptr;
     --denoiser.context->activeDenoisers;
     denoiser.context = nullptr;
@@ -687,7 +560,7 @@ void denoise(DlssRRDenoiser& denoiser, unsigned int renderWidth, unsigned int re
     params->Set(NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.0f);
     params->Set(NVSDK_NGX_Parameter_DLSS_Indicator_Invert_X_Axis, indicatorInvertXAxis);
     params->Set(NVSDK_NGX_Parameter_DLSS_Indicator_Invert_Y_Axis, indicatorInvertYAxis);
-    check(requireCore().EvaluateFeature(denoiser.handle, params.params, nullptr), "DLSS RR evaluation");
+    check(NVSDK_NGX_CUDA_EvaluateFeature(denoiser.handle, params.params, nullptr), "DLSS RR evaluation");
 }
 
 } // namespace

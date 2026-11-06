@@ -107,23 +107,39 @@ class _FakeStream:
     device = "cuda:0"
 
 
-def test_renderer_auto_falls_back_when_dlss_is_unsupported(monkeypatch):
+def test_renderer_auto_never_selects_dlss(monkeypatch):
+    # DLSS is opt-in because its license restricts some deployments: 'auto' must
+    # not even query it, and an explicit request on an unsupported system fails.
     module = __import__("warp_optix.pathtracing.pathtracing_viewer", fromlist=["x"])
-    monkeypatch.setattr(module, "dlss_rr_requirements", lambda device: {"supported": False, "reason": "too old"})
+    queries = []
+
+    def requirements(device):
+        queries.append(device)
+        return {"supported": False, "reason": "too old"}
+
+    monkeypatch.setattr(module, "dlss_rr_requirements", requirements)
+    created = []
+    monkeypatch.setattr(module, "OptixDenoiser", lambda *args, **kwargs: created.append(kwargs) or object())
     renderer = Renderer.__new__(Renderer)
     renderer._render_stream = _FakeStream()
     renderer.width, renderer.height = 64, 48
     renderer.dlss_quality = "dlaa"
+    renderer.optix_upscale = False
     renderer.denoiser = "auto"
-    renderer.denoiser_error = None
+    renderer._optix = object()
+    renderer._optix_denoiser = None
     renderer._dlss_denoiser = None
+    renderer._sync_prev_camera_matrices_to_current = lambda: None
     sizes = []
-    renderer._set_render_resolution = lambda w, h: sizes.append((w, h))
-    renderer._init_dlss_denoiser()
-    # Missing DLSS support is normal in 'auto': no error, and the next backend sizes the render.
-    assert renderer._dlss_denoiser is None
-    assert renderer.denoiser_error is None and sizes == []
-    renderer.denoiser = "dlss"  # an explicit request must fail loudly instead
+
+    def set_render_resolution(w, h):
+        sizes.append((w, h))
+        renderer._render_width, renderer._render_height = w, h
+
+    renderer._set_render_resolution = set_render_resolution
+    renderer._init_denoiser()
+    assert queries == [] and renderer.active_denoiser == "optix" and len(created) == 1
+    renderer.denoiser = "dlss"
     with pytest.raises(RuntimeError, match="too old"):
         renderer._init_dlss_denoiser()
 
