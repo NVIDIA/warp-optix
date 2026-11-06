@@ -146,6 +146,8 @@ docstring-code-format = true
 
 [tool.pyright]
 include = ["warp_optix/warp_optix"]
+# Resolve `warp_optix` to the package, not the repository directory of the same name.
+executionEnvironments = [{ root = "warp_optix" }]
 pythonVersion = "3.12"
 # CI runs pyright without installing warp, pyoptix or the optional extras.
 reportMissingImports = false
@@ -156,12 +158,8 @@ reportOptionalSubscript = false
 # existing type errors. Remove entries as they are cleaned up so that pyright
 # gates more of the package over time.
 exclude = [
-    "warp_optix/warp_optix/__init__.py",
     "warp_optix/warp_optix/_backend.py",
     "warp_optix/warp_optix/accel.py",
-    "warp_optix/warp_optix/addon.py",
-    "warp_optix/warp_optix/constants.py",
-    "warp_optix/warp_optix/context.py",
     "warp_optix/warp_optix/gl/line_overlay.py",
     "warp_optix/warp_optix/pathtracing/arrows.py",
     "warp_optix/warp_optix/pathtracing/asset_loaders.py",
@@ -179,7 +177,6 @@ exclude = [
     "warp_optix/warp_optix/pathtracing/volume_composite.py",
     "warp_optix/warp_optix/pipeline.py",
     "warp_optix/warp_optix/program.py",
-    "warp_optix/warp_optix/rays.py",
     "warp_optix/warp_optix/sbt.py",
 ]
 

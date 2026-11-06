@@ -69,6 +69,7 @@ def test_gltf_buffer_uri_cannot_escape_asset_directory(tmp_path, uri):
 
 
 def test_gltf_image_uri_cannot_escape_asset_directory(tmp_path):
+    pytest.importorskip("imageio")
     (tmp_path / "secret.png").write_bytes(b"not an image")
     asset_dir = tmp_path / "asset"
     asset_dir.mkdir()
@@ -99,6 +100,8 @@ def _link_directory(link, target):
 
 @pytest.mark.parametrize("resource_kind", ["buffer", "image"])
 def test_gltf_resource_link_cannot_escape_asset_directory(tmp_path, resource_kind):
+    if resource_kind == "image":
+        pytest.importorskip("imageio")
     asset_dir = tmp_path / "asset"
     asset_dir.mkdir()
     outside = tmp_path / "outside"

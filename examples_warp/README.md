@@ -119,7 +119,7 @@ renderer's glTF-style PBR materials. It needs the `usd` extra:
 
 ```bash
 uv run --no-sync python examples_warp/example_warp_optix_usd_pathtracing.py \
-  "D:\Sample_Scenes_NVD@10013\Samples\Marbles\Marbles_Assets.usd"
+  path/to/scene.usd
 ```
 
 DDS images use Pillow's built-in decoder; no separate DDS dependency is
