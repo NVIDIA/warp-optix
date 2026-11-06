@@ -69,9 +69,9 @@ class Pipeline:
     ``ray_types``; the pipeline keeps the snapshot as :attr:`sbt_layout`.
 
     Release is automatic when the last reference is dropped, or explicit with
-    :meth:`close` or ``with``. Device memory is freed in stream order, like
-    ``wp.array``; the native OptiX objects are destroyed once the launches
-    submitted before the release have finished.
+    :meth:`close` or ``with``. The native OptiX objects, the shader binding
+    table, and the automatic parameter storage are released once the launches
+    submitted before the release have finished, on whichever streams they ran.
     """
 
     def __init__(
@@ -329,6 +329,7 @@ class Pipeline:
         self._closed = True
         owned = self._owned
         streams = tuple(self._streams.values())
+        retained = [self._records, self._buffers]
         self._buffers = {}
         self._streams = {}
         self._owned = ()
@@ -337,6 +338,7 @@ class Pipeline:
         def destroy():
             for obj in reversed(owned):
                 obj.destroy()
+            retained.clear()
 
         self._context.release(destroy, streams)
 
@@ -360,6 +362,19 @@ class Pipeline:
     def _check_open(self) -> None:
         if self._closed:
             raise RuntimeError("The pipeline is closed")
+
+    def _forget_idle_streams(self) -> None:
+        """Drop the streams, and their parameter blocks, whose launches have all finished.
+
+        Runs when a launch first uses a stream, so launching on a new stream each
+        frame keeps only the streams with work in flight.
+        """
+        if self.device.is_capturing:
+            return
+        for key, stream in list(self._streams.items()):
+            if stream.is_complete:
+                del self._streams[key]
+                self._buffers.pop(key, None)
 
 
 class _ParamsStorage:
@@ -504,6 +519,7 @@ def launch(
         inputs = tuple(inputs)
         storage = pipeline._buffers.get(key)
         if storage is None:
+            pipeline._forget_idle_streams()
             storage = pipeline._buffers[key] = _ParamsStorage(pipeline.params_type, context.device)
         if pipeline._explicit_params:
             if len(inputs) != 1:

@@ -256,7 +256,7 @@ def test_instance_accel_keeps_closed_child_alive_and_traces():
     records = wp.empty(1, dtype=wo.Instance, device="cuda")
     wp.launch(write_instance, 1, inputs=[gas.id, records], device="cuda")
     ias = wo.Accel([wo.instances(records)])
-    assert [child for child, _ in ias._dependencies] == [gas]
+    assert [child for child, _, _ in ias._dependencies] == [gas]
 
     gas.close()
     del vertices, indices
@@ -273,6 +273,92 @@ def test_instance_accel_keeps_closed_child_alive_and_traces():
     ias.close()
     settle()
     assert child_buffer() is None
+
+
+def test_nested_instances_keep_every_level_alive():
+    settle()
+    vertices, indices = geometry()
+    gas = wo.Accel([wo.triangles(vertices, indices)])
+    gas_buffer = weakref.ref(gas._buffer)
+    inner_records = wp.empty(1, dtype=wo.Instance, device="cuda")
+    wp.launch(write_instance, 1, inputs=[gas.id, inner_records], device="cuda")
+    inner = wo.Accel([wo.instances(inner_records)])
+    outer_records = wp.empty(1, dtype=wo.Instance, device="cuda")
+    wp.launch(write_instance, 1, inputs=[inner.id, outer_records], device="cuda")
+    outer = wo.Accel([wo.instances(outer_records)])
+
+    gas.close()
+    inner.close()
+    del vertices, indices
+    settle()
+    assert gas_buffer() is not None
+    depth = wp.zeros(1, dtype=float, device="cuda")
+    wo.launch(wo.Pipeline(depth_raygen, max_traversable_depth=3), 1, [outer, depth])
+    np.testing.assert_allclose(depth.numpy(), [5.0])
+
+    outer.close()
+    settle()
+    assert gas_buffer() is None
+
+
+def test_release_callbacks_run_once_when_collect_reenters():
+    settle()
+    context = wo.get_context("cuda")
+    calls = []
+
+    def inner():
+        calls.append("inner")
+
+    def outer():
+        calls.append("outer")
+        # Re-enters collect(), like a pipeline finalized by the garbage collector during collect().
+        context.release(inner)
+
+    context.release(outer)
+    settle()
+    assert calls == ["outer", "inner"]
+    assert context._releases == []
+
+
+def test_pipeline_close_keeps_launch_buffers_until_launches_finish():
+    settle()
+    stream = wp.Stream("cuda")
+    pipeline = wo.Pipeline(write_value)
+    output = wp.zeros(1, dtype=float, device="cuda")
+    wo.launch(pipeline, 1, [output], stream=stream)
+    occupy(stream)
+    settle()
+    records = weakref.ref(pipeline._records)
+    params = weakref.ref(pipeline._buffers[stream.cuda_stream].data)
+    busy = occupy(stream)
+    wo.launch(pipeline, 1, [output], stream=stream)
+    assert not busy.is_complete, "busy kernel finished too early for this test"
+
+    pipeline.close()
+    gc.collect()
+    assert records() is not None and params() is not None
+    settle()
+    assert records() is None and params() is None
+    np.testing.assert_array_equal(output.numpy(), [42.0])
+
+
+def test_pipeline_forgets_streams_whose_launches_finished():
+    pipeline = wo.Pipeline(write_value)
+    output = wp.zeros(1, dtype=float, device="cuda")
+    for _ in range(8):
+        wo.launch(pipeline, 1, [output], stream=wp.Stream("cuda"))
+        wp.synchronize()
+    assert len(pipeline._streams) == len(pipeline._buffers) == 1
+
+    busy_stream = wp.Stream("cuda")
+    wo.launch(pipeline, 1, [output], stream=busy_stream)
+    occupy(busy_stream)
+    wp.synchronize_stream(busy_stream)
+    busy = occupy(busy_stream)
+    wo.launch(pipeline, 1, [output], stream=wp.Stream("cuda"))
+    assert not busy.is_complete, "busy kernel finished too early for this test"
+    assert busy_stream.cuda_stream in pipeline._streams
+    settle()
 
 
 def test_instance_build_rejects_unknown_children():
