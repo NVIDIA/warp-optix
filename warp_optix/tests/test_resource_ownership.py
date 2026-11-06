@@ -248,7 +248,7 @@ def test_native_release_waits_for_graph_capture_to_end(destroyed):
     assert {id(obj) for obj in destroyed} == {id(obj) for obj in owned}
 
 
-def test_instance_accel_keeps_closed_child_alive_and_traces():
+def test_instance_accel_keeps_closed_child_alive_and_traces(monkeypatch):
     settle()
     vertices, indices = geometry()
     gas = wo.Accel([wo.triangles(vertices, indices)])
@@ -256,9 +256,9 @@ def test_instance_accel_keeps_closed_child_alive_and_traces():
     records = wp.empty(1, dtype=wo.Instance, device="cuda")
     wp.launch(write_instance, 1, inputs=[gas.id, records], device="cuda")
     ias = wo.Accel([wo.instances(records)])
-    assert [child for child, _, _ in ias._dependencies] == [gas]
 
     gas.close()
+    assert [child for child, _, _ in ias._dependencies] == [gas]
     del vertices, indices
     settle()
     assert child_buffer() is not None
@@ -267,6 +267,7 @@ def test_instance_accel_keeps_closed_child_alive_and_traces():
     np.testing.assert_allclose(depth.numpy(), [5.0])
 
     # The closed child can no longer be instanced.
+    monkeypatch.setattr(wo.config, "verify_instances", True)
     with pytest.raises(ValueError, match="live acceleration structures"):
         wo.Accel([wo.instances(records)])
 
@@ -361,11 +362,73 @@ def test_pipeline_forgets_streams_whose_launches_finished():
     settle()
 
 
-def test_instance_build_rejects_unknown_children():
+def test_verified_instance_build_and_rebuild_reject_unknown_children(monkeypatch):
+    monkeypatch.setattr(wo.config, "verify_instances", True)
     records = wp.empty(1, dtype=wo.Instance, device="cuda")
     wp.launch(write_instance, 1, inputs=[wp.uint64(0x123456789A0), records], device="cuda")
     with pytest.raises(ValueError, match="Instance children must be live acceleration structures on this device"):
         wo.Accel([wo.instances(records)])
+
+    vertices, indices = geometry()
+    gas = wo.Accel([wo.triangles(vertices, indices)])
+    wp.launch(write_instance, 1, inputs=[gas.id, records], device="cuda")
+    ias = wo.Accel([wo.instances(records)])
+    wp.launch(write_instance, 1, inputs=[wp.uint64(0x123456789A0), records], device="cuda")
+    with pytest.raises(ValueError, match="Instance children must be live acceleration structures on this device"):
+        ias.rebuild()
+
+
+def test_verified_rebuild_keeps_new_children_alive(monkeypatch):
+    monkeypatch.setattr(wo.config, "verify_instances", True)
+    settle()
+    vertices, indices = geometry()
+    first = wo.Accel([wo.triangles(vertices, indices)])
+    records = wp.empty(1, dtype=wo.Instance, device="cuda")
+    wp.launch(write_instance, 1, inputs=[first.id, records], device="cuda")
+    ias = wo.Accel([wo.instances(records)])
+    second = wo.Accel([wo.triangles(vertices, indices)])
+    second_buffer = weakref.ref(second._buffer)
+    wp.launch(write_instance, 1, inputs=[second.id, records], device="cuda")
+    ias.rebuild()
+    assert [child for child, _, _ in ias._dependencies] == [second]
+
+    second.close()
+    settle()
+    assert second_buffer() is not None
+    depth = wp.zeros(1, dtype=float, device="cuda")
+    wo.launch(wo.Pipeline(depth_raygen), 1, [ias, depth])
+    np.testing.assert_allclose(depth.numpy(), [5.0])
+
+
+def test_unverified_instance_build_does_not_wait_for_the_stream():
+    settle()
+    stream = wp.Stream("cuda")
+    vertices, indices = geometry()
+    gas = wo.Accel([wo.triangles(vertices, indices)])
+    gas_buffer = weakref.ref(gas._buffer)
+    records = wp.empty(1, dtype=wo.Instance, device="cuda")
+    wp.launch(write_instance, 1, inputs=[gas.id, records], device="cuda")
+    wo.Accel([wo.instances(records)], stream=stream).close()
+    occupy(stream)
+    settle()
+
+    busy = occupy(stream)
+    ias = wo.Accel([wo.instances(records)], flags=wo.BuildFlags.ALLOW_UPDATE, stream=stream)
+    ias.rebuild(stream=stream)
+    assert not busy.is_complete, "instance build or rebuild synchronized the stream"
+    assert ias._dependencies == ()
+
+    # Closing a child waits for the readback, so the parent still keeps the child alive.
+    gas.close()
+    assert busy.is_complete
+    assert [child for child, _, _ in ias._dependencies] == [gas]
+    del vertices, indices
+    settle()
+    assert gas_buffer() is not None
+    depth = wp.zeros(1, dtype=float, device="cuda")
+    wo.launch(wo.Pipeline(depth_raygen), 1, [ias, depth], stream=stream)
+    wp.synchronize_stream(stream)
+    np.testing.assert_allclose(depth.numpy(), [5.0])
 
 
 def test_accel_objects_in_launch_inputs_are_converted_and_retained():

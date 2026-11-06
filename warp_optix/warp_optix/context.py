@@ -11,12 +11,14 @@ device gets one, created on first use with the settings in
 
 Lifetime contract (the same as ``wp.Mesh`` and ``wp.array``):
 
-* Builds, refits, and launches record no events and hold no references to
-  their inputs beyond what the resources themselves keep.
+* Builds, refits, and launches hold no references to their inputs beyond
+  what the resources themselves keep. Instance builds record one event, after
+  copying their child ids to the host.
 * ``close()`` (also called by ``with``, and when the last reference is dropped)
   makes a resource unusable at once and releases its device memory right away.
   Device memory is ``wp.array`` storage, whose release is stream-ordered by
-  Warp, so work already submitted can still read it. It never blocks the host.
+  Warp, so work already submitted can still read it. It blocks the host only
+  to wait for the child-id copy of an instance build that has not finished.
 * Native OptiX objects of a pipeline (pipeline, module, program groups) are
   destroyed under the device's CUDA context once the launches submitted before
   the close have finished; while a graph capture is running on the device,
@@ -63,6 +65,10 @@ class Context:
         self._destroyed = False
         # Live acceleration structures by id, for validating instance children.
         self._accels: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
+        # Weak references to instance structures whose child ids are still being copied to the host, oldest first.
+        self._unresolved: list[weakref.ref] = []
+        # Idle pinned host buffers for those copies.
+        self._child_id_buffers: list[wp.array] = []
         # Native destroys waiting for (events, streams, callback); events are recorded outside graph capture.
         self._releases: list[tuple[list[wp.Event] | None, tuple, object]] = []
         owner = weakref.ref(self)
@@ -140,6 +146,7 @@ class Context:
                 for _, _, callback in pending:
                     _run(callback)
             self._accels.clear()
+            self._unresolved.clear()
             self._native.destroy()
             self._destroyed = True
 
