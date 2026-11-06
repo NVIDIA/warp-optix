@@ -35,6 +35,43 @@ def test_triangle_indices_are_validated(values, dtype):
         wo.triangles(vertices, indices)
 
 
+def test_triangle_index_validation_can_be_skipped():
+    vertices = wp.array(QUAD_VERTICES, dtype=wp.vec3, device="cuda")
+    indices = wp.array([0, 1, 4], dtype=wp.int32, device="cuda")
+    wo.triangles(vertices, indices, validate=False)
+    with pytest.raises(TypeError, match="indices"):
+        wo.triangles(vertices, wp.array([0.0, 1.0, 2.0], dtype=wp.float32, device="cuda"), validate=False)
+
+
+def test_batched_compaction_matches_uncompacted_traces():
+    device = wp.get_device("cuda")
+    vertices = wp.array(QUAD_VERTICES, dtype=wp.vec3, device=device)
+    indices = wp.array(QUAD_INDICES, dtype=wp.int32, device=device)
+    flags = wo.BuildFlags.PREFER_FAST_TRACE | wo.BuildFlags.ALLOW_COMPACTION
+    gases = [wo.Accel([wo.triangles(vertices, indices)], flags=flags, device=device) for _ in range(3)]
+    gases[1].rebuild()
+    sizes = [gas._buffer.size for gas in gases]
+    wo.compact(gases)
+    assert all(gas._buffer.size <= size for gas, size in zip(gases, sizes, strict=True))
+    assert all(wo.get_context(device)._accels[gas.id] is gas for gas in gases)
+    with pytest.raises(ValueError, match="ALLOW_COMPACTION"):
+        wo.compact(gases[:1])
+    with pytest.raises(ValueError, match="compacted"):
+        gases[0].rebuild()
+    with pytest.raises(ValueError, match="ALLOW_COMPACTION"):
+        wo.compact([triangle_gas("cuda")])
+
+    offsets = wp.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
+    heights = wp.array([1.0, 2.0], dtype=float, device=device)
+    records = wp.empty(2, dtype=wo.Instance, device=device)
+    wp.launch(write_instances, dim=2, inputs=[gases[2].id, offsets, heights, records], device=device)
+    ias = wo.Accel([wo.instances(records)], device=device)
+    depth = wp.zeros((2, 64), dtype=float, device=device)
+    instance = wp.zeros((2, 64), dtype=int, device=device)
+    wo.launch(wo.Pipeline(depth_raygen, device=device), dim=(2, 64), inputs=[ias, offsets, depth, instance])
+    np.testing.assert_allclose(depth.numpy(), [[4.0] * 64, [3.0] * 64], atol=1e-5)
+
+
 @pytest.mark.parametrize(
     "curve_type,start",
     [

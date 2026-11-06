@@ -66,6 +66,7 @@ def test_public_surface():
         "SbtLayout",
         "TraversableGraphFlags",
         "aabbs",
+        "compact",
         "accel_query_ray",
         "accel_query_ray_anyhit",
         "config",

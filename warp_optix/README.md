@@ -284,14 +284,17 @@ retain their Warp **device** arrays:
 Geometry defaults to `GeometryFlags.DISABLE_ANYHIT`; pass `flags=wo.GeometryFlags.NONE` when an
 any-hit program must run.
 
-`triangles()` and `curves()` read indices back once to validate their bounds.
+`triangles()` and `curves()` read indices back once to validate their bounds; pass
+`validate=False` to skip that synchronization for indices already checked on the host.
 Keep those indices unchanged when reusing a build input; create a new input
 after changing topology. Point-only refits do not repeat this validation.
 
 `wo.Accel(inputs, *, flags=, compact=, motion=, device=, stream=)` builds on a Warp stream and
 exposes `.id` (the `wp.uint64` passed to kernels), `.device`, and `.flags`. Initial instance builds
 read child ids back once to verify that every child is a live structure on the same device.
-`compact=True` also synchronizes to shrink static structures. `accel.refit(stream=)` refits a
+`compact=True` also synchronizes to shrink static structures; `wo.compact(accels, stream=)` compacts
+many structures built with `wo.BuildFlags.ALLOW_COMPACTION` with a single synchronization. Compaction
+changes `.id`, so compact children before building instance structures over them. `accel.refit(stream=)` refits a
 structure built with `wo.BuildFlags.ALLOW_UPDATE` to its inputs' current contents using the
 retained scratch buffer, so it neither allocates nor synchronizes on success; `accel.rebuild(stream=)`
 rebuilds in place to restore trace quality (structures without `ALLOW_UPDATE` allocate a temporary
