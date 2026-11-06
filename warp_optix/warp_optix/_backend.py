@@ -7,25 +7,12 @@ PyOptiX owns every standard OptiX object and its destruction. The extension
 adds missing operations to those types; it never registers a second copy.
 """
 
-import os
-import sys
-import sysconfig
 from importlib import import_module
 from importlib.metadata import version
 from pathlib import Path
 from types import ModuleType
 
 _package_dir = Path(__file__).resolve().parent
-_dll_directory_handles = []
-if sys.platform == "win32" and hasattr(os, "add_dll_directory"):
-    for path in (
-        _package_dir,
-        Path(sysconfig.get_path("platlib")) / "warp_optix",
-        Path(os.environ.get("CUDA_BIN_DIR", "/__missing_cuda_bin__")),
-        Path(os.environ.get("CUDA_PATH", "/__missing_cuda_path__")) / "bin",
-    ):
-        if path.is_dir():
-            _dll_directory_handles.append(os.add_dll_directory(str(path)))
 
 
 def _get_package_dir():

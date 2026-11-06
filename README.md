@@ -98,7 +98,7 @@ be imported in either order. The supplement adds methods and fields to those
 types and repairs module-metadata and continuation-callable handling. Keep
 objects on their owning OptiX/CUDA context and obey their lifetimes.
 
-PyOptiX 9.1.0 has no public native-handle API. The extension therefore uses a
+PyOptiX 9.1.1 has no public native-handle API. The extension therefore uses a
 small, version-pinned pybind11 bridge and checks shared type identities and
 sizes before accessing them. Builds reject OptiX headers that differ from the
 PyOptiX dependency pin; imports reject mismatched compiled SDK versions before
@@ -106,7 +106,7 @@ attaching bindings. Both extensions must use a compatible pybind11
 major version and C++ ABI. If the import reports an ABI mismatch, rebuild both
 packages with pybind11 3.x. See [dependency maintenance](docs/pyoptix-dependency.md).
 
-The distribution version is 0.2.0; the binding version is 9.1.0.
+The distribution version is 0.2.0; the PyOptiX version is 9.1.1 (OptiX SDK 9.1.0).
 
 ## Tests and dependency maintenance
 
