@@ -520,3 +520,93 @@ def test_accel_query_ray_reports_curve_parameter():
     results = wp.full(4, -7.0, dtype=float, device=device)
     wo.launch(pipeline, dim=1, inputs=[gas, results])
     np.testing.assert_allclose(results.numpy(), [1.0, 0.9, 0.25, 0.0], atol=1e-4)
+
+
+@pytest.mark.parametrize(
+    "curve_type,points",
+    [
+        (wo.PrimitiveType.ROUND_QUADRATIC_BSPLINE_ROCAPS, [[-1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+        (
+            wo.PrimitiveType.ROUND_CUBIC_BSPLINE_ROCAPS,
+            [[-2.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+        ),
+    ],
+)
+def test_rocaps_curves_build_and_trace(curve_type, points):
+    device = wp.get_device("cuda")
+    points = wp.array(points, dtype=wp.vec3, device=device)
+    widths = wp.full(points.size, 0.1, dtype=float, device=device)
+    indices = wp.array([0], dtype=wp.int32, device=device)
+    gas = wo.Accel([wo.curves(points, widths, indices, curve_type=curve_type)], device=device)
+    pipeline = wo.Pipeline(curve_query_raygen, hit_groups=[wo.HitGroup(builtin=curve_type)], device=device)
+    results = wp.full(4, -7.0, dtype=float, device=device)
+    wo.launch(pipeline, dim=1, inputs=[gas, results])
+    assert results.numpy()[0] == 1.0
+    np.testing.assert_allclose(results.numpy()[1], 0.9, atol=1e-3)
+
+
+def test_curve_degree_follows_curve_type():
+    vertices = wp.array(QUAD_VERTICES, dtype=wp.vec3, device="cuda")
+    widths = wp.full(4, 0.1, dtype=wp.float32, device="cuda")
+    # Quadratic segments span three points, so the last segment of four points starts at index 1.
+    indices = wp.array([1], dtype=wp.int32, device="cuda")
+    for curve_type in (wo.PrimitiveType.ROUND_QUADRATIC_BSPLINE, wo.PrimitiveType.ROUND_QUADRATIC_BSPLINE_ROCAPS):
+        wo.curves(vertices, widths, indices, curve_type=curve_type)
+    with pytest.raises(ValueError, match="curve PrimitiveType"):
+        wo.curves(vertices, widths, indices, curve_type=wo.PrimitiveType.TRIANGLE)
+
+
+def test_invalid_hit_groups_and_miss_records_are_rejected():
+    with pytest.raises(ValueError, match="curve PrimitiveType"):
+        wo.Pipeline(curve_query_raygen, hit_groups=[wo.HitGroup(builtin=wo.PrimitiveType.TRIANGLE)])
+    with pytest.raises(ValueError, match="cannot combine"):
+        wo.Pipeline(
+            curve_query_raygen,
+            hit_groups=[wo.HitGroup(intersection=curve_query_raygen, builtin=wo.PrimitiveType.ROUND_LINEAR)],
+        )
+    with pytest.raises(ValueError, match="miss must contain at least one entry"):
+        wo.Pipeline(curve_query_raygen, miss=[])
+
+
+def test_empty_build_inputs():
+    device = wp.get_device("cuda")
+    # An empty instance list builds a structure nothing intersects, e.g. the first frame of a dynamic scene.
+    ias = wo.Accel([wo.instances(wp.empty(0, dtype=wo.Instance, device=device))])
+    pipeline = wo.Pipeline(curve_query_raygen, device=device)
+    results = wp.full(4, -7.0, dtype=float, device=device)
+    wo.launch(pipeline, dim=1, inputs=[ias, results])
+    assert results.numpy()[0] == 0.0
+
+    vertices = wp.array(QUAD_VERTICES, dtype=wp.vec3, device=device)
+    no_indices = wp.empty(0, dtype=wp.int32, device=device)
+    with pytest.raises(ValueError, match="at least one triangle"):
+        wo.triangles(vertices, no_indices)
+    with pytest.raises(ValueError, match="at least one segment"):
+        wo.curves(vertices, wp.full(4, 0.1, dtype=float, device=device), no_indices)
+    with pytest.raises(ValueError, match="at least one AABB"):
+        wo.aabbs(bounds=wp.empty((0, 6), dtype=float, device=device))
+    with pytest.raises(ValueError, match="at least one build input"):
+        wo.Accel([], device=device)
+
+
+@wp.kernel(module="unique")
+def write_first(out: wp.array[float]):
+    out[0] = 10.0
+
+
+@wp.kernel(module="unique")
+def write_second(out: wp.array[float]):
+    out[1] = 20.0
+
+
+@wp.kernel(module="unique")
+def call_both(out: wp.array[float]):
+    wp.optix_direct_call(0)
+    wp.optix_continuation_call(1)
+
+
+def test_continuation_callables_follow_direct_callables():
+    out = wp.zeros(2, dtype=float, device="cuda")
+    pipeline = wo.Pipeline(call_both, callables=[write_first], continuation_callables=[write_second])
+    wo.launch(pipeline, 1, [out])
+    np.testing.assert_array_equal(out.numpy(), [10.0, 20.0])
