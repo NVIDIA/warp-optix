@@ -72,7 +72,7 @@ class PathTracer:
         backface_culling: bool = True,
         denoiser: str | None = None,
         optix_upscale: bool = False,
-        dlss_quality: str = "dlaa",
+        dlss_quality: str = "balanced",
     ):
         self.width = int(width)
         self.height = int(height)

@@ -4,6 +4,7 @@
 import numpy as np
 import warp as wp
 from warp_optix.pathtracing.pathtracing_warp_kernels import (
+    CompactMaterial,
     PathtraceLaunchParams,
     PhysicalSkyParams,
     ShadedHitData,
@@ -11,6 +12,7 @@ from warp_optix.pathtracing.pathtracing_warp_kernels import (
     _bsdf_evaluate,
     _bsdf_sample,
     _eval_physical_sky,
+    _evaluate_material_from_payload,
     _filter_roughness_for_normal_map,
     _intersect_sphere_lights,
     _material_f0,
@@ -18,6 +20,47 @@ from warp_optix.pathtracing.pathtracing_warp_kernels import (
     _set_incident_medium_for_hit,
     _sky_star_radiance,
 )
+
+
+@wp.kernel
+def _evaluate_interpolated_tangent_frame(
+    params: PathtraceLaunchParams,
+    handedness: wp.array(dtype=wp.float32),
+    output: wp.array(dtype=wp.vec4),
+):
+    index = wp.tid()
+    hit = _evaluate_material_from_payload(
+        params,
+        0,
+        wp.vec3(0.0, 1.0, 0.0),
+        wp.vec3(1.0, 0.0, 0.0),
+        handedness[index],
+        wp.vec2(0.0),
+        wp.vec2(0.0),
+        0.0,
+    )
+    output[index] = wp.vec4(wp.length(hit.T), wp.length(hit.B), wp.dot(hit.T, hit.B), wp.dot(hit.normal, hit.B))
+
+
+def test_mirrored_uv_handedness_interpolation_preserves_orthonormal_shading_frame():
+    """UV folds must not squash the bitangent and stretch isotropic highlights."""
+    material = CompactMaterial()
+    for field in (
+        "base_color_tex_index",
+        "metallic_roughness_tex_index",
+        "occlusion_tex_index",
+        "normal_tex_index",
+        "clearcoat_normal_tex_index",
+        "emissive_tex_index",
+    ):
+        setattr(material, field, -1)
+    params = PathtraceLaunchParams()
+    params.compact_materials = wp.array([material], dtype=CompactMaterial, device="cpu")
+    params.material_count = 1
+    handedness = wp.array([-1.0, -0.25, 0.0, 0.25, 1.0], dtype=wp.float32, device="cpu")
+    output = wp.zeros(5, dtype=wp.vec4, device="cpu")
+    wp.launch(_evaluate_interpolated_tangent_frame, dim=5, inputs=[params, handedness, output], device="cpu")
+    np.testing.assert_allclose(output.numpy(), np.tile((1.0, 1.0, 0.0, 0.0), (5, 1)), atol=1.0e-6)
 
 
 @wp.kernel

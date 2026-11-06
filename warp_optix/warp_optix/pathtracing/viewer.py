@@ -135,7 +135,7 @@ class ViewerBackend:
         backface_culling: bool = True,
         denoiser: str | None = None,
         optix_upscale: bool = False,
-        dlss_quality: str = "dlaa",
+        dlss_quality: str = "balanced",
     ):
         try:
             super().__init__()

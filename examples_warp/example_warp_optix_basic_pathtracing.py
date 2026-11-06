@@ -86,7 +86,7 @@ def _parse_args():
     parser.add_argument(
         "--dlss-quality",
         choices=("dlaa", "max_quality", "balanced", "max_perf", "ultra_performance"),
-        default="dlaa",
+        default="balanced",
         help="DLSS Ray Reconstruction quality; modes other than dlaa render at lower resolution and upscale.",
     )
     parser.add_argument("--no-set", action="store_true", help="Disable Shader Execution Reordering.")

@@ -2596,9 +2596,10 @@ def _evaluate_material_from_payload(
         up = wp.vec3(0.0, 0.0, 1.0) if wp.abs(n[2]) < 0.999 else wp.vec3(0.0, 1.0, 0.0)
         t = wp.cross(up, n)
     t = wp.normalize(t)
-    bs = bitangent_sign
-    if bs == 0.0:
-        bs = 1.0
+    # Handedness is an orientation, not a scale. Interpolation across mirrored
+    # UVs can produce values between -1 and 1; using their magnitude squashes
+    # the shading frame and turns isotropic specular lobes into curved streaks.
+    bs = -1.0 if bitangent_sign < 0.0 else 1.0
     b = wp.normalize(wp.cross(n, t)) * bs
 
     materials = params.compact_materials

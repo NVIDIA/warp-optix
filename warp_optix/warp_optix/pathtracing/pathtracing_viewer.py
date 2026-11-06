@@ -164,7 +164,7 @@ class Renderer:
         backface_culling: bool = True,
         denoiser: str | None = None,
         optix_upscale: bool = False,
-        dlss_quality: str = "dlaa",
+        dlss_quality: str = "balanced",
     ):
         """
         Initialize the path tracing viewer.

@@ -515,8 +515,8 @@ print(dlss_rr_requirements())  # {'supported': True, ...} or a 'reason' (e.g. dr
 api = PathTracer(denoiser="dlss", dlss_quality="balanced")
 ```
 
-`dlss_quality` is `"dlaa"` (denoise at full resolution, the default),
-`"max_quality"`, `"balanced"`, `"max_perf"`, or `"ultra_performance"`; the
+`dlss_quality` defaults to `"balanced"`. Other modes are `"dlaa"` (denoise
+at full resolution), `"max_quality"`, `"max_perf"`, or `"ultra_performance"`; the
 upscaling modes render at the size NGX recommends for the output and
 reconstruct to full resolution. The model preset defaults to `F` (the DLSS 4.5
 transformer model). Without a DLSS build or on older drivers, `"auto"` falls

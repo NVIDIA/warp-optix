@@ -344,7 +344,7 @@ class DlssDenoiser:
         height: int,
         *,
         output_size: tuple[int, int] | None = None,
-        quality: str = "dlaa",
+        quality: str = "balanced",
         preset: str = "F",
         device=None,
         stream: wp.Stream | None = None,
