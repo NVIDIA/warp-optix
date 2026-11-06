@@ -182,11 +182,14 @@ until replaced or until the `LaunchParams` is released (`close()`/`with`); calle
 their own writes to those arrays. Directly modifying
 `params.data` bypasses the API's ordering and validation.
 
-An optional `@wo.kernel(kind=wo.ProgramKind.RAYGEN, module="unique")`
+An optional `@wo.kernel(kind=wo.ProgramKind.RAYGEN)`
 decorator replaces `@wp.kernel` when a shader should declare its intended stage.
-It also accepts an existing Warp kernel. Pipeline construction rejects a declared
-stage that disagrees with its slot. Undecorated Warp kernels continue to get their
-stage from their pipeline slot.
+It defaults to `module="unique"`, because a kernel using `wp.optix_*` builtins
+cannot compile as part of an ordinary Warp module and would break `wp.launch` of the
+other kernels in it; an explicit `module=` is honored. It also accepts an existing
+Warp kernel, which keeps the module chosen by its `@wp.kernel`. Pipeline construction
+rejects a declared stage that disagrees with its slot. Undecorated Warp kernels
+continue to get their stage from their pipeline slot.
 
 Compare `examples_warp/example_warp_optix_kernels.py` with
 `examples_warp/example_warp_optix_explicit_params.py`: both compute the same

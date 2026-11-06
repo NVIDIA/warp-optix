@@ -58,6 +58,16 @@ def miss(value: wp.uint32):
     wp.optix_set_payload(0, value)
 
 
+@wp.kernel
+def fill(output: wp.array[wp.uint32]):
+    output[wp.tid()] = wp.uint32(5)
+
+
+@wo.kernel(kind=wo.ProgramKind.MISS)
+def miss_in_own_module(value: wp.uint32):
+    wp.optix_set_payload(0, value)
+
+
 def params(value, output):
     result = Params()
     result.value = wp.uint32(value)
@@ -79,6 +89,21 @@ def test_schema_independent_of_raygen_and_automatic_explicit_equivalence():
     wo.launch(pipeline, (64,), params=launch_params)
     np.testing.assert_array_equal(first.numpy(), np.full(64, 37))
     np.testing.assert_array_equal(first.numpy(), second.numpy())
+
+
+def test_declared_programs_default_to_own_module():
+    assert fill.module.name == __name__
+    assert miss_in_own_module.module is not fill.module
+    output = wp.empty(64, dtype=wp.uint32)
+    wp.launch(fill, output.shape, [output])
+    np.testing.assert_array_equal(output.numpy(), np.full(64, 5))
+
+    pipeline = wo.Pipeline(trace, miss=[miss_in_own_module], params_type=Params, payload_words=1)
+    wo.launch(pipeline, (64,), [params(9, output)])
+    np.testing.assert_array_equal(output.numpy(), np.full(64, 9))
+
+    named = wo.kernel(miss_in_own_module.func, kind=wo.ProgramKind.MISS, module="wo_test_named")
+    assert named.module.name == "wo_test_named"
 
 
 def test_automatic_storage_is_independent_between_streams():
