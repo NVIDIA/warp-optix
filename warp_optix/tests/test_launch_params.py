@@ -131,9 +131,9 @@ def test_invalid_params_schemas_and_stage_placements():
         wo.launch(object(), (1,), [])
     with pytest.raises(ValueError, match="Assign launch parameters"):
         wo.launch(pipeline, (1,), params=launch_params)
-    with pytest.raises(ValueError, match="exactly one"):
+    with pytest.raises(ValueError, match="either inputs/outputs or params"):
         wo.launch(pipeline, (1,), [], params=launch_params)
-    with pytest.raises(ValueError, match="exactly one"):
+    with pytest.raises(ValueError, match="requires inputs"):
         wo.launch(pipeline, (1,))
     with pytest.raises(ValueError, match="LaunchParams of this pipeline"):
         wo.launch(other, (1,), params=launch_params)
@@ -234,3 +234,43 @@ def test_launches_record_no_events(monkeypatch):
         wo.launch(pipeline, (64,), params=explicit)
     assert recorded == []
     np.testing.assert_array_equal(output.numpy(), np.full(64, 7))
+
+
+@wp.kernel(module="unique")
+def write_index_2d(output: wp.array2d[int]):
+    i, j = wp.tid()
+    output[i, j] = i * 100 + j
+
+
+@wp.kernel(module="unique")
+def write_constant(output: wp.array[int]):
+    output[0] = 7
+
+
+@wp.kernel(module="unique")
+def no_arguments():
+    pass
+
+
+def test_launch_matches_wp_launch_conventions():
+    pipeline = wo.Pipeline(write_index_2d)
+    expected = wp.zeros((2, 3), dtype=int, device="cuda")
+    wp.launch(write_index_2d, (2, 3), inputs=[expected])
+    # outputs are appended to inputs, and numpy integers are accepted in dim.
+    output = wp.zeros((2, 3), dtype=int, device="cuda")
+    wo.launch(pipeline, (np.int64(2), np.int32(3)), outputs=[output])
+    np.testing.assert_array_equal(output.numpy(), expected.numpy())
+
+    # wp.tid() indices must match the launch dimensions, where OptiX and wp.launch could disagree.
+    with pytest.raises(ValueError, match="unpacks 2 wp.tid"):
+        wo.launch(pipeline, 6, [output])
+    with pytest.raises(ValueError, match="positive integers"):
+        wo.launch(pipeline, (2, 3.0), [output])
+    with pytest.raises(ValueError, match="either inputs/outputs or params"):
+        wo.launch(pipeline, (2, 3), outputs=[output], params=wo.LaunchParams(pipeline))
+
+    # Pipelines whose raygen ignores wp.tid() accept any dimensions; raygens without arguments need no inputs.
+    single = wp.zeros(1, dtype=int, device="cuda")
+    wo.launch(wo.Pipeline(write_constant), (2, 2), [single])
+    np.testing.assert_array_equal(single.numpy(), [7])
+    wo.launch(wo.Pipeline(no_arguments), 1)

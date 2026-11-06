@@ -204,6 +204,8 @@ def triangles(
     """
     keys = [points] if isinstance(points, wp.array) else list(points)
     num_vertices = _vertex_count(keys)
+    if indices.size == 0:
+        raise ValueError("triangles() needs at least one triangle")
     _validate_indices(indices, num_vertices, keys[0].device, triplets=True)
     build_input = native.BuildInputTriangleArray()
     build_input.vertexFormat = native.VERTEX_FORMAT_FLOAT3
@@ -266,6 +268,8 @@ def aabbs(
         raise ValueError("pass either lowers and uppers, or bounds, not both")
     if bounds.dtype != wp.float32 or bounds.size % 6 or not bounds.device.is_cuda or not bounds.is_contiguous:
         raise ValueError("bounds must be a contiguous CUDA float32 array of AABB sextuplets")
+    if bounds.size == 0:
+        raise ValueError("aabbs() needs at least one AABB")
     flags = [int(f) for f in flags] if isinstance(flags, Sequence) else [int(flags)]
     if not flags:
         raise ValueError("flags must contain at least one SBT record flag")
@@ -287,6 +291,21 @@ def aabbs(
     return BuildInput(descriptor, arrays, prepare=prepare)
 
 
+# Control points per curve segment, minus one.
+_CURVE_DEGREES = {
+    PrimitiveType.ROUND_LINEAR: 1,
+    PrimitiveType.ROUND_QUADRATIC_BSPLINE: 2,
+    PrimitiveType.ROUND_QUADRATIC_BSPLINE_ROCAPS: 2,
+    PrimitiveType.FLAT_QUADRATIC_BSPLINE: 2,
+    PrimitiveType.ROUND_CUBIC_BSPLINE: 3,
+    PrimitiveType.ROUND_CUBIC_BSPLINE_ROCAPS: 3,
+    PrimitiveType.ROUND_CATMULLROM: 3,
+    PrimitiveType.ROUND_CATMULLROM_ROCAPS: 3,
+    PrimitiveType.ROUND_CUBIC_BEZIER: 3,
+    PrimitiveType.ROUND_CUBIC_BEZIER_ROCAPS: 3,
+}
+
+
 def curves(
     points: wp.array | Sequence[wp.array],
     widths: wp.array | Sequence[wp.array],
@@ -303,17 +322,11 @@ def curves(
     point_keys = [points] if isinstance(points, wp.array) else list(points)
     width_keys = [widths] * len(point_keys) if isinstance(widths, wp.array) else list(widths)
     num_vertices = _vertex_count(point_keys)
-    degree = 3
-    for name, value in (
-        ("ROUND_LINEAR", 1),
-        ("ROUND_QUADRATIC_BSPLINE", 2),
-        ("ROUND_QUADRATIC_BSPLINE_ROCAPS", 2),
-        ("FLAT_QUADRATIC_BSPLINE", 2),
-    ):
-        primitive = getattr(PrimitiveType, name, None)
-        if primitive is not None and int(curve_type) == int(primitive):
-            degree = value
-            break
+    degree = _CURVE_DEGREES.get(int(curve_type))
+    if degree is None:
+        raise ValueError(f"curve_type must be a curve PrimitiveType, got {curve_type!r}")
+    if indices.size == 0:
+        raise ValueError("curves() needs at least one segment")
     _validate_indices(indices, num_vertices - degree, point_keys[0].device)
     if len(width_keys) != len(point_keys) or any(
         key.dtype != wp.float32
@@ -340,11 +353,14 @@ def curves(
 
 
 def instances(records: wp.array) -> BuildInput:
-    """Instance input retaining its records; child ids must stay unchanged on refits."""
+    """Instance input retaining its records; child ids must stay unchanged on refits.
+
+    ``records`` may be empty, which builds a structure nothing intersects.
+    """
     if records.dtype is not Instance or not records.device.is_cuda or not records.is_contiguous:
         raise ValueError("records must be a contiguous CUDA array of Instance")
     return BuildInput(
-        native.BuildInputInstanceArray(instances=records.ptr, numInstances=records.size),
+        native.BuildInputInstanceArray(instances=records.ptr or 0, numInstances=records.size),
         (records,),
         instance_records=records,
     )
@@ -389,6 +405,8 @@ class Accel:
         if device is None and stream is None and inputs:
             device = inputs[0].device
         context, stream = resolve(device, stream)
+        if not inputs:
+            raise ValueError("Accel needs at least one build input")
         context.check_arrays([item.arrays for item in inputs])
         flags = int(flags) | (BuildFlags.ALLOW_COMPACTION if compact else 0)
         if compact and flags & BuildFlags.ALLOW_UPDATE:
