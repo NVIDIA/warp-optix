@@ -294,6 +294,16 @@ def second_callable(params: QueryParams):
 
 
 @wp.kernel(module="unique")
+def continuation_raygen(params: QueryParams):
+    wp.optix_continuation_call(wp.uint32(0))
+
+
+@wp.kernel(module="unique")
+def continuation_callable(params: QueryParams):
+    params.output[0] = wp.uint32(42)
+
+
+@wp.kernel(module="unique")
 def exception_raygen(params: QueryParams):
     wp.optix_throw_exception(wp.int32(1234), wp.uint32(77), wp.uint32(88))
 
@@ -384,6 +394,9 @@ def test_callables_and_exception_programs_on_gpu():
     # Callables are indexed by their position in ``callables``.
     pipeline = wo.Pipeline(callable_raygen, callables=[first_callable, second_callable])
     assert tuple(_launch(pipeline, 0, output)[:2]) == (85, 84)
+
+    pipeline = wo.Pipeline(continuation_raygen, continuation_callables=[continuation_callable])
+    assert _launch(pipeline, 0, output)[0] == 42
 
     pipeline = wo.Pipeline(exception_raygen, exception=exception_program)
     assert tuple(_launch(pipeline, 0, output)) == (1234, 77, 88)

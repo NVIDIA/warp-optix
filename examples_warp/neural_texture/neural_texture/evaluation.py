@@ -76,7 +76,7 @@ class _QualityEvaluator:
     def _initialize(self, image, pixels):
         device = self.device
         with wp.ScopedDevice(device):
-            flags = wo.get_context(device).native.getProperty(native.DEVICE_PROPERTY_COOP_VEC)
+            flags = native.getCoopVecProperty(wo.get_context(device).native)
             if not flags & int(native.DEVICE_PROPERTY_COOP_VEC_FLAG_STANDARD):
                 raise RuntimeError("the selected OptiX device does not support cooperative vectors")
             self.target = wp.array(image.reshape(-1, self.channels), dtype=wp.float32, device=device)
