@@ -22,13 +22,14 @@ from __future__ import annotations
 
 import ast
 import enum
-import itertools
+import weakref
 
 import warp as wp
 
 PARAMS_ARG = "_wo_params"
 _INDEX_VAR = "_wo_launch_index"
-_PARAMS_IDS = itertools.count()
+# Warp never frees a struct type, so derive one per kernel rather than per pipeline.
+_derived_params: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 class ProgramKind(enum.Enum):
@@ -71,13 +72,16 @@ def kernel_signature(kernel: wp.Kernel) -> dict[str, type]:
 
 def params_struct(kernel: wp.Kernel):
     """Return a Warp struct whose fields are ``kernel``'s arguments, in order."""
-    signature = kernel_signature(kernel)
-    name = f"{_identifier(kernel.key)}_params_{next(_PARAMS_IDS)}"
-    cls = type(name, (), {"__annotations__": signature, "__module__": __name__, "__qualname__": name})
-    return wp.struct(cls)
+    struct = _derived_params.get(kernel)
+    if struct is None:
+        signature = kernel_signature(kernel)
+        name = f"{_identifier(kernel.key)}_params"
+        cls = type(name, (), {"__annotations__": signature, "__module__": __name__, "__qualname__": name})
+        struct = _derived_params[kernel] = wp.struct(cls)
+    return struct
 
 
-def as_program(kernel: wp.Kernel, kind: ProgramKind, params, module: str) -> wp.Kernel:
+def as_program(kernel: wp.Kernel, kind: ProgramKind, params, module: wp.Module) -> wp.Kernel:
     """Return a copy of ``kernel`` compiled as an OptiX program of ``kind``.
 
     ``params`` is the launch-parameter struct shared by the pipeline. Every
@@ -125,7 +129,7 @@ def as_program(kernel: wp.Kernel, kind: ProgramKind, params, module: str) -> wp.
     return wp.Kernel(
         program,
         key=f"{kind.value}{_identifier(kernel.key)}",
-        module=wp.get_module(module),
+        module=module,
         options=options,
         source=source,
     )

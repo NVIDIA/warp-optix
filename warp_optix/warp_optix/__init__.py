@@ -34,6 +34,8 @@ from warp_optix.accel import make_instance as make_instance
 from warp_optix.accel import triangles as triangles
 from warp_optix.context import get_context as get_context
 from warp_optix.enums import BuildFlags as BuildFlags
+from warp_optix.enums import CompileDebugLevel as CompileDebugLevel
+from warp_optix.enums import CompileOptimizationLevel as CompileOptimizationLevel
 from warp_optix.enums import ExceptionFlags as ExceptionFlags
 from warp_optix.enums import GeometryFlags as GeometryFlags
 from warp_optix.enums import HitKind as HitKind
@@ -59,6 +61,8 @@ __all__ = [
     "AccelQueryRay",
     "BuildFlags",
     "BuildInput",
+    "CompileDebugLevel",
+    "CompileOptimizationLevel",
     "ExceptionFlags",
     "GeometryFlags",
     "HitGroup",
