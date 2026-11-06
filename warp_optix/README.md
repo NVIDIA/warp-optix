@@ -128,8 +128,9 @@ arguments; `wp.optix_traverse()` takes the same arguments with an optional paylo
 SBT indices, and register indices accept any integer type, so `wo.RayFlags` members need no cast.
 
 `wo.Pipeline(raygen, *, miss, hit_groups, ray_types, sbt, callables, exception, exception_flags,
-payload_words, attribute_words, max_trace_depth, max_traversable_depth, graph_flags, motion_blur,
-max_registers, device)` compiles all programs into one module and builds the shader binding table:
+payload_words, attribute_words, max_trace_depth, max_traversable_depth, max_callable_depth,
+graph_flags, motion_blur, max_registers, optimization_level, debug_level, module_options, device)`
+compiles all programs into one module and builds the shader binding table:
 
 - `miss` lists one miss program per ray type; `None` is a record without a program.
 - `hit_groups` holds `wo.HitGroup(closest_hit=, any_hit=, intersection=, builtin=)` entries.
@@ -149,6 +150,17 @@ max_registers, device)` compiles all programs into one module and builds the sha
   the default is `USER` if an exception program is supplied, otherwise `NONE`.
   For example, `exception_flags=wo.ExceptionFlags.STACK_OVERFLOW | wo.ExceptionFlags.TRACE_DEPTH`
   enables those debugging checks. Include `USER` when using `optix_throw_exception`.
+- `module_options` sets Warp module options (`wp.set_module_options`) for the pipeline's module,
+  for example `module_options={"fast_math": True}`. Options not given there come from the Warp
+  modules of the programs' kernels, which must agree; a conflict raises `ValueError` naming the
+  option, rather than silently using one kernel's setting.
+- `optimization_level` (`wo.CompileOptimizationLevel`) and `debug_level` (`wo.CompileDebugLevel`)
+  are passed to OptiX's module compile; both default to OptiX's defaults. For source-level debugging
+  in Nsight, use `debug_level=wo.CompileDebugLevel.FULL` with
+  `optimization_level=wo.CompileOptimizationLevel.LEVEL_0`.
+- `max_trace_depth` bounds recursive `optix_trace` calls, `max_traversable_depth` the depth of the
+  traversable graph, and `max_callable_depth` how deeply callables call callables (default 1 when
+  the pipeline has callables). They size the pipeline's stack.
 
 `wo.launch(pipeline, dim, inputs=None, device=None, stream=None, *, params=None)` mirrors `wp.launch`:
 it packs the launch parameters on the host, copies them to the device on `stream`, and then launches
