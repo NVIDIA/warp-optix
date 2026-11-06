@@ -9,7 +9,7 @@ import ctypes
 import itertools
 import logging
 import os
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -387,12 +387,21 @@ def launch(
     stream: wp.Stream | None = None,
     *,
     params_buffer: LaunchParamsBuffer | None = None,
+    backward: Callable[[], None] | None = None,
 ) -> None:
     """Launch with automatic inputs or an explicitly populated parameter buffer.
 
     An explicit schema takes inputs=[schema_instance]. Automatic storage is
     separate for each CUDA stream. Calls from multiple host threads require
     external synchronization, as do other operations on a shared context.
+
+    OptiX programs have no generated adjoints, so a launch inside a recording
+    ``wp.Tape`` is treated as a constant: gradients stop at its outputs. Pass
+    ``backward`` to supply the adjoint yourself, typically a launch of a
+    hand-written adjoint pipeline that re-traces the same rays. It is recorded
+    on the active tape, runs on this launch's stream during ``tape.backward()``,
+    and the gradients of the launch's array inputs are zeroed by ``tape.zero()``.
+    Without an active tape, ``backward`` is ignored.
     """
     ctx = require_context(pipeline.context)
     stream = ctx._stream(stream)
@@ -403,6 +412,8 @@ def launch(
         raise ValueError("dim must contain one to three positive integers")
     if (inputs is None) == (params_buffer is None):
         raise ValueError("Provide exactly one of inputs or params_buffer")
+    if backward is not None and not callable(backward):
+        raise TypeError("backward must be callable")
     if params_buffer is not None:
         if not isinstance(params_buffer, LaunchParamsBuffer) or params_buffer.pipeline is not pipeline:
             raise ValueError("Parameter buffer must belong to this pipeline")
@@ -441,3 +452,23 @@ def launch(
         )
         buffer._event = stream.record_event()
         ctx._retain_launch(stream, [buffer.data, *buffer._inputs])
+    if backward is not None:
+        _record_backward(stream, backward, buffer._inputs)
+
+
+def _active_tape():
+    # Warp has no public accessor for the recording tape.
+    runtime = getattr(getattr(getattr(wp, "_src", None), "context", None), "runtime", None)
+    return getattr(runtime, "tape", None)
+
+
+def _record_backward(stream: wp.Stream, backward: Callable[[], None], inputs: Sequence) -> None:
+    tape = _active_tape()
+    if tape is None:
+        return
+
+    def run():
+        with wp.ScopedStream(stream):
+            backward()
+
+    tape.record_func(run, [a for a in inputs if isinstance(a, wp.array) and a.grad is not None])

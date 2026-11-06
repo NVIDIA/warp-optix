@@ -12,6 +12,7 @@ uv run --no-sync python examples_warp/example_warp_optix_kernels.py
 uv run --no-sync python examples_warp/example_warp_optix_curves.py
 uv run --no-sync python examples_warp/example_warp_optix_motion_blur.py
 uv run --no-sync python examples_warp/example_warp_optix_mixed_geometry.py
+uv run --no-sync python examples_warp/example_warp_optix_inverse_rendering.py
 
 uv run --no-sync python examples_warp/example_warp_optix_tiny_raytracer.py
 uv run --no-sync python examples_warp/example_warp_optix_basic_pathtracing.py
@@ -35,6 +36,13 @@ curve, and custom-intersection geometry under instances written on the GPU with
 `wo.make_instance()`; `example_warp_optix_motion_blur.py` builds a two-key
 motion GAS. The image examples write a BMP (`--output`); the tiny ray tracer
 opens an OpenGL viewer with `--live` (`--max-frames N` exits after N frames).
+
+The inverse-rendering example traces a G-buffer and shadow rays with OptiX and
+shades in differentiable Warp kernels on a `wp.Tape`. It first recovers a point
+light from a photo of a grey calibration scene, then per-vertex albedo of a
+textured sphere and floor under that light. It writes the photo, initial guess,
+and recovered rendering side by side. Visibility is re-traced every step but is
+not differentiated (see "Gradients" in the [package README](../warp_optix/README.md)).
 
 The neural-texture example (`neural_texture/compress.py`, see
 [neural_texture/README.md](neural_texture/README.md)) procedurally generates a

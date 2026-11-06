@@ -243,6 +243,49 @@ query built-in geometry. `Hit.t` is `wo.MISS` when nothing was hit; after `close
 `wp.optix_hit_object_*` builtins expose barycentrics, attributes, and transforms until the next
 traversal.
 
+## Gradients
+
+OptiX programs are compiled without adjoints. Inside a recording `wp.Tape`, a
+`wo.launch` is a constant: gradients reach its output arrays and stop there.
+This suits differentiable rendering with fixed visibility. OptiX records which
+primitive each ray hits (and whether shadow rays are blocked), and ordinary
+Warp kernels reconstruct hit points from vertices and barycentrics, shade, and
+compute the loss on the tape. Gradients then reach materials, lights, and
+vertex positions, but not silhouette or shadow-edge terms. Re-tracing the
+visibility every forward pass is usually enough to follow parameters that move
+shadows. `examples_warp/example_warp_optix_inverse_rendering.py` recovers a
+light and per-vertex albedo this way.
+
+To differentiate through a launch itself, supply its adjoint with
+`backward=callable`. The callable is recorded on the active tape, runs on the
+launch's stream during `tape.backward()`, and is ignored without a tape. Array
+inputs with gradients are zeroed by `tape.zero()`. The adjoint is typically a
+second, hand-written pipeline that re-traces the same rays:
+
+```python
+@wp.kernel(module="unique")
+def depth(scene: wp.uint64, scale: wp.array[float], out: wp.array[float]):
+    i = wp.tid()
+    out[i] = scale[0] * trace_distance(scene, i)
+
+
+@wp.kernel(module="unique")
+def depth_adjoint(scene: wp.uint64, adj_out: wp.array[float], adj_scale: wp.array[float]):
+    i = wp.tid()
+    wp.atomic_add(adj_scale, 0, adj_out[i] * trace_distance(scene, i))
+
+
+with wp.Tape() as tape:
+    wo.launch(
+        forward,
+        dim=n,
+        inputs=[gas.handle, scale, out],
+        backward=lambda: wo.launch(adjoint, dim=n, inputs=[gas.handle, out.grad, scale.grad]),
+    )
+    wp.launch(loss_kernel, dim=n, inputs=[out, loss])
+tape.backward(loss)
+```
+
 ## Acceleration structures
 
 Build inputs retain their Warp **device** arrays, and contexts retain acceleration
