@@ -158,6 +158,6 @@ light types are not currently imported.
 
 `example_warp_optix_explicit_params.py` produces the same result as
 `example_warp_optix_kernels.py` using an explicit shared schema, shader stage
-declarations with `@wo.kernel(kind=wo.ProgramKind...)`, `SbtBuilder`, and
+declarations with `@wo.kernel(kind=wo.ProgramKind...)`, `SbtLayout`, and
 independent `wo.LaunchParams` objects written with `.assign()` and launched with
 `wo.launch(..., params=...)` on two CUDA streams. Run it with `python examples_warp/example_warp_optix_explicit_params.py`.

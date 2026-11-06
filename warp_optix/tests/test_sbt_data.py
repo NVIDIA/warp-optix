@@ -133,8 +133,13 @@ def test_records_carry_their_own_data():
     palette = weakref.ref(data.palette)
     pipeline = wo.Pipeline(
         raygen,
-        miss=[wo.Record(sky_miss, data=sky)],
-        hit_groups=[wo.HitGroup(closest_hit=flat_hit, data=flat), wo.HitGroup(closest_hit=textured_hit, data=data)],
+        sbt=wo.SbtLayout(
+            miss=wo.Record(sky_miss, data=sky),
+            hit_groups={
+                "flat": wo.HitGroup(closest_hit=flat_hit, data=flat),
+                "textured": wo.HitGroup(closest_hit=textured_hit, data=data),
+            },
+        ),
         payload_words=3,
         device=device,
     )
@@ -174,21 +179,9 @@ def test_invalid_record_data():
     with pytest.raises(TypeError, match="Warp kernel"):
         wo.Record(None)
     with pytest.raises(TypeError, match="Warp struct instance"):
-        wo.Pipeline(raygen, hit_groups=[wo.HitGroup(closest_hit=flat_hit, data=wp.vec3(1.0))])
+        wo.Pipeline(raygen, sbt=wo.SbtLayout(hit_groups={"flat": wo.HitGroup(closest_hit=flat_hit, data=wp.vec3(1.0))}))
     data = textured("cuda")
     data.palette = wp.zeros(2, dtype=wp.vec3, device="cpu")
     with pytest.raises(ValueError, match="same CUDA device"):
-        wo.Pipeline(raygen, hit_groups=[wo.HitGroup(closest_hit=textured_hit, data=data)], payload_words=3)
-
-
-def test_sbt_builder_miss_records_carry_data():
-    sky = Sky()
-    sky.color = wp.vec3(0.0, 0.0, 1.0)
-    builder = wo.SbtBuilder(("radiance",))
-    builder.set_miss("radiance", wo.Record(sky_miss, data=sky))
-    builder.add_hit_group("left", radiance=wo.HitGroup())
-    builder.add_hit_group("right", radiance=wo.HitGroup())
-    assert "sky_miss" in builder.describe()
-    image = wp.zeros(3, dtype=wp.vec3, device="cuda")
-    wo.launch(wo.Pipeline(raygen, sbt=builder, payload_words=3), 3, [two_triangle_gas("cuda"), image])
-    np.testing.assert_allclose(image.numpy(), [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+        hit_groups = {"textured": wo.HitGroup(closest_hit=textured_hit, data=data)}
+        wo.Pipeline(raygen, sbt=wo.SbtLayout(hit_groups=hit_groups), payload_words=3)

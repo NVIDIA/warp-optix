@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from warp_optix.pathtracing import Curve, Mesh, PathTracer, Scene
+from warp_optix.pathtracing import pathtracing_warp_kernels as pwk
 
 
 def _points():
@@ -31,7 +32,7 @@ def test_curve_default_topology_and_sbt_slot(
     assert curve.basis == basis
     assert curve.primitive_type == primitive_type
     assert curve.control_point_count == control_points
-    assert curve.sbt_offset == sbt_offset
+    assert pwk.SBT.get_sbt_offset(curve.primitive_type) == sbt_offset
     assert curve.geometry_type == geometry_type
 
 

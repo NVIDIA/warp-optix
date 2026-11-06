@@ -10,7 +10,6 @@ import itertools
 import logging
 import os
 from collections.abc import Sequence
-from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
@@ -21,7 +20,7 @@ from warp_optix.addon import build_options
 from warp_optix.context import CAPTURE_ERROR, _arrays, native_objects, resolve
 from warp_optix.enums import ExceptionFlags, TraversableGraphFlags
 from warp_optix.program import ProgramKind, as_program, params_struct
-from warp_optix.sbt import SbtBuilder, SbtLayout
+from warp_optix.sbt import Record, SbtLayout
 
 _log = logging.getLogger(__name__)
 _PIPELINE_IDS = itertools.count()
@@ -35,36 +34,6 @@ _BUILTIN_PRIMITIVE_FLAGS = {
 }
 
 
-@dataclass(frozen=True)
-class HitGroup:
-    """Programs run for one geometry type and ray type.
-
-    ``builtin`` selects an OptiX built-in intersection (a :class:`PrimitiveType`)
-    for curves. A hit group without programs still occupies its SBT record, which
-    is what pipelines that only use ``optix_traverse`` hit objects need.
-    ``data`` is a Warp struct instance stored in the record, read on the device
-    with ``wp.optix_load_sbt_data()``.
-    """
-
-    closest_hit: wp.Kernel | None = None
-    any_hit: wp.Kernel | None = None
-    intersection: wp.Kernel | None = None
-    builtin: int | None = None
-    data: object | None = None
-
-
-@dataclass(frozen=True)
-class Record:
-    """A miss or callable program with the Warp struct instance stored in its SBT record."""
-
-    program: wp.Kernel
-    data: object | None = None
-
-    def __post_init__(self):
-        if not isinstance(self.program, wp.Kernel):
-            raise TypeError("Record program must be a Warp kernel")
-
-
 class Pipeline:
     """Warp kernels compiled into a linked OptiX pipeline with its shader binding table.
 
@@ -73,17 +42,13 @@ class Pipeline:
     Every other program is a Warp kernel whose arguments are a subset of the
     raygen arguments, bound by name. With ``params_type=MyStruct``, all stages
     instead bind any subset of that struct's fields, and launch takes
-    ``inputs=[my_struct_instance]``. ``None`` in ``miss`` is a miss record
-    without a program. ``wo.Record(kernel, data=...)`` in ``miss`` or the
-    callables, and ``HitGroup(data=...)``, store a Warp struct instance in the
-    record; :meth:`update_sbt_data` uploads later changes to those instances.
+    ``inputs=[my_struct_instance]``.
 
-    The hit record of geometry ``g`` and ray type ``r`` is
-    ``hit_groups[g * ray_types + r]``; trace with ``sbt_stride=ray_types``.
-
-    Pass ``sbt=SbtBuilder(...)`` or a snapshot for named ray types and hit
-    groups. This cannot be combined with ``miss``, ``hit_groups``, or
-    ``ray_types``; the pipeline keeps the snapshot as :attr:`sbt_layout`.
+    ``sbt`` is an :class:`SbtLayout` describing the ray types, miss records, and
+    hit groups; the pipeline keeps it as :attr:`sbt_layout`.
+    ``wo.Record(kernel, data=...)`` in the miss records or callables, and
+    ``HitGroup(data=...)``, store a Warp struct instance in the record;
+    :meth:`update_sbt_data` uploads later changes to those instances.
 
     Release is automatic when the last reference is dropped, or explicit with
     :meth:`close` or ``with``. Device memory is freed in stream order, like
@@ -95,10 +60,7 @@ class Pipeline:
         self,
         raygen: wp.Kernel,
         *,
-        miss: Sequence[wp.Kernel | Record | None] | None = None,
-        hit_groups: Sequence[HitGroup] | None = None,
-        ray_types: int | None = None,
-        sbt: SbtBuilder | SbtLayout | None = None,
+        sbt: SbtLayout | None = None,
         callables: Sequence[wp.Kernel | Record] = (),
         continuation_callables: Sequence[wp.Kernel | Record] = (),
         exception: wp.Kernel | None = None,
@@ -114,24 +76,11 @@ class Pipeline:
         device: wp.DeviceLike = None,
     ):
         self._closed = True
-        layout = None
-        if sbt is not None:
-            if any(value is not None for value in (miss, hit_groups, ray_types)):
-                raise ValueError("sbt cannot be combined with miss, hit_groups, or ray_types")
-            if not isinstance(sbt, (SbtBuilder, SbtLayout)):
-                raise TypeError("sbt must be an SbtBuilder or SbtLayout")
-            layout = sbt.snapshot() if isinstance(sbt, SbtBuilder) else sbt
-            miss = layout._miss_entries
-            hit_groups = tuple(group for row in layout._hit_kernels for group in row)
-            ray_types = layout.trace_stride
-        else:
-            miss = (None,) if miss is None else tuple(miss)
-            hit_groups = (HitGroup(),) if hit_groups is None else tuple(hit_groups)
-            ray_types = 1 if ray_types is None else ray_types
-        if not isinstance(ray_types, int) or isinstance(ray_types, bool) or not 1 <= ray_types <= 15:
-            raise ValueError("ray_types must be an integer between 1 and 15")
-        if len(hit_groups) % ray_types:
-            raise ValueError("hit_groups must contain one group per geometry type and ray type")
+        layout = SbtLayout() if sbt is None else sbt
+        if not isinstance(layout, SbtLayout):
+            raise TypeError("sbt must be a warp_optix.SbtLayout")
+        miss = list(layout.miss.values())
+        hit_groups = [group for per_ray in layout.hit_groups.values() for group in per_ray.values()]
         if params_type is not None and not all(hasattr(params_type, name) for name in ("vars", "ctype")):
             raise TypeError("params_type must be a Warp struct type")
         miss, miss_data = _split_records(miss)
@@ -351,8 +300,8 @@ class Pipeline:
         return self._params_type
 
     @property
-    def sbt_layout(self) -> SbtLayout | None:
-        """The SBT snapshot the pipeline was built from, if ``sbt=`` was given."""
+    def sbt_layout(self) -> SbtLayout:
+        """The SBT layout the pipeline was built from."""
         return self._sbt_layout
 
     @property

@@ -66,9 +66,7 @@ def params(value, output):
 
 
 def test_schema_independent_of_raygen_and_automatic_explicit_equivalence():
-    sbt = wo.SbtBuilder(["radiance"])
-    sbt.set_miss("radiance", miss)
-    pipeline = wo.Pipeline(trace, sbt=sbt, params_type=Params, payload_words=1)
+    pipeline = wo.Pipeline(trace, sbt=wo.SbtLayout(miss=miss), params_type=Params, payload_words=1)
     assert pipeline.params_type is Params
     first = wp.empty(64, dtype=wp.uint32, device=pipeline.device)
     second = wp.empty_like(first)
@@ -119,7 +117,7 @@ def test_invalid_params_schemas_and_stage_placements():
     with pytest.raises(TypeError, match="declares MISS.*RAYGEN"):
         wo.Pipeline(miss)
     with pytest.raises(TypeError, match="declares RAYGEN.*MISS"):
-        wo.Pipeline(write, miss=[trace])
+        wo.Pipeline(write, sbt=wo.SbtLayout(miss=trace))
     with pytest.raises(TypeError, match="Warp struct"):
         wo.Pipeline(write, params_type=int)
     pipeline = wo.Pipeline(write, params_type=Params)

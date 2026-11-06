@@ -1,59 +1,106 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Named, backend-independent descriptions of shader binding table layouts."""
+"""Backend-independent description of a shader binding table."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from types import MappingProxyType
 
 import warp as wp
 
-if TYPE_CHECKING:
-    from .pipeline import HitGroup, Record
 
+@dataclass(frozen=True)
+class HitGroup:
+    """Programs run for one geometry type and ray type.
 
-def _validate_entry(entry):
-    from .pipeline import Record
+    ``builtin`` selects an OptiX built-in intersection (a :class:`PrimitiveType`)
+    for curves. A hit group without programs still occupies its SBT record, which
+    is what pipelines that only use ``optix_traverse`` hit objects need.
+    ``data`` is a Warp struct instance stored in the record, read on the device
+    with ``wp.optix_load_sbt_data()``.
+    """
 
-    if isinstance(entry, Record):
-        entry = entry.program
-    if entry is not None and not isinstance(entry, wp.Kernel):
-        raise TypeError("Expected an ordinary Warp kernel or None")
-
-
-def _entry_name(entry):
-    return "(none)" if entry is None else getattr(entry, "program", entry).key
+    closest_hit: wp.Kernel | None = None
+    any_hit: wp.Kernel | None = None
+    intersection: wp.Kernel | None = None
+    builtin: int | None = None
+    data: object | None = None
 
 
 @dataclass(frozen=True)
-class HitGroupHandle:
-    """A group in one builder's layout; resolve its offset with ``SbtLayout.get_sbt_offset()``.
+class Record:
+    """A miss or callable program with the Warp struct instance stored in its SBT record."""
 
-    Offsets are in records, not bytes. Handles remain stable as groups are appended.
-    """
+    program: wp.Kernel
+    data: object | None = None
 
-    _owner: object = field(repr=False)
-    name: str
-    index: int
-    sbt_offset: int
+    def __post_init__(self):
+        if not isinstance(self.program, wp.Kernel):
+            raise TypeError("Record program must be a Warp kernel")
 
 
 @dataclass(frozen=True)
 class SbtLayout:
-    """Immutable pipeline layout in group-major, ray-type-minor record order.
+    """Shader binding table of a pipeline: named ray types, miss records, and hit groups.
 
-    ``ray_type_index(name)`` supplies both the trace SBT offset and miss index.
-    ``trace_stride`` supplies the trace SBT stride. These are record counts,
-    distinct from the native table's byte strides.
+    ``miss`` maps every ray type to a miss program, a :class:`Record`, or None
+    (a record without a program). ``hit_groups`` maps each group name to a
+    :class:`HitGroup` per ray type. A bare miss entry or ``HitGroup`` applies to
+    every ray type. The defaults are miss records without programs and one
+    empty hit group named ``"default"``.
+
+    Records are group-major and ray-type-minor: ``get_sbt_offset(name)`` is a
+    group's instance SBT offset, ``ray_type_index(name)`` is both the trace SBT
+    offset and the miss index, and ``trace_stride`` is the trace SBT stride.
+    These count records, not bytes. After construction, ``miss`` and
+    ``hit_groups`` hold the validated, read-only mappings.
     """
 
-    ray_types: tuple[str, ...]
-    hit_groups: tuple[HitGroupHandle, ...]
-    _miss_entries: tuple[wp.Kernel | Record | None, ...] = field(repr=False)
-    _hit_kernels: tuple[tuple[HitGroup, ...], ...] = field(repr=False)
+    ray_types: Sequence[str] = ("radiance",)
+    miss: Mapping[str, wp.Kernel | Record | None] | wp.Kernel | Record | None = None
+    hit_groups: Mapping[str, Mapping[str, HitGroup] | HitGroup] = field(default_factory=lambda: {"default": HitGroup()})
+
+    def __post_init__(self):
+        if isinstance(self.ray_types, str):
+            raise TypeError("ray_types must be a sequence of names, not a string")
+        rays = tuple(self.ray_types)
+        if not rays or any(not isinstance(name, str) or not name.strip() for name in rays):
+            raise ValueError("ray_types must contain nonempty names")
+        if len(set(rays)) != len(rays):
+            raise ValueError("ray_types must be unique")
+        # OptiX trace SBT offset and stride are four-bit values.
+        if len(rays) > 15:
+            raise ValueError("At most 15 ray types are supported by the trace SBT stride")
+        object.__setattr__(self, "ray_types", rays)
+
+        miss = _per_ray(self.miss, rays, "Miss records", lambda entry: not isinstance(entry, Mapping))
+        for ray, entry in miss.items():
+            program = entry.program if isinstance(entry, Record) else entry
+            if program is not None and not isinstance(program, wp.Kernel):
+                raise TypeError(f"Miss program for ray type {ray!r}: expected a Warp kernel, Record, or None")
+        object.__setattr__(self, "miss", miss)
+
+        if not isinstance(self.hit_groups, Mapping):
+            raise TypeError("hit_groups must map group names to hit groups")
+        groups = {}
+        for name, entry in self.hit_groups.items():
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("Hit-group names must be nonempty strings")
+            label = f"Hit group {name!r}"
+            per_ray = _per_ray(entry, rays, label, lambda entry: isinstance(entry, HitGroup))
+            for ray, group in per_ray.items():
+                _validate_hit_group(group, f"{label}, ray type {ray!r}")
+            if len({(group.intersection is not None, group.builtin) for group in per_ray.values()}) != 1:
+                raise ValueError(
+                    f"{label}: all ray types must use the same geometry kind (triangle, custom, or built-in primitive type)"
+                )
+            groups[name] = per_ray
+        if (len(groups) - 1) * len(rays) > 0xFFFFFF:
+            raise ValueError("Hit-group offset exceeds OptiX's 24-bit instance SBT offset")
+        object.__setattr__(self, "hit_groups", MappingProxyType(groups))
 
     @property
     def trace_stride(self) -> int:
@@ -65,154 +112,56 @@ class SbtLayout:
         except ValueError:
             raise KeyError(f"Unknown ray type {name!r}; expected one of {self.ray_types}") from None
 
-    def get_sbt_offset(self, handle: HitGroupHandle) -> int:
-        if not isinstance(handle, HitGroupHandle) or not any(handle is h for h in self.hit_groups):
-            raise ValueError("Hit-group handle does not belong to this SBT layout")
-        return handle.sbt_offset
+    def get_sbt_offset(self, name: str) -> int:
+        """Return the instance SBT offset, in records, of hit group ``name``."""
+        try:
+            return list(self.hit_groups).index(name) * self.trace_stride
+        except ValueError:
+            raise KeyError(f"Unknown hit group {name!r}; expected one of {tuple(self.hit_groups)}") from None
 
     def describe(self) -> str:
         """Return a printable table of miss and hit records and their shaders."""
         rows = [("section", "record", "group", "ray type", "programs")]
-        for index, (ray, entry) in enumerate(zip(self.ray_types, self._miss_entries)):
-            rows.append(("miss", str(index), "-", ray, _entry_name(entry)))
-        for handle, kernels in zip(self.hit_groups, self._hit_kernels):
-            for index, (ray, kernel) in enumerate(zip(self.ray_types, kernels)):
+        for index, (ray, entry) in enumerate(self.miss.items()):
+            program = entry.program if isinstance(entry, Record) else entry
+            rows.append(("miss", str(index), "-", ray, "(none)" if program is None else program.key))
+        for group_index, (name, per_ray) in enumerate(self.hit_groups.items()):
+            for index, (ray, group) in enumerate(per_ray.items()):
                 programs = [
                     f"{label}={entry.key if isinstance(entry, wp.Kernel) else entry}"
                     for label, entry in (
-                        ("CH", kernel.closest_hit),
-                        ("AH", kernel.any_hit),
-                        ("IS", kernel.intersection),
-                        (
-                            "builtin",
-                            getattr(
-                                kernel.builtin,
-                                "name",
-                                kernel.builtin,
-                            ),
-                        ),
+                        ("CH", group.closest_hit),
+                        ("AH", group.any_hit),
+                        ("IS", group.intersection),
+                        ("builtin", getattr(group.builtin, "name", group.builtin)),
                     )
                     if entry is not None
                 ]
-                rows.append(
-                    (
-                        "hit",
-                        str(handle.sbt_offset + index),
-                        handle.name,
-                        ray,
-                        ", ".join(programs),
-                    )
-                )
+                record = group_index * self.trace_stride + index
+                rows.append(("hit", str(record), name, ray, ", ".join(programs)))
         widths = [max(len(row[i]) for row in rows) for i in range(5)]
         table = "\n".join("  ".join(value.ljust(width) for value, width in zip(row, widths)).rstrip() for row in rows)
         return f"Trace stride: {self.trace_stride} records (ray index = trace offset = miss index)\n{table}"
 
 
-class SbtBuilder:
-    """Build an SBT description without allocating native or device resources.
+def _per_ray(entry, rays: tuple[str, ...], label: str, is_bare) -> MappingProxyType:
+    """Expand a bare entry to every ray type, or check that a mapping names each ray type."""
+    if is_bare(entry):
+        return MappingProxyType(dict.fromkeys(rays, entry))
+    if not isinstance(entry, Mapping):
+        raise TypeError(f"{label}: expected a HitGroup or a mapping from ray type to HitGroup")
+    missing = [ray for ray in rays if ray not in entry]
+    extra = [ray for ray in entry if ray not in rays]
+    if missing or extra:
+        raise ValueError(f"{label}: missing ray types {missing}, unknown ray types {extra}")
+    return MappingProxyType({ray: entry[ray] for ray in rays})
 
-    Create with ``SbtBuilder(ray_types=("radiance", "shadow"))``. Assign each
-    miss slot explicitly (a kernel or None) and one HitGroup per ray type in
-    each named group. Empty HitGroups support hit-object traversal. Pipeline creation takes a
-    snapshot; subsequent edits only affect pipelines created afterwards.
-    """
 
-    def __init__(self, ray_types: Sequence[str] = ("radiance",)):
-        if isinstance(ray_types, str):
-            raise TypeError("ray_types must be a sequence of names, not a string")
-        names = tuple(ray_types)
-        if not names or any(not isinstance(name, str) or not name.strip() for name in names):
-            raise ValueError("ray_types must contain nonempty names")
-        if len(set(names)) != len(names):
-            raise ValueError("ray_types must be unique")
-        # OptiX trace SBT offset and stride are four-bit values.
-        if len(names) > 15:
-            raise ValueError("At most 15 ray types are supported by the trace SBT stride")
-        self._owner = object()
-        self._ray_types = names
-        self._miss = {}
-        self._groups = []
-        self._kernels = []
-
-    @property
-    def ray_types(self) -> tuple[str, ...]:
-        return self._ray_types
-
-    @property
-    def trace_stride(self) -> int:
-        return len(self.ray_types)
-
-    def ray_type_index(self, name: str) -> int:
-        try:
-            return self.ray_types.index(name)
-        except ValueError:
-            raise KeyError(f"Unknown ray type {name!r}; expected one of {self.ray_types}") from None
-
-    def set_miss(self, ray_type: str, kernel: wp.Kernel | Record | None) -> None:
-        self.ray_type_index(ray_type)
-        try:
-            _validate_entry(kernel)
-        except (TypeError, ValueError) as error:
-            raise ValueError(f"Miss program for ray type {ray_type!r}: {error}") from error
-        self._miss[ray_type] = kernel
-
-    def add_hit_group(self, name: str, /, **ray_kernels: HitGroup) -> HitGroupHandle:
-        """Append one named material/geometry group, with a kernel per ray type."""
-        from .pipeline import HitGroup
-
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("Hit-group name must be nonempty")
-        if any(handle.name == name for handle in self._groups):
-            raise ValueError(f"Duplicate hit-group name {name!r}")
-        missing = set(self.ray_types) - ray_kernels.keys()
-        extra = ray_kernels.keys() - set(self.ray_types)
-        if missing or extra:
-            raise ValueError(
-                f"Hit group {name!r}: missing ray types {sorted(missing)}, unknown ray types {sorted(extra)}"
-            )
-        kernels = []
-        for ray in self.ray_types:
-            kernel = ray_kernels[ray]
-            label = f"Hit group {name!r}, ray type {ray!r}"
-            if not isinstance(kernel, HitGroup):
-                raise TypeError(f"{label}: expected a warp_optix.HitGroup")
-            if kernel.intersection is not None and kernel.builtin is not None:
-                raise ValueError(f"{label}: custom and built-in intersection programs cannot be combined")
-            try:
-                for entry in (kernel.closest_hit, kernel.any_hit, kernel.intersection):
-                    _validate_entry(entry)
-            except (TypeError, ValueError) as error:
-                raise ValueError(f"{label}: {error}") from error
-            kernels.append(kernel)
-        geometry_types = {(k.intersection is not None, k.builtin) for k in kernels}
-        if len(geometry_types) != 1:
-            raise ValueError(
-                f"Hit group {name!r}: all ray types must use the same geometry kind (triangle, custom, or built-in primitive type)"
-            )
-        if len(self._groups) * self.trace_stride > 0xFFFFFF:
-            raise ValueError("Hit-group offset exceeds OptiX's 24-bit instance SBT offset")
-        handle = HitGroupHandle(
-            self._owner,
-            name,
-            len(self._groups),
-            len(self._groups) * self.trace_stride,
-        )
-        self._groups.append(handle)
-        self._kernels.append(tuple(kernels))
-        return handle
-
-    def snapshot(self) -> SbtLayout:
-        """Validate and freeze the layout; later edits do not change this snapshot."""
-        missing = [ray for ray in self.ray_types if ray not in self._miss]
-        if missing:
-            raise ValueError(f"Missing miss programs for ray types {missing}; call set_miss() for each ray type")
-        return SbtLayout(
-            self.ray_types,
-            tuple(self._groups),
-            tuple(self._miss[ray] for ray in self.ray_types),
-            tuple(self._kernels),
-        )
-
-    def describe(self) -> str:
-        """Validate and preview the layout that the next pipeline will use."""
-        return self.snapshot().describe()
+def _validate_hit_group(group, label: str) -> None:
+    if not isinstance(group, HitGroup):
+        raise TypeError(f"{label}: expected a warp_optix.HitGroup")
+    if group.intersection is not None and group.builtin is not None:
+        raise ValueError(f"{label}: custom and built-in intersection programs cannot be combined")
+    for program in (group.closest_hit, group.any_hit, group.intersection):
+        if program is not None and not isinstance(program, wp.Kernel):
+            raise TypeError(f"{label}: programs must be Warp kernels or None")
