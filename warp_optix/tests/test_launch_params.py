@@ -91,7 +91,7 @@ def test_automatic_storage_is_independent_between_streams():
         output = wp.empty(4096, dtype=wp.uint32, device=device)
         wo.launch(pipeline, (4096,), [value, output], stream=stream)
         outputs.append(output)
-    assert len({b.data.ptr for b in pipeline._buffers.values()}) == 2
+    assert set(pipeline._buffers) <= {stream.cuda_stream for stream in streams}
     wp.synchronize_device(device)
     for value, output in enumerate(outputs):
         np.testing.assert_array_equal(output.numpy(), np.full(4096, value))

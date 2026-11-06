@@ -410,7 +410,7 @@ class Accel:
                         if child is None:
                             raise ValueError("Instance children must be live acceleration structures on this device")
                         # Keep the child's memory, not just the object, so closing the child cannot free it.
-                        dependencies.append((child, child._buffer))
+                        dependencies.append((child, child._buffer, child._dependencies))
                 if item.prepare is not None:
                     item.prepare()
             native_inputs = [item.native for item in inputs]
