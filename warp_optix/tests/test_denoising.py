@@ -22,8 +22,7 @@ def _renderer(monkeypatch, mode):
     renderer.denoiser = mode
     renderer.optix_upscale = False
     renderer._denoiser_explicit = True
-    renderer._ctx = object()
-    renderer._optix = object()
+    renderer._device = object()
     renderer._render_stream = object()
     renderer._optix_denoiser = None
     renderer._sync_prev_camera_matrices_to_current = lambda: None
@@ -116,6 +115,18 @@ def test_optix_gpu_denoises_and_resets_history(upscale):
         denoiser.apply(inputs).numpy()
         reset = denoiser.apply(inputs, reset=True).numpy()
         np.testing.assert_allclose(reset, first, rtol=1e-5, atol=1e-5)
+    finally:
+        denoiser.close()
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_upscaling_denoiser_allocates_scratch_beyond_two_gib():
+    if wp.get_device("cuda").free_memory < 6 * 2**30:
+        pytest.skip("needs about 3 GiB of free device memory")
+    denoiser = OptixDenoiser(1920, 1080, upscale=True, device="cuda")
+    try:
+        assert denoiser._scratch_size > 2**31
     finally:
         denoiser.close()
 

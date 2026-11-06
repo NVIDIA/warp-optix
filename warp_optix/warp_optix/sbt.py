@@ -24,6 +24,20 @@ def _entry_name(entry):
     return "(none)" if entry is None else entry.key
 
 
+class _RayTypes:
+    ray_types: tuple[str, ...]
+
+    @property
+    def trace_stride(self) -> int:
+        return len(self.ray_types)
+
+    def ray_type_index(self, name: str) -> int:
+        try:
+            return self.ray_types.index(name)
+        except ValueError:
+            raise KeyError(f"Unknown ray type {name!r}; expected one of {self.ray_types}") from None
+
+
 @dataclass(frozen=True)
 class HitGroupHandle:
     """A group in one builder's layout; resolve its offset with ``SbtLayout.get_sbt_offset()``.
@@ -38,7 +52,7 @@ class HitGroupHandle:
 
 
 @dataclass(frozen=True)
-class SbtLayout:
+class SbtLayout(_RayTypes):
     """Immutable pipeline layout in group-major, ray-type-minor record order.
 
     ``ray_type_index(name)`` supplies both the trace SBT offset and miss index.
@@ -50,16 +64,6 @@ class SbtLayout:
     hit_groups: tuple[HitGroupHandle, ...]
     _miss_entries: tuple[wp.Kernel | None, ...] = field(repr=False)
     _hit_kernels: tuple[tuple[HitGroup, ...], ...] = field(repr=False)
-
-    @property
-    def trace_stride(self) -> int:
-        return len(self.ray_types)
-
-    def ray_type_index(self, name: str) -> int:
-        try:
-            return self.ray_types.index(name)
-        except ValueError:
-            raise KeyError(f"Unknown ray type {name!r}; expected one of {self.ray_types}") from None
 
     def get_sbt_offset(self, handle: HitGroupHandle) -> int:
         if not isinstance(handle, HitGroupHandle) or not any(handle is h for h in self.hit_groups):
@@ -104,7 +108,7 @@ class SbtLayout:
         return f"Trace stride: {self.trace_stride} records (ray index = trace offset = miss index)\n{table}"
 
 
-class SbtBuilder:
+class SbtBuilder(_RayTypes):
     """Build an SBT description without allocating native or device resources.
 
     Create with ``SbtBuilder(ray_types=("radiance", "shadow"))``. Assign each
@@ -133,16 +137,6 @@ class SbtBuilder:
     @property
     def ray_types(self) -> tuple[str, ...]:
         return self._ray_types
-
-    @property
-    def trace_stride(self) -> int:
-        return len(self.ray_types)
-
-    def ray_type_index(self, name: str) -> int:
-        try:
-            return self.ray_types.index(name)
-        except ValueError:
-            raise KeyError(f"Unknown ray type {name!r}; expected one of {self.ray_types}") from None
 
     def set_miss(self, ray_type: str, kernel: wp.Kernel | None) -> None:
         self.ray_type_index(ray_type)

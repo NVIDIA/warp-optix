@@ -7,7 +7,7 @@
 pass ``accel.id`` to kernels, and update it with :meth:`Accel.refit` or
 :meth:`Accel.rebuild`. Build inputs retain their device arrays. Initial
 instance builds validate child ids with a host readback; compaction also
-synchronizes. Refits remain asynchronous. See :mod:`warp_optix.context` for
+synchronizes (once per :func:`compact` batch). Refits remain asynchronous. See :mod:`warp_optix.context` for
 the lifetime contract.
 """
 
@@ -17,6 +17,7 @@ import ctypes
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+import numpy as np
 import warp as wp
 
 from warp_optix import native
@@ -175,13 +176,15 @@ def _vertex_count(keys):
     return count
 
 
-def _validate_indices(indices, limit, device, *, triplets=False):
+def _validate_indices(indices, limit, device, *, triplets=False, bounds=True):
     if indices.dtype not in (wp.int32, wp.uint32):
         raise TypeError("indices must contain int32 or uint32 values")
     if indices.device != device or not indices.is_contiguous:
         raise ValueError("indices must be contiguous and on the points device")
     if triplets and indices.size % 3:
         raise ValueError("triangle indices must contain complete triplets")
+    if not bounds:
+        return
     if wp.get_stream(device).is_capturing:
         raise RuntimeError(CAPTURE_ERROR)
     # Validate once when creating the input. Point-only refits do not repeat this host readback.
@@ -194,17 +197,19 @@ def triangles(
     points: wp.array | Sequence[wp.array],
     indices: wp.array,
     *,
-    flags: int = GeometryFlags.DISABLE_ANYHIT,
+    flags: GeometryFlags = GeometryFlags.DISABLE_ANYHIT,
+    validate: bool = True,
 ) -> BuildInput:
     """Triangle build input from ``vec3``/``float32[N, 3]`` points and int32/uint32 index triplets.
 
     A sequence of point arrays gives one motion key per array. Creating the
-    input reads indices back once to validate bounds; keep indices unchanged
-    while reusing the input for builds and refits.
+    input reads indices back once to validate bounds; pass ``validate=False``
+    to skip that synchronization for indices already known to be in range. Keep
+    indices unchanged while reusing the input for builds and refits.
     """
     keys = [points] if isinstance(points, wp.array) else list(points)
     num_vertices = _vertex_count(keys)
-    _validate_indices(indices, num_vertices, keys[0].device, triplets=True)
+    _validate_indices(indices, num_vertices, keys[0].device, triplets=True, bounds=validate)
     build_input = native.BuildInputTriangleArray()
     build_input.vertexFormat = native.VERTEX_FORMAT_FLOAT3
     build_input.vertexStrideInBytes = 12
@@ -236,7 +241,7 @@ def aabbs(
     uppers: wp.array | None = None,
     *,
     bounds: wp.array | None = None,
-    flags: int | Sequence[int] = GeometryFlags.DISABLE_ANYHIT,
+    flags: GeometryFlags | Sequence[GeometryFlags] = GeometryFlags.DISABLE_ANYHIT,
     sbt_indices: wp.array | None = None,
 ) -> BuildInput:
     """Custom-primitive build input, like ``wp.Bvh(lowers, uppers)``.
@@ -292,13 +297,15 @@ def curves(
     widths: wp.array | Sequence[wp.array],
     indices: wp.array,
     *,
-    curve_type: int = PrimitiveType.ROUND_LINEAR,
-    flags: int = GeometryFlags.DISABLE_ANYHIT,
+    curve_type: PrimitiveType = PrimitiveType.ROUND_LINEAR,
+    flags: GeometryFlags = GeometryFlags.DISABLE_ANYHIT,
+    validate: bool = True,
 ) -> BuildInput:
     """Curve build input; ``indices`` holds the first control point of each segment.
 
-    Creating the input reads indices back once to validate bounds. Keep indices
-    unchanged while reusing the input for builds and refits.
+    Creating the input reads indices back once to validate bounds, unless
+    ``validate=False``. Keep indices unchanged while reusing the input for
+    builds and refits.
     """
     point_keys = [points] if isinstance(points, wp.array) else list(points)
     width_keys = [widths] * len(point_keys) if isinstance(widths, wp.array) else list(widths)
@@ -314,7 +321,7 @@ def curves(
         if primitive is not None and int(curve_type) == int(primitive):
             degree = value
             break
-    _validate_indices(indices, num_vertices - degree, point_keys[0].device)
+    _validate_indices(indices, num_vertices - degree, point_keys[0].device, bounds=validate)
     if len(width_keys) != len(point_keys) or any(
         key.dtype != wp.float32
         or key.size != num_vertices
@@ -365,7 +372,9 @@ class Accel:
     ``BuildFlags.ALLOW_UPDATE`` keep their scratch buffer for :meth:`refit`;
     others release it once the build has finished and allocate a temporary one
     per :meth:`rebuild`. ``compact=True`` synchronizes ``stream`` once to shrink a
-    static structure; compacted structures cannot be refit or rebuilt.
+    static structure; to compact many structures with a single synchronization,
+    build them with ``BuildFlags.ALLOW_COMPACTION`` and pass them to
+    :func:`compact`. Compacted structures cannot be refit or rebuilt.
 
     Release is automatic when the last reference is dropped, or explicit with
     :meth:`close` or ``with``; memory is freed in stream order, like ``wp.array``.
@@ -375,9 +384,9 @@ class Accel:
         self,
         inputs: Sequence[BuildInput],
         *,
-        flags: int = BuildFlags.PREFER_FAST_TRACE,
+        flags: BuildFlags = BuildFlags.PREFER_FAST_TRACE,
         compact: bool = False,
-        motion: object | None = None,
+        motion: native.MotionOptions | None = None,
         device: wp.DeviceLike = None,
         stream: wp.Stream | None = None,
     ):
@@ -391,7 +400,7 @@ class Accel:
         context, stream = resolve(device, stream)
         context.check_arrays([item.arrays for item in inputs])
         flags = int(flags) | (BuildFlags.ALLOW_COMPACTION if compact else 0)
-        if compact and flags & BuildFlags.ALLOW_UPDATE:
+        if flags & BuildFlags.ALLOW_COMPACTION and flags & BuildFlags.ALLOW_UPDATE:
             raise ValueError("compacted acceleration structures cannot be refit")
 
         with wp.ScopedDevice(context.device), wp.ScopedStream(stream):
@@ -403,8 +412,8 @@ class Accel:
                 if item.instance_records is not None:
                     # Validate GPU-written child ids once. Refits keep this topology.
                     wp.synchronize_stream(stream)
-                    for child_id in item.instance_records.numpy()["traversable"].reshape(-1):
-                        if int(child_id) == 0:
+                    for child_id in np.unique(item.instance_records.numpy()["traversable"]):
+                        if child_id == 0:
                             continue
                         child = context._accels.get(int(child_id))
                         if child is None:
@@ -419,8 +428,11 @@ class Accel:
                 max(sizes.tempSizeInBytes, sizes.tempUpdateSizeInBytes), dtype=wp.uint8, device=context.device
             )
             buffer = wp.empty(sizes.outputSizeInBytes, dtype=wp.uint8, device=context.device)
-            compacted_size = wp.empty(1, dtype=wp.uint64, device=context.device) if compact else None
-            emitted = [native.AccelEmitDesc(compacted_size.ptr, native.PROPERTY_TYPE_COMPACTED_SIZE)] if compact else []
+            compacted_size = None
+            emitted = []
+            if flags & BuildFlags.ALLOW_COMPACTION:
+                compacted_size = wp.empty(1, dtype=wp.uint64, device=context.device)
+                emitted.append(native.AccelEmitDesc(compacted_size.ptr, native.PROPERTY_TYPE_COMPACTED_SIZE))
             handle = context.native.accelBuild(
                 stream.cuda_stream,
                 [options] * len(inputs),
@@ -431,27 +443,22 @@ class Accel:
                 buffer.size,
                 emitted,
             )
-            if compact:
-                size = int(compacted_size.numpy()[0])
-                if size < buffer.size:
-                    output = wp.empty(size, dtype=wp.uint8, device=context.device)
-                    handle = context.native.accelCompact(stream.cuda_stream, handle, output.ptr, size)
-                    wp.synchronize_stream(stream)
-                    buffer = output
-                scratch = None
 
         self._context = context
         self._id = int(handle)
         self._buffer = buffer
         # Dropping a scratch buffer the build still reads is safe: Warp frees device memory in stream order.
         self._scratch = scratch if flags & BuildFlags.ALLOW_UPDATE else None
-        self._compacted = compact
+        self._compacted = False
+        self._compacted_size = compacted_size
         self._inputs = inputs
         self._flags = flags
         self._motion = motion
         self._dependencies = tuple(dependencies)
         self._closed = False
         context._accels[self._id] = self
+        if compact:
+            _compact([self], context, stream)
 
     @property
     def id(self) -> int:
@@ -491,7 +498,7 @@ class Accel:
         self._closed = True
         if self._context._accels.get(self._id) is self:
             del self._context._accels[self._id]
-        self._buffer = self._scratch = None
+        self._buffer = self._scratch = self._compacted_size = None
         self._inputs = self._dependencies = ()
 
     def __enter__(self) -> Accel:
@@ -546,9 +553,56 @@ class Accel:
                 scratch.size,
                 self._buffer.ptr,
                 self._buffer.size,
-                [],
+                []
+                if self._compacted_size is None
+                else [native.AccelEmitDesc(self._compacted_size.ptr, native.PROPERTY_TYPE_COMPACTED_SIZE)],
             )
+        self._replace_id(handle)
+
+    def _replace_id(self, handle: int) -> None:
+        context = self._context
         if context._accels.get(self._id) is self:
             del context._accels[self._id]
         self._id = int(handle)
         context._accels[self._id] = self
+
+
+def compact(accels: Sequence[Accel], stream: wp.Stream | None = None) -> None:
+    """Compact structures built with ``BuildFlags.ALLOW_COMPACTION``, synchronizing ``stream`` once.
+
+    Compaction changes :attr:`Accel.id`, so compact children before building
+    instance structures over them. Compacted structures cannot be refit or rebuilt.
+    """
+    accels = list(accels)
+    if not accels:
+        return
+    for accel in accels:
+        if not isinstance(accel, Accel):
+            raise TypeError("compact() takes Accel objects")
+        accel._check_open()
+        if accel._compacted_size is None:
+            raise ValueError("compact() requires structures built with BuildFlags.ALLOW_COMPACTION")
+        if accel.device != accels[0].device:
+            raise ValueError("compact() requires structures on the same device")
+    context, stream = resolve(accels[0].device, stream)
+    _compact(accels, context, stream)
+
+
+def _compact(accels: list[Accel], context, stream: wp.Stream) -> None:
+    if stream.is_capturing:
+        raise RuntimeError(CAPTURE_ERROR)
+    device = context.device
+    sizes = wp.empty(len(accels), dtype=wp.uint64, device=device)
+    for i, accel in enumerate(accels):
+        wp.copy(sizes, accel._compacted_size, dest_offset=i, count=1, stream=stream)
+    host_sizes = wp.empty(len(accels), dtype=wp.uint64, device="cpu", pinned=True)
+    wp.copy(host_sizes, sizes, stream=stream)
+    wp.synchronize_stream(stream)
+    with wp.ScopedDevice(device):
+        for accel, size in zip(accels, host_sizes.numpy().tolist(), strict=True):
+            if size < accel._buffer.size:
+                output = wp.empty(size, dtype=wp.uint8, device=device)
+                accel._replace_id(context.native.accelCompact(stream.cuda_stream, accel._id, output.ptr, size))
+                accel._buffer = output
+            accel._compacted = True
+            accel._compacted_size = accel._scratch = None
