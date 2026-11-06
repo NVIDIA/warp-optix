@@ -121,6 +121,18 @@ def test_optix_gpu_denoises_and_resets_history(upscale):
 
 
 @pytest.mark.gpu
+@requires_gpu
+def test_upscaling_denoiser_allocates_scratch_beyond_two_gib():
+    if wp.get_device("cuda").free_memory < 6 * 2**30:
+        pytest.skip("needs about 3 GiB of free device memory")
+    denoiser = OptixDenoiser(1920, 1080, upscale=True, device="cuda")
+    try:
+        assert denoiser._scratch_size > 2**31
+    finally:
+        denoiser.close()
+
+
+@pytest.mark.gpu
 @pytest.mark.render
 @pytest.mark.slow
 @requires_gpu

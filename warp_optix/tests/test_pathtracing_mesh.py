@@ -51,7 +51,7 @@ def test_dynamic_mesh_exposes_writable_vec3_device_buffers():
     api._viewer = SimpleNamespace(_scene=scene)
     geometry_id = api.create_mesh(vertices, indices, dynamic=True)
     mesh = scene._meshes[geometry_id]
-    mesh.upload_to_gpu()
+    scene._upload_geometry()
 
     device_vertices = api.get_mesh_vertices_device(geometry_id)
     device_normals = api.get_mesh_normals_device(geometry_id)

@@ -96,14 +96,9 @@ class OptixDenoiser:
                 self._denoiser = context.native.denoiserCreate(getattr(native, model_name), options)
                 sizes = self._denoiser.computeMemoryResources(self.width, self.height)
                 self._state = wp.empty(sizes.stateSizeInBytes, dtype=wp.uint8, device=device)
-                self._scratch = wp.empty(
-                    max(
-                        sizes.withoutOverlapScratchSizeInBytes,
-                        sizes.computeAverageColorSizeInBytes,
-                    ),
-                    dtype=wp.uint8,
-                    device=device,
-                )
+                self._scratch_size = max(sizes.withoutOverlapScratchSizeInBytes, sizes.computeAverageColorSizeInBytes)
+                # 2x upscaling from 1080p needs over 2 GiB of scratch, more elements than a uint8 array can hold.
+                self._scratch = wp.empty((self._scratch_size + 7) // 8, dtype=wp.uint64, device=device)
                 self._average_color = wp.empty(3, dtype=wp.float32, device=device)
                 self._flow = wp.empty((self.height, self.width), dtype=wp.vec2, device=device)
                 shape = (self.output_height, self.output_width)
@@ -125,7 +120,7 @@ class OptixDenoiser:
                     self._state.ptr,
                     self._state.size,
                     self._scratch.ptr,
-                    self._scratch.size,
+                    self._scratch_size,
                 )
             except Exception:
                 self.close()
@@ -210,7 +205,7 @@ class OptixDenoiser:
                 layer.input,
                 self._average_color.ptr,
                 self._scratch.ptr,
-                self._scratch.size,
+                self._scratch_size,
             )
             self._denoiser.invoke(
                 stream,
@@ -223,7 +218,7 @@ class OptixDenoiser:
                 0,
                 0,
                 self._scratch.ptr,
-                self._scratch.size,
+                self._scratch_size,
             )
             result = self._output
             self._output, self._previous_output = self._previous_output, self._output
