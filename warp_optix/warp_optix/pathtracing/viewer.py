@@ -33,7 +33,7 @@ def _pack_display_rgba8(
     width: int,
     height: int,
 ):
-    x, y = wp.tid()
+    y, x = wp.tid()
     if x >= width or y >= height:
         return
 
@@ -863,7 +863,7 @@ class ViewerBackend:
         self._api.render_frame()
         wp.launch(
             _pack_display_rgba8,
-            dim=(self.width, self.height),
+            dim=(self.height, self.width),
             inputs=[
                 self._api.viewer.tonemapped_output,
                 mapped_image,

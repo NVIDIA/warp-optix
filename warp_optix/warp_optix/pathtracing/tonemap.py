@@ -89,6 +89,9 @@ def _read_hdr(image: wp.Texture2D, x: int, y: int, width: int, height: int) -> w
     return wp.texture_sample(image, uv, dtype=wp.vec4)
 
 
+_METER_BLOCK_DIM = 256
+
+
 @wp.kernel
 def _meter_auto_exposure(
     hdr_input: Any,
@@ -98,23 +101,24 @@ def _meter_auto_exposure(
     min_luminance_ev: float,
     max_luminance_ev: float,
 ):
-    """Accumulate a center-weighted log-average luminance on a 4x4 grid."""
-    tile_x, tile_y = wp.tid()
-    x = tile_x * 4 + 2
-    y = tile_y * 4 + 2
-    if x >= width or y >= height:
-        return
-    color = _read_hdr(hdr_input, x, y, width, height)
-    luminance = color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722
-    min_luminance = wp.pow(2.0, min_luminance_ev)
-    max_luminance = wp.pow(2.0, max_luminance_ev)
-    luminance = wp.clamp(luminance, min_luminance, max_luminance)
-    nx = (wp.float32(x) + 0.5) / wp.float32(width) * 2.0 - 1.0
-    ny = (wp.float32(y) + 0.5) / wp.float32(height) * 2.0 - 1.0
-    weight = 1.0 / (1.0 + 4.0 * (nx * nx + ny * ny))
-    log_luminance = wp.log(luminance) / wp.log(2.0)
-    wp.atomic_add(stats, 0, log_luminance * weight)
-    wp.atomic_add(stats, 1, weight)
+    """Accumulate a center-weighted log-average luminance on a 4x4 grid, one sum per block."""
+    block, lane = wp.tid()
+    sample = block * wp.block_dim() + lane
+    columns = (width + 3) // 4
+    x = (sample % columns) * 4 + 2
+    y = (sample // columns) * 4 + 2
+    weighted_log_luminance = float(0.0)
+    weight = float(0.0)
+    if x < width and y < height:
+        color = _read_hdr(hdr_input, x, y, width, height)
+        luminance = color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722
+        luminance = wp.clamp(luminance, wp.pow(2.0, min_luminance_ev), wp.pow(2.0, max_luminance_ev))
+        nx = (wp.float32(x) + 0.5) / wp.float32(width) * 2.0 - 1.0
+        ny = (wp.float32(y) + 0.5) / wp.float32(height) * 2.0 - 1.0
+        weight = 1.0 / (1.0 + 4.0 * (nx * nx + ny * ny))
+        weighted_log_luminance = wp.log2(luminance) * weight
+    wp.tile_atomic_add(stats, wp.tile_sum(wp.tile(weighted_log_luminance)), 0)
+    wp.tile_atomic_add(stats, wp.tile_sum(wp.tile(weight)), 1)
 
 
 @wp.kernel
@@ -395,9 +399,11 @@ class Tonemapper:
                 inputs=[self._auto_exposure_stats],
                 device="cuda",
             )
-            wp.launch(
+            samples = ((self.width + 3) // 4) * ((self.height + 3) // 4)
+            wp.launch_tiled(
                 _meter_texture_kernel if is_texture else _meter_auto_exposure,
-                dim=((self.width + 3) // 4, (self.height + 3) // 4),
+                dim=[(samples + _METER_BLOCK_DIM - 1) // _METER_BLOCK_DIM],
+                block_dim=_METER_BLOCK_DIM,
                 inputs=[
                     hdr_input,
                     self._auto_exposure_stats,
