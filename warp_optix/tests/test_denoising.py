@@ -121,6 +121,27 @@ def test_optix_gpu_denoises_and_resets_history(upscale):
 
 
 @pytest.mark.gpu
+@requires_gpu
+def test_optix_gpu_history_survives_extreme_motion():
+    shape = (48, 64)
+    color = wp.full(shape, wp.vec4(0.5, 0.5, 0.5, 1.0), dtype=wp.vec4, device="cuda")
+    normal = wp.full(shape, wp.vec4(0.0, 0.0, 1.0, 0.0), dtype=wp.vec4, device="cuda")
+    albedo = wp.ones(shape, dtype=wp.vec4, device="cuda")
+    still = wp.zeros(shape, dtype=wp.vec2, device="cuda")
+    motion = np.full((*shape, 2), 1.0e9, dtype=np.float32)
+    motion[0, 0] = np.nan
+    extreme = wp.array(motion, dtype=wp.vec2, device="cuda")
+    denoiser = OptixDenoiser(64, 48, device="cuda")
+    try:
+        for frame_motion in (extreme, still, extreme, still):
+            output = denoiser.apply(DenoiserInputs(color, normal, albedo, frame_motion)).numpy()
+            assert np.isfinite(output).all()
+            np.testing.assert_allclose(output[..., :3].mean(), 0.5, atol=0.05)
+    finally:
+        denoiser.close()
+
+
+@pytest.mark.gpu
 @pytest.mark.render
 @pytest.mark.slow
 @requires_gpu
