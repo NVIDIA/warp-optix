@@ -3,13 +3,16 @@
 
 """Explicit parameter schemas, buffer ordering, and stage declarations."""
 
+import inspect
 import weakref
+from typing import Any
 
 import numpy as np
 import pytest
 import warp as wp
 
 import warp_optix as wo
+from warp_optix import pipeline as pipeline_module
 
 pytestmark = [pytest.mark.gpu, pytest.mark.skipif(not wp.is_cuda_available(), reason="CUDA unavailable")]
 
@@ -234,3 +237,114 @@ def test_launches_record_no_events(monkeypatch):
         wo.launch(pipeline, (64,), params=explicit)
     assert recorded == []
     np.testing.assert_array_equal(output.numpy(), np.full(64, 7))
+
+
+def test_work_on_another_stream_does_not_wait_for_the_current_stream():
+    pipeline = wo.Pipeline(write)
+    device = pipeline.device
+    side = wp.Stream(device)
+    sink = wp.empty(1, dtype=float, device=device)
+    output = wp.empty(1, dtype=wp.uint32, device=device)
+    points = wp.zeros(3, dtype=wp.vec3, device=device)
+    accel = wo.Accel(
+        [wo.triangles(points, wp.array([0, 1, 2], dtype=wp.int32, device=device))], flags=wo.BuildFlags.ALLOW_UPDATE
+    )
+    launch_params = wo.LaunchParams(pipeline)
+    wo.launch(pipeline, (1,), [1, output], stream=side)
+    launch_params.assign([1, output], stream=side)
+    wp.launch(spin, 1, inputs=[1, sink])
+    wp.synchronize_device(device)
+
+    # As with wp.launch(stream=...), OptiX work on a stream is not ordered after the current stream.
+    wp.launch(spin, 1, inputs=[4_000_000, sink])
+    busy = wp.get_stream(device).record_event()
+    wo.launch(pipeline, (1,), [2, output], stream=side)
+    launch_params.assign([3, output], stream=side)
+    accel.refit(stream=side)
+    wp.synchronize_stream(side)
+    assert not busy.is_complete, "busy kernel finished too early for this test"
+    wp.synchronize_device(device)
+
+
+@wp.kernel(module="unique")
+def write_reserved_names(p: wp.uint32, Params: wp.array[wp.uint32]):
+    i = wp.tid()
+    Params[i] = p
+
+
+def test_raygen_arguments_may_use_any_name():
+    output = wp.zeros(4, dtype=wp.uint32, device="cuda")
+    wo.launch(wo.Pipeline(write_reserved_names), (4,), [9, output])
+    np.testing.assert_array_equal(output.numpy(), np.full(4, 9))
+
+
+def test_raygen_arguments_are_checked():
+    pipeline = wo.Pipeline(write)
+    output = wp.empty(4, dtype=wp.uint32, device="cuda")
+    with pytest.raises(TypeError, match="takes 2 arguments, but 1 were given"):
+        wo.launch(pipeline, (4,), [output])
+    with pytest.raises(TypeError, match="expects dtype uint32"):
+        wo.launch(pipeline, (4,), [1, wp.empty(4, dtype=float, device="cuda")])
+    with pytest.raises(TypeError):
+        wo.launch(pipeline, (4,), [1.5, output])
+
+
+@wp.kernel(module="unique")
+def generic_write(value: Any, output: wp.array2d[Any]):
+    i, j = wp.tid()
+    output[i, j] = value * type(value)(i * 10 + j)
+
+
+@wp.kernel(module="unique")
+def generic_miss(value: Any):
+    wp.optix_set_payload(0, value + value)
+
+
+@wp.kernel(module="unique")
+def generic_array_miss(value: wp.array[Any]):
+    value[0] = value[0]
+
+
+def test_generic_programs_take_launch_parameter_types():
+    output = wp.zeros(4, dtype=wp.uint32, device="cuda")
+    wo.launch(wo.Pipeline(trace, miss=[generic_miss], params_type=Params, payload_words=1), (4,), [params(3, output)])
+    np.testing.assert_array_equal(output.numpy(), np.full(4, 6))
+
+    values = wp.zeros((2, 3), dtype=wp.float64, device="cuda")
+    wo.launch(
+        wo.Pipeline(wp.overload(generic_write, [wp.float64, wp.array2d[wp.float64]])), values.shape, [2.0, values]
+    )
+    np.testing.assert_array_equal(values.numpy(), [[0.0, 2.0, 4.0], [20.0, 22.0, 24.0]])
+
+    with pytest.raises(TypeError, match="type mismatch"):
+        wo.Pipeline(trace, miss=[generic_array_miss], params_type=Params)
+
+
+@wp.kernel(module="unique")
+def undefined_symbol(output: wp.array[wp.uint32]):
+    i = wp.tid()
+    output[i] = missing_symbol  # noqa: F821
+
+
+def test_program_errors_point_at_kernel_source():
+    lines, start = inspect.getsourcelines(undefined_symbol.func)
+    line = start + next(n for n, text in enumerate(lines) if "missing_symbol" in text)
+    with pytest.raises(wp.WarpCodegenKeyError, match="missing_symbol") as error:
+        wo.Pipeline(undefined_symbol)
+    assert f"{__file__}:{line}:" in str(error.value)
+
+
+def test_equal_pipelines_share_one_module_name():
+    @wp.kernel(module="unique")
+    def other(value: wp.uint32, output: wp.array[wp.uint32]):
+        i = wp.tid()
+        output[i] = value + wp.uint32(1)
+
+    def name(raygen, miss=(None,)):
+        return pipeline_module._module_name(
+            pipeline_module.params_struct(raygen), raygen, miss, [wo.HitGroup()], (), (), None
+        )
+
+    assert name(write) == name(write)
+    assert name(write) != name(other)
+    assert name(write) != name(write, miss=(miss,))

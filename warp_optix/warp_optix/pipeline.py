@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import ctypes
-import itertools
+import hashlib
 import logging
 import os
 from collections.abc import Sequence
@@ -24,7 +24,6 @@ from warp_optix.program import ProgramKind, as_program, params_struct
 from warp_optix.sbt import SbtBuilder, SbtLayout
 
 _log = logging.getLogger(__name__)
-_PIPELINE_IDS = itertools.count()
 _BUILTIN_PRIMITIVE_FLAGS = {
     int(native.PRIMITIVE_TYPE_ROUND_LINEAR): int(native.PRIMITIVE_TYPE_FLAGS_ROUND_LINEAR),
     int(native.PRIMITIVE_TYPE_ROUND_QUADRATIC_BSPLINE): int(native.PRIMITIVE_TYPE_FLAGS_ROUND_QUADRATIC_BSPLINE),
@@ -123,7 +122,7 @@ class Pipeline:
         with native_objects(context) as owned:
             # All programs compile into one Warp module that inherits the raygen module's options.
             params = params_struct(raygen) if params_type is None else params_type
-            module_name = f"warp_optix_pipeline_{next(_PIPELINE_IDS)}"
+            module_name = _module_name(params, raygen, miss, hit_groups, callables, continuation_callables, exception)
 
             def program(kernel, kind):
                 return None if kernel is None else as_program(kernel, kind, params, module_name)
@@ -251,6 +250,8 @@ class Pipeline:
             for group, record in zip(groups, host_records):
                 native.sbtRecordPackHeader(group, record)
             records = wp.array(host_records.reshape(-1), dtype=wp.uint8, device=device)
+            # Launches on other streams do not wait for this upload.
+            wp.synchronize_stream(wp.get_stream(device))
 
             first_miss = records.ptr + (1 + len(exception_descs)) * stride
             first_hit = first_miss + len(miss_descs) * stride
@@ -269,34 +270,13 @@ class Pipeline:
                 callablesRecordCount=len(callable_descs),
             )
 
-            # LaunchParams.assign() stores the raygen arguments into the device params block with a
-            # generated kernel, so Warp checks and packs them exactly as for wp.launch.
-            names = [arg.label for arg in raygen.adj.args]
-            arguments = ", ".join(f"{n}: T{i}" for i, n in enumerate(names))
-            stores = "".join(f"    p.{n} = {n}\n" for n in names)
-            arguments = f"{arguments}, " if arguments else ""
-            source = f"def write_params({arguments}_wo_params: wp.array(dtype=Params)):\n    p = Params()\n{stores}    _wo_params[0] = p\n"
-            if params_type is not None:
-                source = (
-                    "def write_params(value: Params, _wo_params: wp.array(dtype=Params)):\n    _wo_params[0] = value\n"
-                )
-            scope = {"wp": wp, "Params": params} | {f"T{i}": arg.type for i, arg in enumerate(raygen.adj.args)}
-            namespace: dict = {}
-            exec(compile(source, f"<warp_optix params {raygen.key}>", "exec"), scope, namespace)  # noqa: S102
-            writer = wp.Kernel(
-                namespace["write_params"],
-                key="write_params",
-                module=wp.get_module(f"{module_name}_params"),
-                source=source,
-            )
-
         self._context = context
         self._native = pipeline
         self._owned = tuple(owned)
         self._sbt = sbt_table
         self._records = records
         self._params_size = ctypes.sizeof(params.ctype)
-        self._writer = writer
+        self._param_names = tuple(arg.label for arg in raygen.adj.args)
         self._params_type = params
         self._explicit_params = params_type is not None
         self._sbt_layout = layout
@@ -369,34 +349,44 @@ class _ParamsStorage:
     not form a reference cycle and ``del pipeline`` releases it at once.
     """
 
-    __slots__ = ("data", "initialized", "inputs", "stream")
+    __slots__ = ("data", "host", "initialized", "inputs", "staging", "stream")
 
     def __init__(self, params_type, device: wp.Device):
         self.data = wp.empty(1, dtype=params_type, device=device)
+        # Parameters are packed on the host and copied into ``data`` in stream order.
+        self.host = params_type()
+        self.staging = wp.array(ptr=ctypes.addressof(self.host._ctype), dtype=params_type, shape=(1,), device="cpu")
         self.inputs: tuple = ()
         self.initialized = False
-        self.stream: wp.Stream | None = None
+        # The allocation above is ordered on the current stream; the first use on another stream waits for it.
+        self.stream: wp.Stream = wp.get_stream(device)
 
     def use(self, stream: wp.Stream) -> None:
         """Order a use on ``stream`` after the previous use when that was on another stream."""
-        previous = self.stream
-        if previous is not None and previous.cuda_stream != stream.cuda_stream:
-            stream.wait_stream(previous)
+        if self.stream.cuda_stream != stream.cuda_stream:
+            stream.wait_stream(self.stream)
         self.stream = stream
 
     def write(self, pipeline: Pipeline, context, stream: wp.Stream, values) -> None:
         if pipeline._explicit_params:
             if getattr(values, "_cls", None) is not pipeline.params_type:
                 raise TypeError("values must be an instance of the pipeline params_type")
+            context.check_arrays((values,))
+            ctypes.memmove(ctypes.addressof(self.host._ctype), ctypes.addressof(values._ctype), pipeline._params_size)
             inputs = (values,)
         else:
             inputs = tuple(values)
-        inputs, accels = _replace_accels(inputs)
-        context.check_arrays(inputs)
-        with wp.ScopedDevice(context.device), wp.ScopedStream(stream):
-            self.use(stream)
-            wp.launch(pipeline._writer, dim=1, inputs=[*inputs, self.data], device=context.device, stream=stream)
-        self.inputs = (*inputs, *accels)
+            names = pipeline._param_names
+            if len(inputs) != len(names):
+                raise TypeError(f"The raygen program takes {len(names)} arguments, but {len(inputs)} were given")
+            inputs, accels = _replace_accels(inputs)
+            context.check_arrays(inputs)
+            for name, value in zip(names, inputs):
+                setattr(self.host, name, value)
+            inputs = (*inputs, *accels)
+        self.use(stream)
+        wp.copy(self.data, self.staging, stream=stream)
+        self.inputs = inputs
         self.initialized = True
 
 
@@ -511,9 +501,9 @@ def launch(
             storage.write(pipeline, context, stream, inputs[0])
         else:
             storage.write(pipeline, context, stream, inputs)
-    with wp.ScopedDevice(context.device), wp.ScopedStream(stream):
-        storage.use(stream)
-        width, height, depth = [*reversed(dim), 1, 1][:3]
+    storage.use(stream)
+    width, height, depth = [*reversed(dim), 1, 1][:3]
+    with wp.ScopedDevice(context.device):
         native.launch(
             pipeline._native,
             stream.cuda_stream,
@@ -526,6 +516,28 @@ def launch(
         )
     # Remembered so close() can wait for these launches before destroying the native pipeline.
     pipeline._streams[key] = stream
+
+
+def _module_name(params, raygen, miss, hit_groups, callables, continuation_callables, exception) -> str:
+    """Name the Warp module of a pipeline after its programs and parameters.
+
+    Equal pipelines get equal names, and so equal generated code, which lets
+    Warp's kernel cache and OptiX's module cache serve repeated pipelines.
+    """
+
+    def identity(kernel):
+        return None if kernel is None else (kernel.module.name, kernel.key)
+
+    key = (
+        params.native_name,
+        identity(raygen),
+        [identity(k) for k in miss],
+        [(identity(g.closest_hit), identity(g.any_hit), identity(g.intersection)) for g in hit_groups],
+        [identity(k) for k in callables],
+        [identity(k) for k in continuation_callables],
+        identity(exception),
+    )
+    return f"warp_optix_{hashlib.sha256(repr(key).encode()).hexdigest()[:16]}"
 
 
 def _replace_accels(values: tuple) -> tuple[tuple, tuple]:

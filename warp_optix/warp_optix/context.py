@@ -31,6 +31,7 @@ Lifetime contract (the same as ``wp.Mesh`` and ``wp.array``):
 from __future__ import annotations
 
 import atexit
+import functools
 import logging
 import threading
 import weakref
@@ -206,8 +207,28 @@ def _arrays(values):
             yield value
         elif isinstance(value, (tuple, list)):
             yield from _arrays(value)
-        elif hasattr(value, "_cls") and hasattr(value._cls, "vars"):
-            yield from _arrays([getattr(value, name) for name in value._cls.vars])
+        elif wp.types.is_struct(value):
+            yield from _struct_arrays(value)
+
+
+def _struct_arrays(instance):
+    arrays, structs = _struct_fields(instance._cls)
+    for name in arrays:
+        value = getattr(instance, name)
+        if value is not None:
+            yield value
+    for name in structs:
+        value = getattr(instance, name)
+        if value is not None:
+            yield from _struct_arrays(value)
+
+
+@functools.cache
+def _struct_fields(cls) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Names of the array fields and the struct fields of a Warp struct type."""
+    arrays = tuple(name for name, var in cls.vars.items() if wp.types.is_array(var.type))
+    structs = tuple(name for name, var in cls.vars.items() if isinstance(var.type, type(cls)))
+    return arrays, structs
 
 
 def _run(callback) -> None:
