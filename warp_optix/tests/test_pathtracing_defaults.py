@@ -3,7 +3,7 @@
 
 import inspect
 
-from warp_optix.pathtracing import (
+from warp_optix_pathtracing import (
     DEFAULT_VIEWER_HEIGHT,
     DEFAULT_VIEWER_SIZE,
     DEFAULT_VIEWER_WIDTH,

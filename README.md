@@ -2,7 +2,8 @@
 
 Warp ray tracing with PyOptiX 9.1.
 Write ray-generation, hit, miss, and callable programs as Warp kernels, or use
-the included path tracer. Applications import `warp_optix`. Installation brings
+the included path tracer. Applications import `warp_optix`; the path tracer is
+the separate `warp_optix_pathtracing` package in the same distribution. Installation brings
 in `pyoptix==9.1.0` for the standard OptiX bindings and builds a small extension
 for cooperative vectors and missing binding fields and fixes.
 
@@ -45,7 +46,7 @@ uv run --no-sync python examples_warp/example_warp_optix_pathtraced_hairball.py
 ```python
 import warp as wp
 import warp_optix as wo
-from warp_optix.pathtracing import PathTracer
+from warp_optix_pathtracing import PathTracer
 ```
 
 For custom ray tracers, OptiX programs are ordinary Warp kernels and launches
@@ -79,7 +80,10 @@ launches remain asynchronous on the selected Warp stream.
 SBT records are built automatically. For named ray types and explicit hit-group
 layouts, pass a `wo.SbtBuilder` to `wo.Pipeline(..., sbt=builder)`.
 
-See the [API guide](warp_optix/README.md) and runnable [examples](examples_warp/README.md).
+`wo.Denoiser` runs the OptiX temporal denoiser (optionally with 2x upscaling) on Warp arrays.
+
+See the [API guide](warp_optix/README.md), the [path tracer](warp_optix_pathtracing/README.md),
+and runnable [examples](examples_warp/README.md).
 
 ## Advanced native interface
 

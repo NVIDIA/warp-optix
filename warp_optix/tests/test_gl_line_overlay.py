@@ -4,8 +4,8 @@
 import numpy as np
 import pytest
 import warp as wp
-from warp_optix.gl import GLInteropViewer, GLLineOverlay
-from warp_optix.gl.line_overlay import _opengl_projection
+from warp_optix_pathtracing.gl import GLInteropViewer, GLLineOverlay
+from warp_optix_pathtracing.gl.line_overlay import _opengl_projection
 
 
 @pytest.mark.parametrize(

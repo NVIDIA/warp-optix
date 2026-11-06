@@ -5,7 +5,8 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from warp_optix.pathtracing import Curve, Mesh, PathTracer, Scene
+
+from warp_optix_pathtracing import Curve, Mesh, PathTracer, Scene
 
 
 def _points():

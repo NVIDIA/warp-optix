@@ -46,7 +46,7 @@ approach. Local modifications translate shader operations to Python/Warp,
 replace Vulkan execution with OptiX/CUDA, and extend scene/material handling.
 The adaptation used AI assistance.
 
-File-level source mapping under warp_optix/warp_optix/pathtracing:
+File-level source mapping under warp_optix_pathtracing/warp_optix_pathtracing:
   pathtracing_warp_kernels.py: dlss_rr/shaders/primary.rgen, primary.rchit,
     primary.rmiss, secondary.rahit, secondary.rchit, secondary.rmiss, and
     get_hit.glsl (path tracing, hit processing, and render guides);
@@ -70,7 +70,7 @@ Original file-specific NVIDIA copyright and license notices are reproduced
 in licenses/nvpro_core-NOTICE.txt and identified in adapted source headers.
 Comparison reference: bc19d6ac3ef62938d0ea0e099735878457ce1b6e.
 Source paths below are relative to nvpro_core; local files are under
-warp_optix/warp_optix/pathtracing:
+warp_optix_pathtracing/warp_optix_pathtracing:
   func_common.py: nvvkhl/shaders/func.h (vector, basis, and sampling helpers).
   environment_map.py: nvvkhl/hdr_env.cpp (environment alias-table construction).
   materials.py: nvvkhl/shaders/dh_scn_desc.h (glTF material/texture structures).

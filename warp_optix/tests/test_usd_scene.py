@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from warp_optix.pathtracing.scene import Scene
-from warp_optix.pathtracing.usd_loader import _bound_material, _mesh_arrays
+from warp_optix_pathtracing.scene import Scene
+from warp_optix_pathtracing.usd_loader import _bound_material, _mesh_arrays
 
 pytestmark = pytest.mark.usd
 pxr = pytest.importorskip("pxr")

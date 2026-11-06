@@ -7,7 +7,7 @@ import subprocess
 
 import numpy as np
 import pytest
-from warp_optix.pathtracing.asset_loaders import (
+from warp_optix_pathtracing.asset_loaders import (
     _build_texture_list,
     _load_gltf_images,
     _load_gltf_json_and_buffers,

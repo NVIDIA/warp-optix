@@ -28,7 +28,7 @@ import struct
 
 import numpy as np
 import warp as wp
-from warp_optix.gl import GLInteropViewer
+from warp_optix_pathtracing.gl import GLInteropViewer
 
 import warp_optix as wo
 

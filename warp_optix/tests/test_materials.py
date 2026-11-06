@@ -3,7 +3,7 @@
 
 import numpy as np
 import pytest
-from warp_optix.pathtracing.materials import MaterialManager
+from warp_optix_pathtracing.materials import MaterialManager
 
 
 def test_material_defaults():

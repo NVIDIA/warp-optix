@@ -6,13 +6,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import warp as wp
-from warp_optix.pathtracing import (
-    DenoiserInputs,
-    OptixDenoiser,
-    PathTracer,
-    Renderer,
-)
-from warp_optix.pathtracing import pathtracing_viewer as renderer_module
+
+from warp_optix_pathtracing import PathTracer, Renderer
+from warp_optix_pathtracing import pathtracing_viewer as renderer_module
 
 
 def _renderer(monkeypatch, mode):
@@ -35,7 +31,7 @@ def _renderer(monkeypatch, mode):
 
 
 def test_auto_selects_optix(monkeypatch):
-    monkeypatch.setattr(renderer_module, "OptixDenoiser", lambda *args, **kwargs: SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(renderer_module.wo, "Denoiser", lambda *args, **kwargs: SimpleNamespace(close=lambda: None))
     renderer = _renderer(monkeypatch, "auto")
     renderer._init_denoiser()
     assert renderer.active_denoiser == "optix"
@@ -46,7 +42,7 @@ def test_auto_falls_back_to_raw_but_explicit_backend_fails(monkeypatch):
     def unavailable(*args, **kwargs):
         raise RuntimeError("OptiX unavailable")
 
-    monkeypatch.setattr(renderer_module, "OptixDenoiser", unavailable)
+    monkeypatch.setattr(renderer_module.wo, "Denoiser", unavailable)
     renderer = _renderer(monkeypatch, "auto")
     renderer._init_denoiser()
     assert renderer.active_denoiser == "none"
@@ -64,7 +60,7 @@ def test_failed_switch_restores_previous_backend(monkeypatch):
             raise RuntimeError("unavailable configuration")
         return SimpleNamespace(close=lambda: None)
 
-    monkeypatch.setattr(renderer_module, "OptixDenoiser", create)
+    monkeypatch.setattr(renderer_module.wo, "Denoiser", create)
     renderer.set_denoiser("optix", optix_upscale=True)
     assert renderer.active_denoiser == "optix"
     assert (renderer._render_width, renderer._render_height) == (32, 24)
@@ -88,47 +84,6 @@ def _cornell_api(**kwargs):
     api.scene.create_cornell_box()
     api.build_scene()
     return api
-
-
-@pytest.mark.gpu
-@requires_gpu
-@pytest.mark.parametrize("upscale", [False, True])
-def test_optix_gpu_denoises_and_resets_history(upscale):
-    rng = np.random.default_rng(42)
-    noisy = np.ones((48, 64, 4), dtype=np.float32)
-    noisy[..., :3] += rng.normal(0.0, 0.15, (48, 64, 3)).astype(np.float32)
-    normals = np.zeros_like(noisy)
-    normals[..., 2] = 1.0
-    inputs = DenoiserInputs(
-        color=wp.array(noisy, dtype=wp.vec4, device="cuda"),
-        normal=wp.array(normals, dtype=wp.vec4, device="cuda"),
-        albedo=wp.ones((48, 64), dtype=wp.vec4, device="cuda"),
-        motion=wp.zeros((48, 64), dtype=wp.vec2, device="cuda"),
-    )
-    denoiser = OptixDenoiser(64, 48, upscale=upscale, device="cuda")
-    try:
-        first = denoiser.apply(inputs).numpy()
-        scale = 2 if upscale else 1
-        assert first.shape == (48 * scale, 64 * scale, 4)
-        assert np.isfinite(first).all()
-        assert np.mean((first[..., :3] - 1.0) ** 2) < np.mean((noisy[..., :3] - 1.0) ** 2) * 0.5
-        denoiser.apply(inputs).numpy()
-        reset = denoiser.apply(inputs, reset=True).numpy()
-        np.testing.assert_allclose(reset, first, rtol=1e-5, atol=1e-5)
-    finally:
-        denoiser.close()
-
-
-@pytest.mark.gpu
-@requires_gpu
-def test_upscaling_denoiser_allocates_scratch_beyond_two_gib():
-    if wp.get_device("cuda").free_memory < 6 * 2**30:
-        pytest.skip("needs about 3 GiB of free device memory")
-    denoiser = OptixDenoiser(1920, 1080, upscale=True, device="cuda")
-    try:
-        assert denoiser._scratch_size > 2**31
-    finally:
-        denoiser.close()
 
 
 @pytest.mark.gpu

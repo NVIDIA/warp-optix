@@ -8,9 +8,8 @@ import numpy as np
 import pytest
 import warp as wp
 from PIL import Image
-from warp_optix.pathtracing import usd_loader
-from warp_optix.pathtracing.scene import Scene
-from warp_optix.pathtracing.usd_loader import (
+from warp_optix_pathtracing.scene import Scene
+from warp_optix_pathtracing.usd_loader import (
     _MIP_CHAIN_MEMORY_FACTOR,
     _ambient_light_from_custom_layer_data,
     _compact_corners,
@@ -23,6 +22,8 @@ from warp_optix.pathtracing.usd_loader import (
     _rebase_missing_texture,
     _triangles_by_material,
 )
+
+from warp_optix_pathtracing import usd_loader
 
 
 def test_corner_compaction_preserves_exact_attribute_seams():

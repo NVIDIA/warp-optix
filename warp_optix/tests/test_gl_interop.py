@@ -8,7 +8,7 @@ from unittest import mock
 
 import pytest
 import warp as wp
-from warp_optix.gl import GLInteropViewer
+from warp_optix_pathtracing.gl import GLInteropViewer
 
 
 def test_fps_caption_updates_at_requested_interval():

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
-from warp_optix.pathtracing.hdr_loader import load_hdr
+from warp_optix_pathtracing.hdr_loader import load_hdr
 
 
 @pytest.mark.parametrize("pixel_data", [b"\x02\x02\x00\x08\x00", b"\x02\x02\x00\x08\x89\x01"])

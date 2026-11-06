@@ -4,7 +4,8 @@
 import numpy as np
 import pytest
 import warp as wp
-from warp_optix.pathtracing import PathTracer
+
+from warp_optix_pathtracing import PathTracer
 
 pytestmark = [pytest.mark.gpu, pytest.mark.render]
 

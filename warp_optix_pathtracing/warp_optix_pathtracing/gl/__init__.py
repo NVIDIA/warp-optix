@@ -3,7 +3,7 @@
 
 """Optional OpenGL display helpers for interactive examples (requires pyglet)."""
 
-from warp_optix.gl.interop import GLInteropViewer as GLInteropViewer
-from warp_optix.gl.line_overlay import GLLineOverlay as GLLineOverlay
+from .interop import GLInteropViewer as GLInteropViewer
+from .line_overlay import GLLineOverlay as GLLineOverlay
 
 __all__ = ["GLInteropViewer", "GLLineOverlay"]

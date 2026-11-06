@@ -18,7 +18,7 @@ from example_warp_optix_usd_pathtracing import (
     _default_camera_speed,
     _world_bounds,
 )
-from warp_optix.pathtracing.scene import Scene
+from warp_optix_pathtracing.scene import Scene
 
 
 @pytest.mark.usd

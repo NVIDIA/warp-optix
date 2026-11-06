@@ -7,13 +7,14 @@ import numpy as np
 import pytest
 import warp as wp
 from PIL import Image
-from warp_optix.pathtracing import (
+from warp_optix_pathtracing.scene import Scene
+
+from warp_optix_pathtracing import (
     PathTracer,
     Renderer,
     ViewerBackend,
 )
-from warp_optix.pathtracing import pathtracing_viewer as viewer_module
-from warp_optix.pathtracing.scene import Scene
+from warp_optix_pathtracing import pathtracing_viewer as viewer_module
 
 
 class _FakeScene:

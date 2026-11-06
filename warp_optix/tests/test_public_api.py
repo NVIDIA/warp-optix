@@ -50,6 +50,7 @@ def test_public_surface():
         "AccelQueryRay",
         "BuildFlags",
         "BuildInput",
+        "Denoiser",
         "ExceptionFlags",
         "GeometryFlags",
         "HitGroup",

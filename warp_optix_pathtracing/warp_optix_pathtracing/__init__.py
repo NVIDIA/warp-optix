@@ -35,7 +35,6 @@ from .defaults import (
     DEFAULT_VIEWER_SIZE,
     DEFAULT_VIEWER_WIDTH,
 )
-from .denoising import DenoiserInputs, OptixDenoiser
 from .materials import MaterialManager
 from .pathtracer_api import PathTracer
 from .pathtracing_viewer import Renderer
@@ -51,10 +50,8 @@ __all__ = [
     "ArrowBatch",
     "Camera",
     "Curve",
-    "DenoiserInputs",
     "MaterialManager",
     "Mesh",
-    "OptixDenoiser",
     "PathTracer",
     "Renderer",
     "Viewer",

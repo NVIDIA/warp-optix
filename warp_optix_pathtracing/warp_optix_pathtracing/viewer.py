@@ -18,9 +18,8 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from warp_optix.gl import GLInteropViewer
-
 from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH
+from .gl import GLInteropViewer
 from .pathtracer_api import PathTracer
 
 logger = logging.getLogger(__name__)

@@ -62,7 +62,7 @@ build-dir = "build/extensions/{wheel_tag}"
 cmake.version = ">=3.17"
 cmake.build-type = "Release"
 ninja.version = ">=1.11"
-wheel.packages = ["warp_optix/warp_optix"]
+wheel.packages = ["warp_optix/warp_optix", "warp_optix_pathtracing/warp_optix_pathtracing"]
 sdist.exclude = [
     ".claude", ".agents", ".codex", ".aws", ".venv", "env", "build", "dist",
     "third_party", "*.bmp", "**/*.egg-info", "**/.pytest_cache",
@@ -120,7 +120,7 @@ line-ending = "auto"
 docstring-code-format = true
 
 [tool.pyright]
-include = ["warp_optix/warp_optix"]
+include = ["warp_optix/warp_optix", "warp_optix_pathtracing/warp_optix_pathtracing"]
 pythonVersion = "3.12"
 # CI runs pyright without installing warp, pyoptix or the optional extras.
 reportMissingImports = false
@@ -137,25 +137,25 @@ exclude = [
     "warp_optix/warp_optix/addon.py",
     "warp_optix/warp_optix/constants.py",
     "warp_optix/warp_optix/context.py",
-    "warp_optix/warp_optix/gl/line_overlay.py",
-    "warp_optix/warp_optix/pathtracing/arrows.py",
-    "warp_optix/warp_optix/pathtracing/asset_loaders.py",
-    "warp_optix/warp_optix/pathtracing/denoising.py",
-    "warp_optix/warp_optix/pathtracing/environment_map.py",
-    "warp_optix/warp_optix/pathtracing/func_common.py",
-    "warp_optix/warp_optix/pathtracing/pathtracer_api.py",
-    "warp_optix/warp_optix/pathtracing/pathtracing_viewer.py",
-    "warp_optix/warp_optix/pathtracing/pathtracing_warp_kernels.py",
-    "warp_optix/warp_optix/pathtracing/scene.py",
-    "warp_optix/warp_optix/pathtracing/sky_lut.py",
-    "warp_optix/warp_optix/pathtracing/tonemap.py",
-    "warp_optix/warp_optix/pathtracing/usd_loader.py",
-    "warp_optix/warp_optix/pathtracing/viewer.py",
-    "warp_optix/warp_optix/pathtracing/volume_composite.py",
+    "warp_optix/warp_optix/denoiser.py",
     "warp_optix/warp_optix/pipeline.py",
     "warp_optix/warp_optix/program.py",
     "warp_optix/warp_optix/rays.py",
     "warp_optix/warp_optix/sbt.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/arrows.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/asset_loaders.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/environment_map.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/func_common.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/gl/line_overlay.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/pathtracer_api.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/pathtracing_viewer.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/pathtracing_warp_kernels.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/scene.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/sky_lut.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/tonemap.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/usd_loader.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/viewer.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/volume_composite.py",
 ]
 
 [tool.typos.files]

@@ -36,11 +36,13 @@ pip install "warp-optix[training]"
 ```python
 import warp as wp
 import warp_optix as wo
-from warp_optix.pathtracing import PathTracer
+from warp_optix_pathtracing import PathTracer
 ```
 
 Follow the [API guide](https://github.com/NVIDIA/warp-optix/blob/main/warp_optix/README.md)
-to build a custom ray tracer, or explore the
+to build a custom ray tracer, use the included
+[path tracer](https://github.com/NVIDIA/warp-optix/blob/main/warp_optix_pathtracing/README.md),
+or explore the
 [runnable examples](https://github.com/NVIDIA/warp-optix/blob/main/examples_warp/README.md).
 Advanced applications can access PyOptiX and supplemental bindings through
 `warp_optix.native`.

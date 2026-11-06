@@ -23,8 +23,9 @@ from pathlib import Path
 
 import numpy as np
 import warp as wp
-from warp_optix.gl import GLInteropViewer
-from warp_optix.pathtracing import (
+from warp_optix_pathtracing.gl import GLInteropViewer
+
+from warp_optix_pathtracing import (
     DEFAULT_VIEWER_HEIGHT,
     DEFAULT_VIEWER_WIDTH,
     PathTracer,

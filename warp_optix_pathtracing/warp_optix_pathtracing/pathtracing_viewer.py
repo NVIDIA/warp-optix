@@ -35,7 +35,6 @@ import warp_optix as wo
 from . import pathtracing_warp_kernels as pwk
 from .camera import Camera
 from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH
-from .denoising import DenoiserInputs, OptixDenoiser
 from .environment_map import EnvironmentMap
 from .lighting import RENDERER_RADIANCE_PER_NIT
 from .scene import Scene
@@ -381,12 +380,11 @@ class Renderer:
                     (self.width + scale - 1) // scale,
                     (self.height + scale - 1) // scale,
                 )
-                self._optix_denoiser = OptixDenoiser(
+                self._optix_denoiser = wo.Denoiser(
                     self._render_width,
                     self._render_height,
                     upscale=self.optix_upscale,
                     stream=self._render_stream,
-                    output_size=(self.width, self.height),
                 )
             except Exception as exc:
                 if self.denoiser == "optix":
@@ -396,17 +394,6 @@ class Renderer:
                 self._set_render_resolution(self.width, self.height)
         else:
             self._set_render_resolution(self.width, self.height)
-
-    def _denoiser_inputs(self, color=None) -> DenoiserInputs:
-        return DenoiserInputs(
-            color=self._color_buffer if color is None else color,
-            normal=self._normal_roughness_buffer,
-            albedo=self._diffuse_buffer,
-            motion=self._motion_buffer,
-            depth=self._depth_buffer,
-            specular_albedo=self._specular_buffer,
-            specular_hit_distance=self._spec_hit_dist_buffer,
-        )
 
     def set_ray_budget(
         self,
@@ -1223,11 +1210,15 @@ class Renderer:
 
         if self._optix_denoiser is not None:
             output = self._optix_denoiser.apply(
-                self._denoiser_inputs(self._accum_buffer),
+                self._accum_buffer,
+                albedo=self._diffuse_buffer,
+                normal=self._normal_roughness_buffer,
+                motion=self._motion_buffer,
                 reset=reset_temporal or self._denoiser_reset_history,
             )
             self._denoiser_reset_history = False
-            self._process_output(output, resize_final_to_render=False)
+            # Odd sizes with 2x upscaling denoise one extra row or column.
+            self._process_output(output[: self.height, : self.width], resize_final_to_render=False)
         else:
             self._process_output(self._accum_buffer, resize_final_to_render=True)
         self.sample_index += samples_this_frame

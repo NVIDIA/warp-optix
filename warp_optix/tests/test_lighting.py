@@ -3,7 +3,7 @@
 
 import numpy as np
 import warp as wp
-from warp_optix.pathtracing.pathtracing_warp_kernels import (
+from warp_optix_pathtracing.pathtracing_warp_kernels import (
     PathtraceLaunchParams,
     PhysicalSkyParams,
     ShadedHitData,

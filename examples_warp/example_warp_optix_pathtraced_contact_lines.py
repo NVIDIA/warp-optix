@@ -19,8 +19,9 @@ from example_warp_optix_pathtraced_scene import (
     add_checker_ground,
     configure_demo_sky,
 )
-from warp_optix.gl import GLInteropViewer, GLLineOverlay
-from warp_optix.pathtracing import (
+from warp_optix_pathtracing.gl import GLInteropViewer, GLLineOverlay
+
+from warp_optix_pathtracing import (
     DEFAULT_VIEWER_HEIGHT,
     DEFAULT_VIEWER_WIDTH,
     PathTracer,

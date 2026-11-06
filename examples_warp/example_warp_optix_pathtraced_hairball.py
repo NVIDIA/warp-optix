@@ -19,8 +19,9 @@ from example_warp_optix_pathtraced_scene import (
     create_rainbow_materials,
     rainbow_height_slots,
 )
-from warp_optix.gl import GLInteropViewer
-from warp_optix.pathtracing import (
+from warp_optix_pathtracing.gl import GLInteropViewer
+
+from warp_optix_pathtracing import (
     DEFAULT_VIEWER_HEIGHT,
     DEFAULT_VIEWER_WIDTH,
     PathTracer,

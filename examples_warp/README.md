@@ -36,7 +36,12 @@ pipeline; `example_warp_optix_mixed_geometry.py` combines triangle, built-in
 curve, and custom-intersection geometry under instances written on the GPU with
 `wo.make_instance(wp.transform(...), accel_id, ...)`; `example_warp_optix_motion_blur.py` builds a two-key
 motion GAS. The image examples write a BMP (`--output`); the tiny ray tracer
-opens an OpenGL viewer with `--live` (`--max-frames N` exits after N frames).
+opens an OpenGL viewer with `--live` (`--max-frames N` exits after N frames),
+using the `GLInteropViewer` from `warp_optix_pathtracing.gl`.
+
+The path-tracing examples use the separate `warp_optix_pathtracing` package
+(see its [README](../warp_optix_pathtracing/README.md)), a client of the public
+`warp_optix` API.
 
 The neural-texture example (`neural_texture/compress.py`, see
 [neural_texture/README.md](neural_texture/README.md)) procedurally generates a
@@ -73,7 +78,7 @@ triangle meshes:
 ```python
 import numpy as np
 
-from warp_optix.pathtracing import PathTracer
+from warp_optix_pathtracing import PathTracer
 
 api = PathTracer()
 api.initialize()
