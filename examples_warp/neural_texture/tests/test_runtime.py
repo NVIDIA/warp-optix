@@ -41,13 +41,12 @@ def _asset():
     )
 
 
-def _context():
+def _require_coop_vec():
     if not wp.is_cuda_available():
         pytest.skip("CUDA unavailable")
-    context = wo.create_context("cuda:0")
-    if not context.getProperty(native.DEVICE_PROPERTY_COOP_VEC):
-        pytest.skip("cooperative vectors unsupported")
-    return context
+    with wp.ScopedDevice("cuda:0"):
+        if not wo.get_context("cuda:0").native.getProperty(native.DEVICE_PROPERTY_COOP_VEC):
+            pytest.skip("cooperative vectors unsupported")
 
 
 def test_reference_decoder_is_deterministic():
@@ -60,9 +59,9 @@ def test_reference_decoder_is_deterministic():
 
 @pytest.mark.gpu
 def test_upload_converts_all_layers_to_compact_fp8_and_rejects_unknown_types():
-    context = _context()
+    _require_coop_vec()
     conversion_stream = wp.Stream("cuda:0")
-    runtime = upload_asset(_asset(), context, stream=conversion_stream.cuda_stream)
+    runtime = upload_asset(_asset(), stream=conversion_stream.cuda_stream)
     wp.synchronize_device(runtime.device)
 
     assert runtime.matrix_element_type == "fp8_e4m3"
@@ -76,4 +75,4 @@ def test_upload_converts_all_layers_to_compact_fp8_and_rejects_unknown_types():
     assert not hasattr(runtime, "conversion_source")
 
     with pytest.raises(ValueError, match="matrix_element_type"):
-        upload_asset(_asset(), context, matrix_element_type="fp4")
+        upload_asset(_asset(), matrix_element_type="fp4")

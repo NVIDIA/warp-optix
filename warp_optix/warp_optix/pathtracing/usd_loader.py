@@ -1593,9 +1593,9 @@ def load_scene_from_usd(
     while geometry_jobs:
         consume_geometry_job()
 
-    from .usd_scene import USDScene  # noqa: PLC0415
+    from .usd_scene import UsdScene  # noqa: PLC0415
 
-    usd_scene = USDScene(scene, stage, str(path), node_paths)
+    usd_scene = UsdScene(scene, stage, str(path), node_paths)
     scene.configure_usd_transform_hierarchy(
         usd_scene,
         np.asarray(node_parents, dtype=np.int32),

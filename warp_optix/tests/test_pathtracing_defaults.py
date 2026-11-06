@@ -7,15 +7,15 @@ from warp_optix.pathtracing import (
     DEFAULT_VIEWER_HEIGHT,
     DEFAULT_VIEWER_SIZE,
     DEFAULT_VIEWER_WIDTH,
-    PathTracerAPI,
-    PathTracingRenderer,
-    PathTracingViewerBackend,
+    PathTracer,
+    Renderer,
+    ViewerBackend,
 )
 
 
 def test_high_level_viewers_share_the_full_hd_default():
     assert DEFAULT_VIEWER_SIZE == (DEFAULT_VIEWER_WIDTH, DEFAULT_VIEWER_HEIGHT) == (1920, 1080)
-    for constructor in (PathTracerAPI.__init__, PathTracingRenderer.__init__, PathTracingViewerBackend.__init__):
+    for constructor in (PathTracer.__init__, Renderer.__init__, ViewerBackend.__init__):
         parameters = inspect.signature(constructor).parameters
         assert parameters["width"].default == DEFAULT_VIEWER_WIDTH
         assert parameters["height"].default == DEFAULT_VIEWER_HEIGHT

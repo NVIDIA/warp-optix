@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -17,7 +18,7 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
-class USDTransformHandle:
+class UsdTransformHandle:
     """Stable transform identifier for one composed USD prim path."""
 
     index: int
@@ -28,7 +29,7 @@ class USDTransformHandle:
         return self.index
 
 
-class USDScene:
+class UsdScene:
     """Path-addressable USD hierarchy retained after geometry import.
 
     Local-to-world hierarchy composition, render-node updates, and OptiX TLAS
@@ -38,20 +39,28 @@ class USDScene:
     """
 
     def __init__(self, scene: Scene, stage, source_path: str, paths: Iterable[str]):
-        self._scene = scene
+        # Weak, so the scene (which references this object as ``usd_scene``) is freed by refcounting.
+        self._scene_ref = weakref.ref(scene)
         self._stage = stage
         self._source_path = str(source_path)
-        self._handles = tuple(USDTransformHandle(index, str(path), id(self)) for index, path in enumerate(paths))
+        self._handles = tuple(UsdTransformHandle(index, str(path), id(self)) for index, path in enumerate(paths))
         self._path_to_handle = {handle.path: handle for handle in self._handles}
         self._local_transforms_device = None
         self._world_transforms_device = None
+
+    @property
+    def _scene(self) -> Scene:
+        scene = self._scene_ref()
+        if scene is None:
+            raise RuntimeError("USD scene handle was invalidated because its scene was released")
+        return scene
 
     def _attach_device_arrays(self, local_transforms, world_transforms):
         self._local_transforms_device = local_transforms
         self._world_transforms_device = world_transforms
 
     @property
-    def transforms(self) -> tuple[USDTransformHandle, ...]:
+    def transforms(self) -> tuple[UsdTransformHandle, ...]:
         """All transformable composed USD paths, in stable hierarchy order."""
         return self._handles
 
@@ -82,18 +91,18 @@ class USDScene:
         """CUDA-composed world ``wp.mat44`` array, available after build."""
         return self._world_transforms_device
 
-    def get_transform(self, path: str) -> USDTransformHandle | None:
+    def get_transform(self, path: str) -> UsdTransformHandle | None:
         """Return the handle for an exact composed USD prim path."""
         return self._path_to_handle.get(str(path))
 
-    def require_transform(self, path: str) -> USDTransformHandle:
+    def require_transform(self, path: str) -> UsdTransformHandle:
         """Return a handle or raise ``KeyError`` when the path is not transformable."""
         handle = self.get_transform(path)
         if handle is None:
             raise KeyError(f"USD path has no transform handle: {path}")
         return handle
 
-    def instance_ids(self, handle: USDTransformHandle | int) -> tuple[int, ...]:
+    def instance_ids(self, handle: UsdTransformHandle | int) -> tuple[int, ...]:
         """Return render instances attached directly to a transform node."""
         node_index = self._index(handle)
         selected = self._scene._usd_instance_ids[self._scene._usd_instance_node_ids == node_index]
@@ -107,14 +116,14 @@ class USDScene:
             return
         self._scene.set_instances_visible_batch(instance_ids, bool(visible))
 
-    def get_local_transform(self, handle: USDTransformHandle | int) -> np.ndarray:
+    def get_local_transform(self, handle: UsdTransformHandle | int) -> np.ndarray:
         """Read one local matrix; this synchronizes when CUDA state exists."""
         index = self._index(handle)
         if self._local_transforms_device is not None:
             return self._local_transforms_device.numpy()[index].copy()
         return self._scene._usd_local_transforms[index].copy()
 
-    def get_world_transform(self, handle: USDTransformHandle | int) -> np.ndarray:
+    def get_world_transform(self, handle: UsdTransformHandle | int) -> np.ndarray:
         """Read one composed world matrix; this synchronizes CUDA work."""
         index = self._index(handle)
         if self._world_transforms_device is not None:
@@ -123,7 +132,7 @@ class USDScene:
 
     def update_local_transform(
         self,
-        handle: USDTransformHandle | int,
+        handle: UsdTransformHandle | int,
         matrix: np.ndarray,
         *,
         stream=None,
@@ -134,7 +143,7 @@ class USDScene:
 
     def update_local_transforms(
         self,
-        handles: Iterable[USDTransformHandle | int],
+        handles: Iterable[UsdTransformHandle | int],
         matrices: np.ndarray,
         *,
         stream=None,
@@ -193,12 +202,12 @@ class USDScene:
         with wp.ScopedStream(stream, sync_enter=False, sync_exit=False):
             self._scene.rebuild_tlas()
 
-    def _index(self, handle: USDTransformHandle | int) -> int:
+    def _index(self, handle: UsdTransformHandle | int) -> int:
         self._require_current()
         index = int(handle)
         if index < 0 or index >= len(self._handles):
             raise IndexError(f"USD transform handle is out of range: {index}")
-        if isinstance(handle, USDTransformHandle) and handle._owner_id != id(self):
+        if isinstance(handle, UsdTransformHandle) and handle._owner_id != id(self):
             raise ValueError("USD transform handle belongs to a different stage")
         return index
 

@@ -432,7 +432,7 @@ def _clip_closed_mesh(data, normal, offset):
 
 
 def build_chess_scene(api):
-    """Populate an initialized, empty PathTracerAPI with a complete chess set."""
+    """Populate an initialized, empty PathTracer with a complete chess set."""
     textures = [
         wood_texture((0.89, 0.75, 0.52), (0.64, 0.43, 0.22)),
         wood_texture((0.43, 0.26, 0.14), (0.18, 0.075, 0.025)),

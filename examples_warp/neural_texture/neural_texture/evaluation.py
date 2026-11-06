@@ -54,7 +54,7 @@ class _QualityEvaluator:
         height, width, self.channels = image.shape
         self.count = min(height * width, 65536) if sampled else height * width
         self.stride = ((self.count + 255) // 256) * 256
-        self.context = None
+        self.pipeline = None
         try:
             self._initialize(image, height * width)
         except BaseException:
@@ -68,21 +68,15 @@ class _QualityEvaluator:
         self.close()
 
     def close(self):
-        if self.context is not None:
-            # OptiX destroys child pipelines, groups and modules too, including
-            # objects created during an incomplete initialization.
-            with wp.ScopedDevice(self.device):
-                try:
-                    wp.synchronize_device(self.device)
-                finally:
-                    self.context.destroy()
-                    self.context = None
+        if self.pipeline is not None:
+            # Destruction is deferred until submitted OptiX work has finished.
+            self.pipeline.close()
+            self.pipeline = None
 
     def _initialize(self, image, pixels):
         device = self.device
         with wp.ScopedDevice(device):
-            self.context = wo.create_context(device)
-            flags = self.context.getProperty(native.DEVICE_PROPERTY_COOP_VEC)
+            flags = wo.get_context(device).native.getProperty(native.DEVICE_PROPERTY_COOP_VEC)
             if not flags & int(native.DEVICE_PROPERTY_COOP_VEC_FLAG_STANDARD):
                 raise RuntimeError("the selected OptiX device does not support cooperative vectors")
             self.target = wp.array(image.reshape(-1, self.channels), dtype=wp.float32, device=device)
@@ -90,11 +84,11 @@ class _QualityEvaluator:
             wp.launch(_sample_indices, dim=self.count, inputs=[self.indices, pixels], device=device)
             self.errors = wp.zeros(self.stride * self.channels, dtype=wp.float32, device=device)
             self.sums = wp.zeros(self.channels, dtype=wp.float32, device=device)
-            self.pipeline = wo.create_pipeline(self.context, _score_texels, device=device)
+            self.pipeline = wo.Pipeline(_score_texels, device=device)
 
     def mse(self, asset):
         with wp.ScopedDevice(self.device):
-            runtime = upload_asset(asset, self.context, device=self.device)
+            runtime = upload_asset(asset, device=self.device)
             self.sums.zero_()
             wo.launch(
                 self.pipeline,

@@ -42,11 +42,13 @@ def coop_vec_fp8_matmul_raygen(output: wp.array(dtype=wp.float32), matrix: wp.ui
 
 @pytest.fixture
 def ctx():
+    """The native PyOptiX device context; call it inside ``wp.ScopedDevice``."""
     if not wp.is_cuda_available():
         pytest.skip("CUDA device unavailable")
-    context = wo.create_context("cuda")
-    if not context.getProperty(native.DEVICE_PROPERTY_COOP_VEC):
-        pytest.skip("GPU does not support OptiX cooperative vectors")
+    context = wo.get_context("cuda").native
+    with wp.ScopedDevice("cuda"):
+        if not context.getProperty(native.DEVICE_PROPERTY_COOP_VEC):
+            pytest.skip("GPU does not support OptiX cooperative vectors")
     return context
 
 
@@ -64,23 +66,24 @@ def _identity_matrix(ctx, element_type) -> wp.array:
 
     row_major = native.COOP_VEC_MATRIX_LAYOUT_ROW_MAJOR
     optimal = native.COOP_VEC_MATRIX_LAYOUT_INFERENCING_OPTIMAL
-    source_size = ctx.coopVecMatrixComputeSize(N, K, native.COOP_VEC_ELEM_TYPE_FLOAT16, row_major)
-    packed_size = ctx.coopVecMatrixComputeSize(N, K, element_type, optimal)
-    source = wp.array(np.eye(N, dtype=np.float16).reshape(-1), device="cuda")
-    packed = wp.empty(packed_size, dtype=wp.uint8, device="cuda")
-    ctx.coopVecMatrixConvert(
-        wp.get_stream("cuda").cuda_stream,
-        [description(native.COOP_VEC_ELEM_TYPE_FLOAT16, row_major, source_size)],
-        source.ptr,
-        [description(element_type, optimal, packed_size)],
-        packed.ptr,
-    )
+    with wp.ScopedDevice("cuda"):
+        source_size = ctx.coopVecMatrixComputeSize(N, K, native.COOP_VEC_ELEM_TYPE_FLOAT16, row_major)
+        packed_size = ctx.coopVecMatrixComputeSize(N, K, element_type, optimal)
+        source = wp.array(np.eye(N, dtype=np.float16).reshape(-1), device="cuda")
+        packed = wp.empty(packed_size, dtype=wp.uint8, device="cuda")
+        ctx.coopVecMatrixConvert(
+            wp.get_stream("cuda").cuda_stream,
+            [description(native.COOP_VEC_ELEM_TYPE_FLOAT16, row_major, source_size)],
+            source.ptr,
+            [description(element_type, optimal, packed_size)],
+            packed.ptr,
+        )
     return packed
 
 
 def test_coop_vec_elementwise_executes_in_optix(ctx):
     output = wp.zeros(4, dtype=wp.float32, device="cuda")
-    wo.launch(wo.create_pipeline(ctx, coop_vec_raygen), dim=(1,), inputs=[output])
+    wo.launch(wo.Pipeline(coop_vec_raygen), dim=(1,), inputs=[output])
     np.testing.assert_array_equal(output.numpy(), [3.0, 5.0, 7.0, 9.0])
 
 
@@ -94,7 +97,7 @@ def test_coop_vec_elementwise_executes_in_optix(ctx):
 def test_coop_vec_matmul_executes_in_optix(ctx, raygen, element_type):
     matrix = _identity_matrix(ctx, element_type)
     output = wp.zeros(N, dtype=wp.float32, device="cuda")
-    wo.launch(wo.create_pipeline(ctx, raygen), dim=(1,), inputs=[output, matrix.ptr])
+    wo.launch(wo.Pipeline(raygen), dim=(1,), inputs=[output, matrix.ptr])
     np.testing.assert_array_equal(output.numpy(), np.ones(N, dtype=np.float32))
 
 

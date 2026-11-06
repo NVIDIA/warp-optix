@@ -13,21 +13,19 @@ import warp_optix as wo
 @wp.kernel(module="unique")
 def render(scene: wp.uint64, depth: wp.array2d[float]):
     y, x = wp.tid()
-    origin = wp.vec3(float(x) / 64.0 - 1.0, float(y) / 64.0 - 1.0, 5.0)
-    hit = wo.closest_hit(scene, origin, wp.vec3(0.0, 0.0, -1.0), 0.0, 100.0, wp.uint32(0xFF), wp.uint32(0))
-    depth[y, x] = hit.t  # wo.MISS when nothing was hit
+    start = wp.vec3(float(x) / 64.0 - 1.0, float(y) / 64.0 - 1.0, 5.0)
+    query = wo.accel_query_ray(scene, start, wp.vec3(0.0, 0.0, -1.0), 100.0)
+    depth[y, x] = query.t if query.result else -1.0
 
 
-ctx = wo.create_context()
-gas = wo.build_accel(ctx, [wo.triangles(vertices, indices)], compact=True)
-pipeline = wo.create_pipeline(ctx, render)
+accel = wo.Accel([wo.triangles(points, indices)], compact=True)
+pipeline = wo.Pipeline(render)
 depth = wp.empty((128, 128), dtype=float)
-wo.launch(pipeline, dim=depth.shape, inputs=[gas.handle, depth])
-wo.destroy_context(ctx)  # synchronizes, then destroys the pipeline and modules
+wo.launch(pipeline, dim=depth.shape, inputs=[accel.id, depth])
 ```
 
 Importing `warp_optix` registers the `wp.optix_*` device builtins with Warp. They are valid only
-inside kernels compiled into a pipeline by `wo.create_pipeline()`.
+inside kernels compiled into a `wo.Pipeline`.
 
 ## Install
 
@@ -39,20 +37,44 @@ pip install -e .
 
 `warp_optix` requires `warp-lang>=1.17`.
 
+## Devices, contexts, and lifetime
+
+Like Warp's CUDA context, the OptiX device context is implicit: each CUDA device gets one, created
+on first use and destroyed at interpreter exit. Its settings come from `wo.config`
+(`wo.config.validation = True`, `wo.config.log_level = 4`), which is read when a device's context is
+first created; later changes only affect devices whose context does not exist yet.
+`wo.get_context(device).native` gives the PyOptiX `DeviceContext` for advanced calls; it is borrowed
+and must not be destroyed.
+
+Constructors and free functions take `device=` and, where they submit work, `stream=`:
+
+- neither given: the current device and its current stream;
+- only `stream`: the stream's device;
+- only `device`: that device's current stream;
+- both: they must name the same device, otherwise `ValueError`.
+
+`wo.Accel` without either uses the device of its inputs; `wo.launch` defaults to the pipeline's
+device. Methods of device-bound objects (`accel.refit()`, `params.assign()`) take only `stream=`.
+
+Resources (`wo.Accel`, `wo.Pipeline`, `wo.LaunchParams`) follow Warp's lifetime model
+(`wp.Mesh`, `wp.array`): they release themselves when the last reference is dropped, or explicitly
+with `.close()` or `with`:
+
+- Builds, refits, and launches record no CUDA events and keep nothing alive for in-flight work.
+- `close()` makes a resource unusable at once (`RuntimeError` on further use) and frees its device
+  memory right away. That memory is `wp.array` storage, which Warp frees in stream order, so work
+  already submitted can still read it. It never blocks the host.
+- A pipeline's native OptiX objects (pipeline, module, program groups) are destroyed under the
+  device's CUDA context once the launches submitted before the close have finished, and never during
+  a graph capture on the device.
+- Kernels see an acceleration structure only as the integer `accel.id`. As with `wp.Mesh.id`, keep
+  the `wo.Accel` alive while work that reads the id may still be submitted. A `wo.Accel` passed in
+  launch inputs is referenced by the pipeline's parameter storage until the next launch on that
+  stream replaces it.
+- An instance structure keeps the memory of its child structures alive, even if a child is closed.
+- Failed pipeline construction destroys only the native objects it created.
+
 ## Programs and pipelines
-
-`wo.create_context(device, validation=False, log_level=4)` returns a managed
-`wo.Context`. It supports `with`, has a `closed` property, and closes idempotently
-through `ctx.close()` or `wo.destroy_context(ctx)`. Closing synchronizes its own
-CUDA device before releasing native resources and retained buffers. Pipeline
-construction failures release only objects allocated by that failed operation.
-
-Pipelines and acceleration structures belong to their creating context. Public
-build, update, and launch calls reject a closed context, foreign acceleration
-structures, and arrays or streams on another device. Contexts retain their
-resources until closure; launch input arrays are retained until their stream
-event completes. `ctx.native_handle` is borrowed advanced access; direct native
-calls remain the caller's responsibility.
 
 OptiX programs can use ordinary `@wp.kernel(module="unique")` kernels. By default, the raygen kernel's arguments
 become the pipeline's launch parameters, and `wp.tid()` returns the launch index, so the same
@@ -70,20 +92,7 @@ class Payload:
 def raygen(scene: wp.uint64, tint: wp.vec3, image: wp.array2d[wp.vec3]):
     y, x = wp.tid()
     payload = Payload()
-    wp.optix_trace(
-        scene,
-        wp.vec3(float(x), float(y), 5.0),
-        wp.vec3(0.0, 0.0, -1.0),
-        0.0,
-        100.0,
-        0.0,
-        wp.uint32(0xFF),
-        wp.uint32(0),
-        wp.uint32(0),
-        wp.uint32(1),
-        wp.uint32(0),
-        payload,
-    )
+    wp.optix_trace(scene, wp.vec3(float(x), float(y), 5.0), wp.vec3(0.0, 0.0, -1.0), 100.0, payload)
     image[y, x] = payload.color
 
 
@@ -96,20 +105,25 @@ def shade(tint: wp.vec3):  # binds raygen's `tint`
 
 @wp.kernel(module="unique")
 def background():
-    wp.optix_set_payload_0(wp.float_to_uint32(0.0))
+    wp.optix_set_payload(0, wp.optix_float_as_uint32(0.0))
 
 
-pipeline = wo.create_pipeline(
-    ctx,
+pipeline = wo.Pipeline(
     raygen,
     miss=[background],
     hit_groups=[wo.HitGroup(closest_hit=shade)],
     payload_words=3,
 )
-wo.launch(pipeline, dim=image.shape, inputs=[gas.handle, wp.vec3(1.0, 0.5, 0.2), image])
+wo.launch(pipeline, dim=image.shape, inputs=[accel.id, wp.vec3(1.0, 0.5, 0.2), image])
 ```
 
-`wo.create_pipeline(ctx, raygen, *, miss, hit_groups, ray_types, sbt, callables, exception, exception_flags,
+`wp.optix_trace(id, start, dir, max_t, payload, min_t=0.0, time=0.0, mask=0xFF, flags=0, sbt_offset=0,
+sbt_stride=1, miss_index=0)` follows `wp.mesh_query_ray(id, start, dir, max_t)`. Trailing arguments
+may be omitted but not skipped by keyword, because Warp's external-builtin API has no default
+arguments; `wp.optix_traverse()` takes the same arguments with an optional payload. Flags, masks,
+SBT indices, and register indices accept any integer type, so `wo.RayFlags` members need no cast.
+
+`wo.Pipeline(raygen, *, miss, hit_groups, ray_types, sbt, callables, exception, exception_flags,
 payload_words, attribute_words, max_trace_depth, max_traversable_depth, graph_flags, motion_blur,
 max_registers, device)` compiles all programs into one module and builds the shader binding table:
 
@@ -124,22 +138,24 @@ max_registers, device)` compiles all programs into one module and builds the sha
   order. Callables use a no-argument, void interface: they read launch parameters and write
   referenced Warp arrays.
 - `exception` enables user exceptions. Raise one with `wp.optix_throw_exception(code, ...)` (up
-  to eight `wp.uint32` details) and read it with `wp.optix_get_exception_code()` and
-  `wp.optix_get_exception_detail_<i>()`.
+  to eight optional details) and read it with `wp.optix_get_exception_code()` and
+  `wp.optix_get_exception_detail(i)`.
 - `exception_flags` selects `wo.ExceptionFlags.NONE`, `STACK_OVERFLOW`,
   `TRACE_DEPTH`, and `USER`, including bitwise combinations. When omitted,
   the default is `USER` if an exception program is supplied, otherwise `NONE`.
   For example, `exception_flags=wo.ExceptionFlags.STACK_OVERFLOW | wo.ExceptionFlags.TRACE_DEPTH`
   enables those debugging checks. Include `USER` when using `optix_throw_exception`.
 
-`wo.launch(pipeline, dim, inputs, stream=None)` writes the launch parameters with a Warp kernel
-on `stream` and then launches OptiX on the same stream. Neither step synchronizes the host.
-OptiX does not record its work into CUDA graphs, so `wo.launch`, `wo.build_accel`,
-`wo.update_accel`, and `wo.create_pipeline` raise `RuntimeError` during stream capture. Kernels written against a single launch-parameter struct
-(`def raygen(params: LaunchParams)`) work unchanged: launch them with `inputs=[params]`.
+`wo.launch(pipeline, dim, inputs=None, device=None, stream=None, *, params=None)` mirrors `wp.launch`:
+it writes the launch parameters with a Warp kernel on `stream` and then launches OptiX on the same
+stream. Neither step synchronizes the host. `wo.Accel` objects in `inputs` are passed as their `id`
+and kept alive for the launch. OptiX does not record its work into CUDA graphs, so `wo.launch`,
+`wo.Accel`, `refit()`/`rebuild()`, and `wo.Pipeline` raise `RuntimeError` during stream capture.
+Kernels written against a single launch-parameter struct (`def raygen(params: MyParams)`) work
+unchanged: launch them with `inputs=[params]`.
 
 Automatic parameter storage is separate for each CUDA stream. Sequential launches
-on one stream reuse its buffer. Operations on a shared context from multiple host
+on one stream reuse its buffer. Calls on shared resources from multiple host
 threads require external synchronization.
 
 For a shared schema independent of raygen, pass `params_type=MyParams`, where
@@ -152,20 +168,21 @@ argument in every shader, keep the default inferred schema instead.
 Advanced callers can own parameter storage explicitly:
 
 ```python
-buffer = wo.create_launch_params_buffer(pipeline)
-wo.write_launch_params(buffer, my_params_instance, stream=stream)
-wo.launch(pipeline, dim=(height, width), params_buffer=buffer, stream=stream)
+params = wo.LaunchParams(pipeline)
+params.assign(my_params_instance, stream=stream)
+wo.launch(pipeline, dim=(height, width), stream=stream, params=params)
 ```
 
-For inferred schemas, `write_launch_params` takes the argument sequence instead.
-A buffer belongs to the pipeline that created it and must be written before use.
-Supply either `inputs` or `params_buffer`, never both. Updates and launches on a
-shared buffer are ordered with CUDA events, including across streams. Separate
-buffers allow independent concurrent launches. Referenced arrays remain retained;
-callers must still order their own writes to those arrays. Directly modifying the
-buffer's device storage bypasses the API's ordering and validation.
+For inferred schemas, `assign()` takes the argument sequence instead.
+`LaunchParams` belongs to its pipeline (and its device) and must be assigned before use.
+Supply either `inputs` or `params`, never both. Updates and launches on shared
+parameters are ordered on the GPU, including across streams. Separate
+`LaunchParams` objects allow independent concurrent launches. Referenced arrays remain retained
+until replaced or until the `LaunchParams` is released (`close()`/`with`); callers must still order
+their own writes to those arrays. Directly modifying
+`params.data` bypasses the API's ordering and validation.
 
-An optional `@wo.optix_kernel(wo.OptixKernelType.RAYGEN, module="unique")`
+An optional `@wo.kernel(kind=wo.ProgramKind.RAYGEN, module="unique")`
 decorator replaces `@wp.kernel` when a shader should declare its intended stage.
 It also accepts an existing Warp kernel. Pipeline construction rejects a declared
 stage that disagrees with its slot. Undecorated Warp kernels continue to get their
@@ -197,7 +214,7 @@ metal = sbt.add_hit_group(
     shadow=wo.HitGroup(any_hit=metal_shadow),
 )
 print(sbt.describe())
-pipeline = wo.create_pipeline(ctx, raygen, sbt=sbt, payload_words=1)
+pipeline = wo.Pipeline(raygen, sbt=sbt, payload_words=1)
 layout = pipeline.sbt_layout
 metal_offset = layout.get_sbt_offset(metal)  # 2 records; use in wo.make_instance()
 shadow_index = layout.ray_type_index("shadow")  # trace SBT offset and miss index
@@ -217,42 +234,51 @@ instances with `wo.make_instance()`. This lookup rejects handles from another
 builder or groups added after the snapshot. Offsets and trace strides count
 records, not bytes.
 
-`create_pipeline(..., sbt=builder)` takes an immutable snapshot. Later builder
+`wo.Pipeline(..., sbt=builder)` takes an immutable snapshot. Later builder
 edits do not change existing pipelines. You may also pass `sbt=builder.snapshot()`
 to reuse a frozen layout. Builders own no native resources and can be reused
-across contexts; each pipeline owns its compiled programs and packed buffers.
-`pipeline.sbt_layout` exposes the named snapshot, while `pipeline.sbt` remains
-the native table. Automatic pipelines have `sbt_layout=None`.
+across devices; each pipeline owns its compiled programs and packed buffers.
+`pipeline.sbt_layout` exposes the named snapshot; automatic pipelines have `sbt_layout=None`.
 
 An explicit `sbt` cannot be combined with `miss`, `hit_groups`, or `ray_types`.
 Callables and exception programs remain independent pipeline options. See
 `examples_warp/example_warp_optix_mixed_geometry.py` for a complete example.
 
-`wo.ProgramKind` names the program kinds and their OptiX entry-name prefixes;
-`wo.constants` provides OptiX ray, instance, geometry, and build flag values usable both in kernels
-(via `wp.uint32(...)`) and on the host. Host-side arguments also accept the typed enums
-`wo.BuildFlags`, `wo.GeometryFlags`, `wo.InstanceFlags`, `wo.PrimitiveType`, and
-`wo.TraversableGraphFlags`.
+`wo.ProgramKind` names the program kinds and their OptiX entry-name prefixes. Flags are typed
+enums usable both on the host and inside kernels (Warp supports `IntEnum`/`IntFlag` in kernels):
+`wo.RayFlags` and `wo.HitKind` for device code, and `wo.BuildFlags`, `wo.GeometryFlags`,
+`wo.InstanceFlags`, `wo.PrimitiveType`, `wo.TraversableGraphFlags`, and `wo.ExceptionFlags`.
+Compile options remain available as `wo.native.COMPILE_*`.
 
 ## Ray queries without hit programs
 
-`wo.closest_hit(traversable, origin, direction, tmin, tmax, visibility_mask, ray_flags) -> wo.Hit`
-and `wo.any_hit(traversable, origin, direction, tmin, tmax, visibility_mask) -> bool` traverse with
-`wp.optix_traverse()` and read the result from the OptiX hit object, so a raygen-only pipeline can
-query built-in geometry. `Hit.t` is `wo.MISS` when nothing was hit; after `closest_hit` the
-`wp.optix_hit_object_*` builtins expose barycentrics, attributes, and transforms until the next
-traversal.
+`wo.accel_query_ray(id, start, dir, max_t, min_t=0.0, mask=0xFF, flags=0) -> wo.AccelQueryRay`
+and `wo.accel_query_ray_anyhit(id, start, dir, max_t, min_t=0.0, mask=0xFF) -> bool` mirror
+`wp.mesh_query_ray`/`wp.mesh_query_ray_anyhit`. They traverse with `wp.optix_traverse()` and read the
+result from the OptiX hit object, so a raygen-only pipeline can query built-in geometry. The
+`query` naming keeps them distinct from closest-hit and any-hit *programs*.
+
+`AccelQueryRay` fields:
+
+- `result`: whether anything was hit. On a miss, no other field is defined.
+- `t`: the hit distance.
+- `u`, `v`: the barycentrics for triangles, and the ribbon parameters for flat (ribbon) curves. For
+  other built-in curves, `u` is the curve parameter and `v` is 0. For custom primitives, they hold the
+  bits of the first two reported attributes, as floats.
+- `instance_id` and `primitive_index`.
+
+After a query, the `wp.optix_hit_object_*` builtins expose further hit data until the next traversal.
 
 ## Acceleration structures
 
-Build inputs retain their Warp **device** arrays, and contexts retain acceleration
-structures and their inputs until closure:
+`wo.Accel` mirrors `wp.Mesh`/`wp.Bvh`: construction builds the structure from build inputs, which
+retain their Warp **device** arrays:
 
 | Builder | Input |
 | --- | --- |
-| `wo.triangles(vertices, indices, flags=)` | `vec3` (or `float32[N, 3]`) vertices, int32/uint32 index triplets; a list of vertex arrays gives motion keys |
-| `wo.aabbs(bounds, flags=, sbt_indices=)` | `float32[N, 6]` `(min, max)` boxes for custom primitives |
-| `wo.curves(vertices, widths, indices, curve_type=, flags=)` | control points, per-point radii, first control point of each segment |
+| `wo.triangles(points, indices, flags=)` | `vec3` (or `float32[N, 3]`) points, int32/uint32 index triplets; a list of point arrays gives motion keys |
+| `wo.aabbs(lowers, uppers, flags=, sbt_indices=)` | `vec3` bounds per custom primitive, like `wp.Bvh(lowers, uppers)`; or packed `wo.aabbs(bounds=float32[N, 6])` to avoid a packing copy |
+| `wo.curves(points, widths, indices, curve_type=, flags=)` | control points, per-point radii, first control point of each segment |
 | `wo.instances(records)` | `wp.array(dtype=wo.Instance)` |
 
 Geometry defaults to `GeometryFlags.DISABLE_ANYHIT`; pass `flags=wo.GeometryFlags.NONE` when an
@@ -260,44 +286,41 @@ any-hit program must run.
 
 `triangles()` and `curves()` read indices back once to validate their bounds.
 Keep those indices unchanged when reusing a build input; create a new input
-after changing topology. Vertex-only updates do not repeat this validation.
+after changing topology. Point-only refits do not repeat this validation.
 
-`wo.build_accel(ctx, inputs, flags=, compact=, motion=, stream=, device=) -> wo.Accel` builds on a
-Warp stream. Initial instance builds read child handles back once to verify that
-every geometry belongs to `ctx`. `compact=True` also synchronizes to shrink static structures.
-`wo.update_accel(ctx, accel, rebuild=False, stream=)` refits a structure built with
-`BUILD_FLAG_ALLOW_UPDATE` to its inputs' current contents (or rebuilds it in place with
-`rebuild=True`) using the retained scratch buffer, so it neither allocates nor synchronizes
-on success. Keep indices, primitive counts, and instance child handles unchanged
-when reusing an input; build a new input and acceleration structure for topology changes.
+`wo.Accel(inputs, *, flags=, compact=, motion=, device=, stream=)` builds on a Warp stream and
+exposes `.id` (the `wp.uint64` passed to kernels), `.device`, and `.flags`. Initial instance builds
+read child ids back once to verify that every child is a live structure on the same device.
+`compact=True` also synchronizes to shrink static structures. `accel.refit(stream=)` refits a
+structure built with `wo.BuildFlags.ALLOW_UPDATE` to its inputs' current contents using the
+retained scratch buffer, so it neither allocates nor synchronizes on success; `accel.rebuild(stream=)`
+rebuilds in place to restore trace quality (structures without `ALLOW_UPDATE` allocate a temporary
+scratch buffer per rebuild). Keep indices, primitive counts, and instance child ids unchanged when
+reusing an input; build a new input and structure for topology changes.
 
 `wo.Instance` is the 80-byte `OptixInstance` layout as a Warp struct, and the `wo.make_instance()`
-Warp function writes one from a rotation (with optional scale/shear), translation, traversable,
-instance ID, SBT offset, visibility mask, and flags. Instance records are therefore written on the
-GPU, e.g. one per simulated world:
+Warp function writes one from a pose and an acceleration-structure id. It takes a rigid
+`wp.transform`, a full affine `wp.mat44` (scale and shear allowed), or a `wp.mat33` linear part plus a
+`wp.vec3` translation, followed by `accel_id, instance_id=0, sbt_offset=0, mask=0xFF, flags=0`.
+The integer arguments accept any integer type. In kernels compiled with backward passes enabled
+(Warp's default for `wp.launch` kernels), pass them positionally: Warp 1.18 miscompiles keyword
+arguments to generic integer parameters of a `@wp.func` in the adjoint code. OptiX programs are
+compiled without backward passes and are unaffected.
+Instance records are therefore written on the GPU, e.g. one per simulated world:
 
 ```python
 @wp.kernel
 def write_instances(gas: wp.uint64, poses: wp.array[wp.transform], records: wp.array[wo.Instance]):
     i = wp.tid()
-    pose = poses[i]
-    records[i] = wo.make_instance(
-        wp.quat_to_matrix(wp.transform_get_rotation(pose)),
-        wp.transform_get_translation(pose),
-        gas,
-        wp.uint32(i),
-        wp.uint32(0),
-        wp.uint32(0xFF),
-        wp.uint32(0),
-    )
+    records[i] = wo.make_instance(poses[i], gas, i)  # instance_id = i
 
 
 records = wp.empty(world_count, dtype=wo.Instance)
-wp.launch(write_instances, dim=world_count, inputs=[gas.handle, poses, records])
-ias = wo.build_accel(ctx, [wo.instances(records)], flags=wo.BuildFlags.ALLOW_UPDATE)
+wp.launch(write_instances, dim=world_count, inputs=[gas.id, poses, records])
+ias = wo.Accel([wo.instances(records)], flags=wo.BuildFlags.ALLOW_UPDATE)
 # Each step: rewrite the records, then refit.
-wp.launch(write_instances, dim=world_count, inputs=[gas.handle, poses, records])
-ias = wo.update_accel(ctx, ias)
+wp.launch(write_instances, dim=world_count, inputs=[gas.id, poses, records])
+ias.refit()
 ```
 
 For vertex motion blur, pass a list of vertex keys and OptiX motion options, then enable motion
@@ -307,8 +330,8 @@ on the pipeline and trace with a ray time:
 from warp_optix import native
 
 motion = native.MotionOptions(numKeys=2, flags=native.MOTION_FLAG_NONE, timeBegin=0.0, timeEnd=1.0)
-gas = wo.build_accel(ctx, [wo.triangles([keys0, keys1], indices)], motion=motion)
-pipeline = wo.create_pipeline(ctx, raygen, ..., motion_blur=True)
+gas = wo.Accel([wo.triangles([keys0, keys1], indices)], motion=motion)
+pipeline = wo.Pipeline(raygen, ..., motion_blur=True)
 ```
 
 ## Device builtins
@@ -316,17 +339,19 @@ pipeline = wo.create_pipeline(ctx, raygen, ..., motion_blur=True)
 Warp kernels expose the common OptiX hit context directly: ray origin/direction (world and
 object space), `tmin`/`tmax`, time, flags, and visibility mask; instance ID and index; primitive
 index, SBT GAS index, GAS handle, and primitive type; front/back-face tests; and
-point/vector/normal transforms in both directions. Names follow Warp's snake-case convention, for
-example `wp.optix_get_instance_index()` and
-`wp.optix_transform_point_from_world_to_object_space()`. Payloads are moved with
-`wp.optix_set_payload_<i>()`/`wp.optix_get_payload_<i>()` or as whole Warp structs with
-`wp.optix_load_payload()`/`wp.optix_store_payload()`.
+point/vector/normal transforms in both directions. Names follow Warp's snake-case convention with
+the `optix_` domain prefix, for example `wp.optix_get_instance_index()` and
+`wp.optix_transform_point_world_to_object(point)`. Every builtin is documented (`doc=`). Payloads
+are moved register by register with `wp.optix_set_payload(i, value)`/`wp.optix_get_payload(i)`
+(`i` in `[0, 32)`; use a constant index, which compiles to the single OptiX intrinsic) or as whole
+Warp structs with `wp.optix_load_payload()`/`wp.optix_store_payload()`. The numbered forms
+`wp.optix_get_payload_<i>()`/`wp.optix_set_payload_<i>()` remain as deprecated aliases.
 
 Inside an intersection program, use `wp.optix_get_object_ray_origin()`,
 `wp.optix_get_object_ray_direction()`, and `wp.optix_report_intersection()`, which accepts a hit
 distance, hit kind, and zero to eight `wp.uint32` attributes. Closest-hit and any-hit programs read
-them with `wp.optix_get_attribute_0()` through `wp.optix_get_attribute_7()`;
-`wp.float_to_uint32()` and `wp.uint32_to_float()` reinterpret floats.
+them with `wp.optix_get_attribute(i)` for `i` in `[0, 8)`;
+`wp.optix_float_as_uint32()` and `wp.optix_uint32_as_float()` reinterpret the bits of floats.
 
 ### Geometry and transform queries
 
@@ -351,8 +376,8 @@ The current transform list can be inspected with `wp.optix_get_transform_list_si
 ordinary homogeneous `wp.mat44` values:
 
 ```python
-object_to_world = wp.optix_get_object_to_world_transform_matrix()
-world_to_object = wp.optix_get_world_to_object_transform_matrix()
+object_to_world = wp.optix_get_object_to_world_matrix()
+world_to_object = wp.optix_get_world_to_object_matrix()
 ```
 
 The current transform matrix and transform-list queries are valid in intersection, any-hit, and
@@ -404,19 +429,19 @@ its windowing and image extras with:
 pip install -e ".[pathtracing]"
 ```
 
-`PathTracingViewer` is a standalone OptiX path-tracing viewer with OptiX temporal
-denoising. `PathTracingViewerBackend` exposes a renderer-facing `log_*`
+`Viewer` is a standalone OptiX path-tracing viewer with OptiX temporal
+denoising. `ViewerBackend` exposes a renderer-facing `log_*`
 API without importing a simulation framework.
 
 ### Denoising and upscaling
 
-`PathTracerAPI` and `PathTracingViewer` accept the same optional backend
+`PathTracer` and `Viewer` accept the same optional backend
 selector and support switching without rebuilding the scene:
 
 ```python
-from warp_optix.pathtracing import PathTracerAPI
+from warp_optix.pathtracing import PathTracer
 
-api = PathTracerAPI(denoiser="auto", optix_upscale=True)
+api = PathTracer(denoiser="auto", optix_upscale=True)
 api.initialize()
 api.set_denoiser("none")  # Raw rendering.
 api.set_denoiser("optix", optix_upscale=False)  # Native-resolution denoising.
@@ -445,14 +470,15 @@ history, and stream ordering:
 ```python
 from warp_optix.pathtracing import DenoiserInputs, OptixDenoiser
 
-denoiser = OptixDenoiser(context, width, height, stream=stream, upscale=True)
+denoiser = OptixDenoiser(width, height, stream=stream, upscale=True)
 filtered = denoiser.apply(DenoiserInputs(color, normal, albedo, motion), reset=True)
 # Consume filtered on the same stream; it is borrowed until the next apply().
 denoiser.close()
 ```
 
 The supplemental extension adds the temporal models and guide-layer fields
-to the PyOptiX dependency's denoiser bindings. `context` is the context from `wo.create_context()`.
+to the PyOptiX dependency's denoiser bindings. `OptixDenoiser` takes `device=`/`stream=` like other
+constructors and uses that device's implicit OptiX context.
 
 ### DLSS Ray Reconstruction
 
@@ -483,10 +509,10 @@ WARP_OPTIX_ENABLE_DLSS=ON pip install .
 ```
 
 ```python
-from warp_optix.pathtracing import PathTracerAPI, dlss_rr_requirements
+from warp_optix.pathtracing import PathTracer, dlss_rr_requirements
 
 print(dlss_rr_requirements())  # {'supported': True, ...} or a 'reason' (e.g. driver older than R620)
-api = PathTracerAPI(denoiser="dlss", dlss_quality="balanced")
+api = PathTracer(denoiser="dlss", dlss_quality="balanced")
 ```
 
 `dlss_quality` is `"dlaa"` (denoise at full resolution, the default),
@@ -555,7 +581,7 @@ available when creating PBR or glTF materials directly.
 
 The framework-neutral class can also be driven directly through
 `log_mesh()`, `log_instances()`, `begin_frame()`, and `end_frame()`. Textured
-glTF and USD scenes remain available through `PathTracerAPI`; USD loading uses
+glTF and USD scenes remain available through `PathTracer`; USD loading uses
 the optional `usd-core` extra and maps UsdPreviewSurface and common NVIDIA MDL
 inputs to the same internal PBR material representation. Composed DomeLight
 HDR textures can be enabled explicitly with
@@ -563,7 +589,7 @@ HDR textures can be enabled explicitly with
 `log_mesh` adapter currently maps vertex colors and PBR values but does not
 ingest its optional texture argument.
 
-`PathTracerAPI` submits ray-tracing launches directly on its rendering stream.
+`PathTracer` submits ray-tracing launches directly on its rendering stream.
 OptiX launch capture is unsupported; `enable_cuda_graphs` logs a diagnostic
 and uses asynchronous launches. USD transform/TLAS device updates remain
 independently graph-capturable.
@@ -645,7 +671,7 @@ gl_viewer.set_draw_overlay(draw_contacts)
 ```
 
 Call `set_depth_buffer(api.linear_depth_output)` after a path-tracer resize and
-`destroy()` while the OpenGL context is current. See
+`close()` while the OpenGL context is current. See
 `examples_warp/example_warp_optix_pathtraced_contact_lines.py` for 100k
 contacts with a changing count and fully shuffled ordering.
 
@@ -699,7 +725,7 @@ The ID and transform arrays define a fixed launch capacity. A CUDA kernel may
 change the single active-count value inside a captured graph to update any
 prefix of those arrays without graph recapture or host synchronization.
 
-`usd.transforms` enumerates a stable `USDTransformHandle` for every composed
+`usd.transforms` enumerates a stable `UsdTransformHandle` for every composed
 transformable prim path. `usd.get_transform(path)` performs a non-throwing
 lookup, `usd.get_prim(path)` accesses any prim on the retained OpenUSD stage,
 and the CUDA local/world `wp.mat44` arrays are exposed after scene build. A
@@ -724,12 +750,13 @@ when direct registration is unavailable.
 ## Layout
 
 - `warp_optix/__init__.py` — public API.
-- `warp_optix/accel.py` — build inputs, `build_accel`/`update_accel`, and `Instance`/`make_instance`.
-- `warp_optix/pipeline.py` — `create_context`, `destroy_context`, `create_pipeline`, `HitGroup`, and `launch`.
-- `warp_optix/program.py` — rewrites Warp kernels into OptiX programs (`ProgramKind`).
-- `warp_optix/rays.py` — `closest_hit`, `any_hit`, `Hit`, and `MISS`.
-- `warp_optix/constants.py` — OptiX flag constants for device code.
-- `warp_optix/enums.py` — host-side flag and primitive-type enums.
+- `warp_optix/context.py` — implicit per-device contexts (`get_context`), device/stream resolution, and native-object release.
+- `warp_optix/config.py` — global settings (`validation`, `log_level`).
+- `warp_optix/accel.py` — build inputs, `Accel`, and `Instance`/`make_instance`.
+- `warp_optix/pipeline.py` — `Pipeline`, `HitGroup`, `LaunchParams`, and `launch`.
+- `warp_optix/program.py` — rewrites Warp kernels into OptiX programs (`ProgramKind`, `kernel`).
+- `warp_optix/rays.py` — `accel_query_ray`, `accel_query_ray_anyhit`, and `AccelQueryRay`.
+- `warp_optix/enums.py` — flag and primitive-type enums, usable on the host and in kernels.
 - `warp_optix/builtins.py` — OptiX builtin registrations.
 - `warp_optix/_native/include/warp_optix_builtins.h` — device-side C++ wrappers.
 - `warp_optix/native.py` — PyOptiX plus the supplemental bindings (`_backend.py`, `_ext`).

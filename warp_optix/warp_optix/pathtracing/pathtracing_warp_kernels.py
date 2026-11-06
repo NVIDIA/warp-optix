@@ -20,11 +20,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from warp_optix.constants import (
-    OPTIX_RAY_FLAG_CULL_BACK_FACING_TRIANGLES,
-    OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT,
-    OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT,
-)
+from warp_optix.enums import RayFlags
 
 from .func_common import Mat16f, Vec6f
 
@@ -1338,7 +1334,7 @@ def _backface_culling_ray_flag(params: PathtraceLaunchParams) -> wp.uint32:
     """Return triangle culling flags shared by camera, bounce, and shadow rays."""
     result = wp.uint32(0)
     if (params.flags & FLAGS_CULL_BACK_FACES) != wp.uint32(0):
-        result = wp.uint32(OPTIX_RAY_FLAG_CULL_BACK_FACING_TRIANGLES)
+        result = wp.uint32(RayFlags.CULL_BACK_FACING_TRIANGLES)
     return result
 
 
@@ -2544,15 +2540,15 @@ def _sample_sphere_light_contribution(
         params.tlas,
         _offset_ray_for_direction(position, material.Ng, sample.direction),
         sample.direction,
-        0.001,
         wp.max(sample.distance - 0.001, 0.001),
+        shadow,
+        0.001,
         0.0,
         wp.uint32(255),
-        wp.uint32(OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT | OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT),
+        wp.uint32(RayFlags.TERMINATE_ON_FIRST_HIT | RayFlags.DISABLE_CLOSESTHIT),
         wp.uint32(1),
         wp.uint32(2),
         wp.uint32(1),
-        shadow,
     )
     if shadow.visible == wp.uint32(1):
         bsdf = evaluated.bsdf_diffuse + evaluated.bsdf_glossy
@@ -2805,15 +2801,15 @@ def primary_raygen(params: PathtraceLaunchParams):
         params.tlas,
         origin,
         direction,
-        0.01,
         1.0e32,
+        payload,
+        0.01,
         0.0,
         wp.uint32(255),
         ray_flags,
         wp.uint32(0),
         wp.uint32(2),
         wp.uint32(0),
-        payload,
     )
 
     hitT = _payload_get_hitT(payload)
@@ -2954,15 +2950,15 @@ def primary_raygen(params: PathtraceLaunchParams):
             params.tlas,
             origin,
             direction,
-            0.01,
             1.0e32,
+            payload,
+            0.01,
             0.0,
             wp.uint32(255),
             ray_flags,
             wp.uint32(0),
             wp.uint32(2),
             wp.uint32(0),
-            payload,
         )
 
     # Virtual origin for PSR depth computation (matches C++ reference).
@@ -3124,18 +3120,18 @@ def primary_raygen(params: PathtraceLaunchParams):
                 params.tlas,
                 shadow_origin,
                 ls.direction,
-                0.001,
                 MISS_DISTANCE,
+                shadow,
+                0.001,
                 0.0,
                 wp.uint32(255),
                 wp.uint32(
-                    wp.uint32(OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT | OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT)
+                    wp.uint32(RayFlags.TERMINATE_ON_FIRST_HIT | RayFlags.DISABLE_CLOSESTHIT)
                     | _backface_culling_ray_flag(params)
                 ),
                 wp.uint32(1),
                 wp.uint32(2),
                 wp.uint32(1),
-                shadow,
             )
             if shadow.visible == wp.uint32(1):
                 mis_weight = _power_heuristic(ls.pdf, bsdf_eval.pdf)
@@ -3235,15 +3231,15 @@ def primary_raygen(params: PathtraceLaunchParams):
             params.tlas,
             sec_origin,
             sec_direction,
-            0.001,
             1.0e16,
+            sec_payload,
+            0.001,
             0.0,
             wp.uint32(255),
             wp.uint32(0) if (sec_event_type & BSDF_EVENT_TRANSMISSION) != 0 else ray_flags,
             wp.uint32(0),
             wp.uint32(2),
             wp.uint32(0),
-            sec_payload,
         )
 
         t_sec = _payload_get_hitT(sec_payload)
@@ -3347,18 +3343,18 @@ def primary_raygen(params: PathtraceLaunchParams):
                     params.tlas,
                     _offset_ray(sec_hit_pos, sec_pbr.Ng),
                     sec_ls.direction,
-                    0.001,
                     MISS_DISTANCE,
+                    sec_shadow,
+                    0.001,
                     0.0,
                     wp.uint32(255),
                     wp.uint32(
-                        wp.uint32(OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT | OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT)
+                        wp.uint32(RayFlags.TERMINATE_ON_FIRST_HIT | RayFlags.DISABLE_CLOSESTHIT)
                         | _backface_culling_ray_flag(params)
                     ),
                     wp.uint32(1),
                     wp.uint32(2),
                     wp.uint32(1),
-                    sec_shadow,
                 )
                 if sec_shadow.visible == wp.uint32(1):
                     sec_mis = _power_heuristic(sec_ls.pdf, sec_bsdf_eval.pdf)
@@ -3634,7 +3630,7 @@ def _compute_curve_hit_geometry(params: PathtraceLaunchParams, inst_id: wp.int32
             (r1 - r0) * (3.0 * one_minus_u2) + (r2 - r1) * (6.0 * one_minus_u * u) + (r3 - r2) * (3.0 * u2)
         )
     hit_world = wp.optix_get_world_ray_origin() + wp.optix_get_world_ray_direction() * wp.optix_get_ray_tmax()
-    hit_object = wp.optix_transform_point_from_world_to_object_space(hit_world)
+    hit_object = wp.optix_transform_point_world_to_object(hit_world)
     radial_object = wp.normalize(hit_object - center_object)
     axis_length = wp.length(axis_object)
     normal_object = radial_object
@@ -3642,8 +3638,8 @@ def _compute_curve_hit_geometry(params: PathtraceLaunchParams, inst_id: wp.int32
     # End caps and spherical elbows retain their radial normal.
     if u > 1.0e-5 and u < 1.0 - 1.0e-5 and axis_length > 1.0e-8:
         normal_object = wp.normalize(radial_object - axis_object * (radius_derivative / (axis_length * axis_length)))
-    geo.normal = wp.normalize(wp.optix_transform_normal_from_object_to_world_space(normal_object))
-    tangent_world = wp.normalize(wp.optix_transform_vector_from_object_to_world_space(axis_object))
+    geo.normal = wp.normalize(wp.optix_transform_normal_object_to_world(normal_object))
+    tangent_world = wp.normalize(wp.optix_transform_vector_object_to_world(axis_object))
     geo.tangent = wp.normalize(tangent_world - geo.normal * wp.dot(geo.normal, tangent_world))
     to_eye = -wp.normalize(wp.optix_get_world_ray_direction())
     if wp.dot(geo.normal, to_eye) < 0.0:
@@ -3701,7 +3697,7 @@ def _compute_hit_geometry(params: PathtraceLaunchParams, inst_id: wp.int32, tri_
     n1 = _fetch_vec3(vnor, normal_base + i1)
     n2 = _fetch_vec3(vnor, normal_base + i2)
     n_obj = wp.normalize(n0 * b0 + n1 * b1 + n2 * b2)
-    geo.normal = wp.normalize(wp.optix_transform_normal_from_object_to_world_space(n_obj))
+    geo.normal = wp.normalize(wp.optix_transform_normal_object_to_world(n_obj))
 
     # Tangent
     vtng = params.packed_tangents
@@ -3710,9 +3706,7 @@ def _compute_hit_geometry(params: PathtraceLaunchParams, inst_id: wp.int32, tri_
     t1 = _fetch_vec4(vtng, tangent_base + i1)
     t2 = _fetch_vec4(vtng, tangent_base + i2)
     t_interp = t0 * b0 + t1 * b1 + t2 * b2
-    t_world = wp.normalize(
-        wp.optix_transform_vector_from_object_to_world_space(wp.vec3(t_interp[0], t_interp[1], t_interp[2]))
-    )
+    t_world = wp.normalize(wp.optix_transform_vector_object_to_world(wp.vec3(t_interp[0], t_interp[1], t_interp[2])))
     geo.tangent = wp.normalize(t_world - geo.normal * wp.dot(geo.normal, t_world))
     geo.bitangent_sign = t_interp[3] * params.bitangent_flip
     # Match C++ closest-hit behavior: face-forward normal against view direction.
@@ -3747,9 +3741,9 @@ def _compute_hit_geometry(params: PathtraceLaunchParams, inst_id: wp.int32, tri_
     # triangle's texel density. This gives stable trilinear filtering without
     # tracing ray differentials.
     vertices = wp.optix_get_triangle_vertex_data()
-    p0 = wp.optix_transform_point_from_object_to_world_space(wp.vec3(vertices[0, 0], vertices[0, 1], vertices[0, 2]))
-    p1 = wp.optix_transform_point_from_object_to_world_space(wp.vec3(vertices[1, 0], vertices[1, 1], vertices[1, 2]))
-    p2 = wp.optix_transform_point_from_object_to_world_space(wp.vec3(vertices[2, 0], vertices[2, 1], vertices[2, 2]))
+    p0 = wp.optix_transform_point_object_to_world(wp.vec3(vertices[0, 0], vertices[0, 1], vertices[0, 2]))
+    p1 = wp.optix_transform_point_object_to_world(wp.vec3(vertices[1, 0], vertices[1, 1], vertices[1, 2]))
+    p2 = wp.optix_transform_point_object_to_world(wp.vec3(vertices[2, 0], vertices[2, 1], vertices[2, 2]))
     world_area = wp.length(wp.cross(p1 - p0, p2 - p0))
     duv0_1 = uv0_1 - uv0_0
     duv0_2 = uv0_2 - uv0_0
@@ -3957,13 +3951,13 @@ def primary_any_hit(params: PathtraceLaunchParams):
 @wp.kernel(module="unique")
 def secondary_miss(params: PathtraceLaunchParams):
     """Matches C++ __miss__secondary: visible path for shadow ray."""
-    wp.optix_set_payload_0(wp.uint32(1))
+    wp.optix_set_payload(0, wp.uint32(1))
 
 
 @wp.kernel(module="unique")
 def secondary_closest_hit(params: PathtraceLaunchParams):
     """Matches C++ __closesthit__secondary: occluded path for shadow ray."""
-    wp.optix_set_payload_0(wp.uint32(0))
+    wp.optix_set_payload(0, wp.uint32(0))
 
 
 @wp.kernel(module="unique")

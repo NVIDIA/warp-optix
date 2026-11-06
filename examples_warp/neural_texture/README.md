@@ -50,8 +50,7 @@ print(result.psnr, result.psnr_by_texture, result.selection_reason)
 
 # Loading, upload, and OptiX inference do not import warp-nn.
 asset = load_asset("material.wnt")
-context = wo.create_context("cuda:0")
-runtime = upload_asset(asset, context, device="cuda:0")
+runtime = upload_asset(asset, device="cuda:0")
 ```
 
 All maps must have the same resolution and may contain one to four channels;
@@ -75,7 +74,7 @@ def raygen(material: NeuralTextureView, image: wp.array2d(dtype=wp.vec3)):
     image[y, x] = wp.vec3(float(values[0]), float(values[1]), float(values[2]))
 
 
-pipeline = wo.create_pipeline(context, raygen)
+pipeline = wo.Pipeline(raygen)
 wo.launch(pipeline, dim=image.shape, inputs=[runtime.device_view(), image])
 ```
 

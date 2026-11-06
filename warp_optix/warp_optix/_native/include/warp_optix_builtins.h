@@ -62,9 +62,9 @@ inline CUDA_CALLABLE_DEVICE mat33 optix_mat33_rows(const float3 (&rows)[3])
     return mat33(rows[0].x, rows[0].y, rows[0].z, rows[1].x, rows[1].y, rows[1].z, rows[2].x, rows[2].y, rows[2].z);
 }
 
-// Bit casts used to move floats through 32-bit payload and attribute registers.
-inline CUDA_CALLABLE uint32 float_to_uint32(float x) { return __float_as_uint(x); }
-inline CUDA_CALLABLE float uint32_to_float(uint32 u) { return __uint_as_float(u); }
+// Bit reinterpretation used to move floats through 32-bit payload and attribute registers.
+inline CUDA_CALLABLE uint32 optix_float_as_uint32(float x) { return __float_as_uint(x); }
+inline CUDA_CALLABLE float optix_uint32_as_float(uint32 u) { return __uint_as_float(u); }
 
 // ---------------------------------------------------------------------------
 // Scalar state queries. Each wrapper forwards to the identically named OptiX
@@ -133,6 +133,13 @@ WP_OPTIX_SCALAR(uint32, optix_hit_object_get_instance_index, optixHitObjectGetIn
 WP_OPTIX_SCALAR(uint32, optix_hit_object_get_sbt_gas_index, optixHitObjectGetSbtGASIndex)
 WP_OPTIX_SCALAR(uint32, optix_hit_object_get_hit_kind, optixHitObjectGetHitKind)
 WP_OPTIX_VEC2(optix_hit_object_get_triangle_barycentrics, optixHitObjectGetTriangleBarycentrics)
+WP_OPTIX_SCALAR(float, optix_hit_object_get_curve_parameter, optixHitObjectGetCurveParameter)
+WP_OPTIX_VEC2(optix_hit_object_get_ribbon_parameters, optixHitObjectGetRibbonParameters)
+
+inline CUDA_CALLABLE_DEVICE uint32 optix_get_primitive_type_from_hit_kind(uint32 hit_kind)
+{
+    return static_cast<uint32>(optixGetPrimitiveType(hit_kind));
+}
 
 #undef WP_OPTIX_SCALAR
 #undef WP_OPTIX_VEC3
@@ -149,6 +156,28 @@ WP_OPTIX_INDEXED_8(WP_OPTIX_ATTRIBUTE)
 WP_OPTIX_INDEXED_8(WP_OPTIX_EXCEPTION_DETAIL)
 #undef WP_OPTIX_ATTRIBUTE
 #undef WP_OPTIX_EXCEPTION_DETAIL
+
+// Indexed forms. OptiX registers are only addressable by compile-time index; the
+// switch folds to the single intrinsic whenever the index is a constant.
+// Out-of-range reads return 0.
+#define WP_OPTIX_CASE(I, OPTIX)                                                                                        \
+    case I:                                                                                                            \
+        return OPTIX##I();
+#define WP_OPTIX_INDEXED_GET(NAME, OPTIX)                                                                              \
+    inline CUDA_CALLABLE_DEVICE uint32 NAME(uint32 index)                                                              \
+    {                                                                                                                  \
+        switch (index) {                                                                                               \
+            WP_OPTIX_CASE(0, OPTIX) WP_OPTIX_CASE(1, OPTIX) WP_OPTIX_CASE(2, OPTIX) WP_OPTIX_CASE(3, OPTIX)            \
+            WP_OPTIX_CASE(4, OPTIX) WP_OPTIX_CASE(5, OPTIX) WP_OPTIX_CASE(6, OPTIX) WP_OPTIX_CASE(7, OPTIX)            \
+        default:                                                                                                       \
+            return 0u;                                                                                                 \
+        }                                                                                                              \
+    }
+WP_OPTIX_INDEXED_GET(optix_get_attribute, optixGetAttribute_)
+WP_OPTIX_INDEXED_GET(optix_hit_object_get_attribute, optixHitObjectGetAttribute_)
+WP_OPTIX_INDEXED_GET(optix_get_exception_detail, optixGetExceptionDetail_)
+#undef WP_OPTIX_INDEXED_GET
+#undef WP_OPTIX_CASE
 #undef WP_OPTIX_INDEXED_8
 
 // ---------------------------------------------------------------------------
@@ -184,15 +213,15 @@ inline CUDA_CALLABLE_DEVICE vec3 optix_get_ribbon_normal(const vec2& parameters)
 
 #define WP_OPTIX_TRANSFORM(NAME, OPTIX, ARG)                                                                           \
     inline CUDA_CALLABLE_DEVICE vec3 NAME(const vec3& ARG) { return optix_vec3(OPTIX(optix_float3(ARG))); }
-WP_OPTIX_TRANSFORM(optix_transform_point_from_object_to_world_space, optixTransformPointFromObjectToWorldSpace, point)
-WP_OPTIX_TRANSFORM(optix_transform_vector_from_object_to_world_space, optixTransformVectorFromObjectToWorldSpace, vector)
-WP_OPTIX_TRANSFORM(optix_transform_normal_from_object_to_world_space, optixTransformNormalFromObjectToWorldSpace, normal)
-WP_OPTIX_TRANSFORM(optix_transform_point_from_world_to_object_space, optixTransformPointFromWorldToObjectSpace, point)
-WP_OPTIX_TRANSFORM(optix_transform_vector_from_world_to_object_space, optixTransformVectorFromWorldToObjectSpace, vector)
-WP_OPTIX_TRANSFORM(optix_transform_normal_from_world_to_object_space, optixTransformNormalFromWorldToObjectSpace, normal)
-WP_OPTIX_TRANSFORM(optix_hit_object_transform_point_from_object_to_world_space, optixHitObjectTransformPointFromObjectToWorldSpace, point)
-WP_OPTIX_TRANSFORM(optix_hit_object_transform_vector_from_object_to_world_space, optixHitObjectTransformVectorFromObjectToWorldSpace, vector)
-WP_OPTIX_TRANSFORM(optix_hit_object_transform_normal_from_object_to_world_space, optixHitObjectTransformNormalFromObjectToWorldSpace, normal)
+WP_OPTIX_TRANSFORM(optix_transform_point_object_to_world, optixTransformPointFromObjectToWorldSpace, point)
+WP_OPTIX_TRANSFORM(optix_transform_vector_object_to_world, optixTransformVectorFromObjectToWorldSpace, vector)
+WP_OPTIX_TRANSFORM(optix_transform_normal_object_to_world, optixTransformNormalFromObjectToWorldSpace, normal)
+WP_OPTIX_TRANSFORM(optix_transform_point_world_to_object, optixTransformPointFromWorldToObjectSpace, point)
+WP_OPTIX_TRANSFORM(optix_transform_vector_world_to_object, optixTransformVectorFromWorldToObjectSpace, vector)
+WP_OPTIX_TRANSFORM(optix_transform_normal_world_to_object, optixTransformNormalFromWorldToObjectSpace, normal)
+WP_OPTIX_TRANSFORM(optix_hit_object_transform_point_object_to_world, optixHitObjectTransformPointFromObjectToWorldSpace, point)
+WP_OPTIX_TRANSFORM(optix_hit_object_transform_vector_object_to_world, optixHitObjectTransformVectorFromObjectToWorldSpace, vector)
+WP_OPTIX_TRANSFORM(optix_hit_object_transform_normal_object_to_world, optixHitObjectTransformNormalFromObjectToWorldSpace, normal)
 #undef WP_OPTIX_TRANSFORM
 
 #define WP_OPTIX_MATRIX(NAME, OPTIX)                                                                                   \
@@ -202,10 +231,10 @@ WP_OPTIX_TRANSFORM(optix_hit_object_transform_normal_from_object_to_world_space,
         OPTIX(m);                                                                                                      \
         return optix_mat44(m);                                                                                         \
     }
-WP_OPTIX_MATRIX(optix_get_object_to_world_transform_matrix, optixGetObjectToWorldTransformMatrix)
-WP_OPTIX_MATRIX(optix_get_world_to_object_transform_matrix, optixGetWorldToObjectTransformMatrix)
-WP_OPTIX_MATRIX(optix_hit_object_get_object_to_world_transform_matrix, optixHitObjectGetObjectToWorldTransformMatrix)
-WP_OPTIX_MATRIX(optix_hit_object_get_world_to_object_transform_matrix, optixHitObjectGetWorldToObjectTransformMatrix)
+WP_OPTIX_MATRIX(optix_get_object_to_world_matrix, optixGetObjectToWorldTransformMatrix)
+WP_OPTIX_MATRIX(optix_get_world_to_object_matrix, optixGetWorldToObjectTransformMatrix)
+WP_OPTIX_MATRIX(optix_hit_object_get_object_to_world_matrix, optixHitObjectGetObjectToWorldTransformMatrix)
+WP_OPTIX_MATRIX(optix_hit_object_get_world_to_object_matrix, optixHitObjectGetWorldToObjectTransformMatrix)
 #undef WP_OPTIX_MATRIX
 
 inline CUDA_CALLABLE_DEVICE uint64 optix_get_transform_list_handle(uint32 index)
@@ -291,26 +320,49 @@ inline CUDA_CALLABLE_DEVICE void optix_invoke_words(uint32 (&w)[N], optix_index_
     optixInvoke(w[I]...);
 }
 
-template <typename Payload> inline CUDA_CALLABLE_DEVICE void optix_trace(WP_OPTIX_RAY_PARAMS, Payload& payload)
+// Public argument order mirrors wp.mesh_query_ray(id, start, dir, max_t): the
+// payload follows max_t, and everything after it has a default. Warp registers
+// one overload per argument count; C++ default arguments fill in the rest.
+#define WP_OPTIX_TRACE_TAIL                                                                                            \
+    float min_t = 0.0f, float time = 0.0f, uint32 mask = 0xFFu, uint32 flags = 0u, uint32 sbt_offset = 0u,             \
+          uint32 sbt_stride = 1u, uint32 miss_index = 0u
+#define WP_OPTIX_TRACE_NAMES id, start, dir, min_t, max_t, time, mask, flags, sbt_offset, sbt_stride, miss_index
+
+template <typename Payload>
+inline CUDA_CALLABLE_DEVICE void
+optix_trace(uint64 id, const vec3& start, const vec3& dir, float max_t, Payload& payload, WP_OPTIX_TRACE_TAIL)
 {
     using Words = optix_payload_words<Payload>;
     Words packed = {};
     packed.payload = payload;
-    optix_trace_words(WP_OPTIX_RAY_NAMES, packed.words, typename optix_make_index_sequence<Words::count>::type {});
+    optix_trace_words(WP_OPTIX_TRACE_NAMES, packed.words, typename optix_make_index_sequence<Words::count>::type {});
     payload = packed.payload;
 }
 
-template <typename Payload> inline CUDA_CALLABLE_DEVICE void optix_traverse(WP_OPTIX_RAY_PARAMS, Payload& payload)
+template <typename Payload>
+inline CUDA_CALLABLE_DEVICE void optix_traverse_payload(
+    uint64 id, const vec3& start, const vec3& dir, float max_t, Payload& payload, WP_OPTIX_TRACE_TAIL
+)
 {
     using Words = optix_payload_words<Payload>;
     Words packed = {};
     packed.payload = payload;
-    optix_traverse_words(WP_OPTIX_RAY_NAMES, packed.words, typename optix_make_index_sequence<Words::count>::type {});
+    optix_traverse_words(WP_OPTIX_TRACE_NAMES, packed.words, typename optix_make_index_sequence<Words::count>::type {});
     payload = packed.payload;
 }
 
 // Payload-free traversal: the result is read from the hit object in the caller.
-inline CUDA_CALLABLE_DEVICE void optix_traverse(WP_OPTIX_RAY_PARAMS) { optixTraverse(WP_OPTIX_RAY_ARGS); }
+inline CUDA_CALLABLE_DEVICE void
+optix_traverse(uint64 id, const vec3& start, const vec3& dir, float max_t, WP_OPTIX_TRACE_TAIL)
+{
+    optixTraverse(
+        static_cast<OptixTraversableHandle>(id), optix_float3(start), optix_float3(dir), min_t, max_t, time,
+        static_cast<OptixVisibilityMask>(mask), flags, sbt_offset, sbt_stride, miss_index
+    );
+}
+
+#undef WP_OPTIX_TRACE_TAIL
+#undef WP_OPTIX_TRACE_NAMES
 
 template <typename Payload> inline CUDA_CALLABLE_DEVICE void optix_invoke(Payload& payload)
 {
@@ -366,6 +418,10 @@ inline CUDA_CALLABLE_DEVICE void optix_set_payload_index(uint32 index, uint32 va
     }
 }
 
+inline CUDA_CALLABLE_DEVICE uint32 optix_get_payload(uint32 index) { return optix_get_payload_index(index); }
+inline CUDA_CALLABLE_DEVICE void optix_set_payload(uint32 index, uint32 value) { optix_set_payload_index(index, value); }
+
+// Deprecated numbered forms, kept until the indexed forms have been validated in the field.
 #define WP_OPTIX_PAYLOAD(I)                                                                                            \
     inline CUDA_CALLABLE_DEVICE uint32 optix_get_payload_##I() { return optixGetPayload_##I(); }                       \
     inline CUDA_CALLABLE_DEVICE void optix_set_payload_##I(uint32 value) { optixSetPayload_##I(value); }

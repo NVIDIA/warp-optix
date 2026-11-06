@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 from warp_optix import native
+from warp_optix.context import resolve
 
 
 @dataclass(frozen=True)
@@ -49,25 +50,27 @@ def _crop_output(source: wp.array2d(dtype=wp.vec4), output: wp.array2d(dtype=wp.
 class OptixDenoiser:
     """Temporal denoising, optionally with 2x upscaling, on one CUDA stream.
 
-    The context must belong to the stream's CUDA device. Input arrays are
-    borrowed until work on that stream completes. Output and history buffers
-    are owned by this object; call close() before releasing the context.
+    ``device``/``stream`` follow the usual contract: neither given uses the
+    current device and its current stream; only ``stream`` uses the stream's
+    device; only ``device`` uses that device's current stream; both must match.
+    Input arrays are borrowed until work on that stream completes. Output and
+    history buffers are owned by this object; call close() to release them early.
     """
 
     def __init__(
         self,
-        context,
         width: int,
         height: int,
         *,
-        upscale=False,
-        stream=None,
-        output_size=None,
+        upscale: bool = False,
+        device: wp.DeviceLike = None,
+        stream: wp.Stream | None = None,
+        output_size: tuple[int, int] | None = None,
     ):
         if width < 1 or height < 1:
             raise ValueError("Denoiser input dimensions must be positive")
         self._optix = native
-        self.stream = stream if stream is not None else wp.get_stream("cuda")
+        context, self.stream = resolve(device, stream)
         self.width, self.height = int(width), int(height)
         scale = 2 if upscale else 1
         self.output_width, self.output_height = self.width * scale, self.height * scale
@@ -91,7 +94,7 @@ class OptixDenoiser:
         device = self.stream.device
         with wp.ScopedStream(self.stream):
             try:
-                self._denoiser = context.denoiserCreate(getattr(native, model_name), options)
+                self._denoiser = context.native.denoiserCreate(getattr(native, model_name), options)
                 sizes = self._denoiser.computeMemoryResources(self.width, self.height)
                 self._state = wp.empty(sizes.stateSizeInBytes, dtype=wp.uint8, device=device)
                 self._scratch = wp.empty(

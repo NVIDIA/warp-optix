@@ -148,20 +148,19 @@ def test_weighted_training_loss_gradient():
 
 
 @pytest.mark.parametrize("fail", [False, True])
-def test_evaluator_destroys_context_even_on_initialization_failure(monkeypatch, fail):
-    destroyed = []
+def test_evaluator_closes_pipeline_even_on_initialization_failure(monkeypatch, fail):
+    closed = []
 
-    class Context:
-        def destroy(self):
-            destroyed.append(True)
+    class Pipeline:
+        def close(self):
+            closed.append(True)
 
     def initialize(self, image, pixels):
-        self.context = Context()
+        self.pipeline = Pipeline()
         if fail:
             raise RuntimeError("initialization failed")
 
     monkeypatch.setattr(evaluation._QualityEvaluator, "_initialize", initialize)
-    monkeypatch.setattr(wp, "synchronize_device", lambda device: None)
     if fail:
         with pytest.raises(RuntimeError, match="initialization failed"):
             evaluation._QualityEvaluator(np.zeros((2, 2, 3)), sampled=True, device="cuda:0")
@@ -169,4 +168,4 @@ def test_evaluator_destroys_context_even_on_initialization_failure(monkeypatch, 
         with evaluation._QualityEvaluator(np.zeros((2, 2, 3)), sampled=True, device="cuda:0") as scorer:
             pass
         scorer.close()  # Idempotent.
-    assert destroyed == [True]
+    assert closed == [True]

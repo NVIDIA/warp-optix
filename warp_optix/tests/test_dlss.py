@@ -10,7 +10,7 @@ import pytest
 import warp as wp
 from warp_optix.pathtracing import DenoiserInputs, DlssDenoiser, dlss_rr_available, dlss_rr_requirements
 from warp_optix.pathtracing import denoising as denoising_module
-from warp_optix.pathtracing.pathtracing_viewer import PathTracingViewer as Renderer
+from warp_optix.pathtracing.pathtracing_viewer import Renderer
 
 from warp_optix import native
 

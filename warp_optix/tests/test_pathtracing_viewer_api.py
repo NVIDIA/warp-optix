@@ -8,9 +8,9 @@ import pytest
 import warp as wp
 from PIL import Image
 from warp_optix.pathtracing import (
-    PathTracerAPI,
-    PathTracingRenderer,
-    PathTracingViewerBackend,
+    PathTracer,
+    Renderer,
+    ViewerBackend,
 )
 from warp_optix.pathtracing import pathtracing_viewer as viewer_module
 from warp_optix.pathtracing.scene import Scene
@@ -43,7 +43,7 @@ class _FakeScene:
         self.uploaded_material_ids = np.asarray(material_ids).copy()
 
 
-class _FakePathTracerAPI:
+class _FakePathTracer:
     def __init__(self):
         self.scene = _FakeScene()
         self.viewer = SimpleNamespace(tonemapped_output=None)
@@ -179,7 +179,7 @@ def _triangle():
 
 
 def test_scene_batches_instance_transforms_and_visibility():
-    scene = Scene(None)
+    scene = Scene()
     instance_ids = [scene.add_instance(0) for _ in range(3)]
     transforms = np.repeat(np.eye(4, dtype=np.float32)[None], 3, axis=0)
     transforms[:, 0, 3] = (1.0, 2.0, 3.0)
@@ -192,8 +192,8 @@ def test_scene_batches_instance_transforms_and_visibility():
 
 
 def test_reference_sky_and_srgb_color_mapping():
-    api = _FakePathTracerAPI()
-    viewer = PathTracingViewerBackend(device="cpu", headless=True, api=api)
+    api = _FakePathTracer()
+    viewer = ViewerBackend(device="cpu", headless=True, api=api)
     points, indices = _triangle()
 
     viewer.log_mesh(
@@ -243,8 +243,8 @@ def test_reference_sky_and_srgb_color_mapping():
 
 
 def test_log_mesh_binds_and_reuses_base_color_texture():
-    api = _FakePathTracerAPI()
-    viewer = PathTracingViewerBackend(device="cpu", headless=True, api=api)
+    api = _FakePathTracer()
+    viewer = ViewerBackend(device="cpu", headless=True, api=api)
     points, indices = _triangle()
     uvs = np.array(((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)), dtype=np.float32)
     texture = np.array(
@@ -276,7 +276,7 @@ def test_log_mesh_binds_and_reuses_base_color_texture():
 
 
 def test_sky_parameters_normalize_sun_direction():
-    api = PathTracerAPI.__new__(PathTracerAPI)
+    api = PathTracer.__new__(PathTracer)
     api._viewer = SimpleNamespace()
     api.initialize = lambda: True
 
@@ -295,8 +295,8 @@ def test_sky_parameters_normalize_sun_direction():
 
 def test_night_preset_enables_moon_and_visible_sky():
     """Enable an antipodal moon disk and a nonblack night atmosphere."""
-    api = _FakePathTracerAPI()
-    viewer = PathTracingViewerBackend(device="cpu", headless=True, api=api)
+    api = _FakePathTracer()
+    viewer = ViewerBackend(device="cpu", headless=True, api=api)
 
     viewer.set_time_of_day("night")
 
@@ -310,7 +310,7 @@ def test_night_preset_enables_moon_and_visible_sky():
 
 
 def test_light_intensity_controls_clamp_and_reset_history():
-    api = PathTracerAPI.__new__(PathTracerAPI)
+    api = PathTracer.__new__(PathTracer)
     api._viewer = SimpleNamespace(
         analytic_light_intensity=1.0,
         emissive_material_intensity=1.0,
@@ -333,7 +333,7 @@ def test_load_scene_from_usd_enables_composed_environment_before_building():
         load_from_usd=lambda *args, **kwargs: calls.append(("load", kwargs["clear_existing"])) or True,
         usd_environment_path="environment.hdr",
     )
-    api = PathTracerAPI.__new__(PathTracerAPI)
+    api = PathTracer.__new__(PathTracer)
     api._viewer = SimpleNamespace(_scene=scene)
     api.initialize = lambda: True
     api.build_scene = lambda: calls.append(("build",))
@@ -347,7 +347,7 @@ def test_load_scene_from_usd_enables_composed_environment_before_building():
 
 
 def test_resize_releases_old_denoiser_before_native_reallocation(monkeypatch):
-    viewer = PathTracingRenderer.__new__(PathTracingRenderer)
+    viewer = Renderer.__new__(Renderer)
     viewer.width = 800
     viewer.height = 600
     viewer._render_stream = object()
@@ -369,8 +369,8 @@ def test_resize_releases_old_denoiser_before_native_reallocation(monkeypatch):
 
 
 def test_logged_instances_apply_up_axis_materials_and_frame_lifecycle():
-    api = _FakePathTracerAPI()
-    viewer = PathTracingViewerBackend(device="cpu", headless=True, num_frames=1, up_axis="Z", api=api)
+    api = _FakePathTracer()
+    viewer = ViewerBackend(device="cpu", headless=True, num_frames=1, up_axis="Z", api=api)
     points, indices = _triangle()
     viewer.log_mesh("triangle", points, indices)
     xforms = np.array(((1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0),), dtype=np.float32)
@@ -402,8 +402,8 @@ def test_logged_instances_apply_up_axis_materials_and_frame_lifecycle():
 
 
 def test_instance_visibility_and_cached_material_updates():
-    api = _FakePathTracerAPI()
-    viewer = PathTracingViewerBackend(device="cpu", headless=True, api=api)
+    api = _FakePathTracer()
+    viewer = ViewerBackend(device="cpu", headless=True, api=api)
     points, indices = _triangle()
     viewer.log_mesh("triangle", points, indices)
     xforms = np.array(
@@ -452,7 +452,7 @@ class _FakePicking:
 
 
 def test_optional_picking_uses_physics_camera_ray_and_applies_forces():
-    api = _FakePathTracerAPI()
+    api = _FakePathTracer()
     created = []
 
     def factory(*args, **kwargs):
@@ -460,7 +460,7 @@ def test_optional_picking_uses_physics_camera_ray_and_applies_forces():
         created.append(picking)
         return picking
 
-    viewer = PathTracingViewerBackend(device="cpu", headless=True, api=api, up_axis="Z", picking_factory=factory)
+    viewer = ViewerBackend(device="cpu", headless=True, api=api, up_axis="Z", picking_factory=factory)
     model = SimpleNamespace(up_axis=2)
     viewer.set_model(model)
     picking = created[0]
@@ -477,8 +477,8 @@ def test_optional_picking_uses_physics_camera_ray_and_applies_forces():
 
 
 def test_debug_and_bridge_transform_compatibility():
-    api = _FakePathTracerAPI()
-    viewer = PathTracingViewerBackend(device="cpu", headless=True, api=api)
+    api = _FakePathTracer()
+    viewer = ViewerBackend(device="cpu", headless=True, api=api)
 
     viewer.set_debug_buffer_mode(7)
     assert api.debug_mode == 7
@@ -509,12 +509,12 @@ def test_debug_and_bridge_transform_compatibility():
 
 
 def test_screenshot_exports_display_orientation(tmp_path):
-    api = _FakePathTracerAPI()
+    api = _FakePathTracer()
     frame = np.zeros((2, 3, 4), dtype=np.uint8)
     frame[0, :, 0] = 255
     frame[1, :, 2] = 255
     api.get_frame_uint8 = lambda: frame
-    viewer = PathTracingViewerBackend(device="cpu", headless=True, api=api)
+    viewer = ViewerBackend(device="cpu", headless=True, api=api)
 
     path = viewer.save_screenshot(tmp_path / "capture.png")
     image = np.asarray(Image.open(path))
@@ -523,8 +523,8 @@ def test_screenshot_exports_display_orientation(tmp_path):
 
 
 def test_viewer_loads_usd_through_public_backend_api():
-    api = _FakePathTracerAPI()
-    viewer = PathTracingViewerBackend(device="cpu", headless=True, api=api)
+    api = _FakePathTracer()
+    viewer = ViewerBackend(device="cpu", headless=True, api=api)
     viewer._mesh_ids["old"] = 1
 
     loaded = viewer.load_scene_from_usd(
@@ -555,8 +555,8 @@ def test_viewer_loads_usd_through_public_backend_api():
 
 
 def test_renderer_space_look_at_preserves_level_z_up_camera():
-    api = _FakePathTracerAPI()
-    viewer = PathTracingViewerBackend(device="cpu", headless=True, up_axis="Z", api=api)
+    api = _FakePathTracer()
+    viewer = ViewerBackend(device="cpu", headless=True, up_axis="Z", api=api)
     viewer._ensure_initialized()
 
     position = np.array((1.0, 2.0, 3.0), dtype=np.float32)
@@ -575,8 +575,8 @@ def test_renderer_space_look_at_preserves_level_z_up_camera():
 
 
 def test_instance_capacity_is_enforced():
-    api = _FakePathTracerAPI()
-    viewer = PathTracingViewerBackend(device="cpu", headless=True, api=api, max_instances=1)
+    api = _FakePathTracer()
+    viewer = ViewerBackend(device="cpu", headless=True, api=api, max_instances=1)
     points, indices = _triangle()
     viewer.log_mesh("triangle", points, indices)
     xforms = np.array(
@@ -593,7 +593,7 @@ def test_instance_capacity_is_enforced():
 def test_volume_composite_launches_only_when_bound(monkeypatch):
     """Launch no volume work unless a volume is bound."""
     launches = []
-    viewer = viewer_module.PathTracingViewer.__new__(viewer_module.PathTracingViewer)
+    viewer = viewer_module.Renderer.__new__(viewer_module.Renderer)
     viewer.sample_index = 0
     viewer._render_width = 16
     viewer._render_height = 8
@@ -660,7 +660,7 @@ def test_tlas_refit_keeps_but_scene_rebuild_resets_temporal_history():
             self.optix = optix
 
     scene = _Scene()
-    api = PathTracerAPI.__new__(PathTracerAPI)
+    api = PathTracer.__new__(PathTracer)
     api._viewer = SimpleNamespace(
         _scene=scene,
         _optix=object(),
@@ -688,7 +688,7 @@ def test_tlas_refit_keeps_but_scene_rebuild_resets_temporal_history():
 
 
 def test_runtime_ray_budgets():
-    renderer = PathTracingRenderer.__new__(PathTracingRenderer)
+    renderer = Renderer.__new__(Renderer)
     renderer._pipeline_max_bounces = 6
     renderer.max_bounces = 4
     renderer.direct_light_samples = 1
@@ -715,7 +715,7 @@ def test_runtime_ray_budgets():
 
 
 def test_global_backface_culling_can_be_changed_at_runtime():
-    renderer = PathTracingRenderer.__new__(PathTracingRenderer)
+    renderer = Renderer.__new__(Renderer)
     renderer.backface_culling = True
     renderer.sample_index = 17
     renderer.frame_index = 9
@@ -740,7 +740,7 @@ def test_global_backface_culling_can_be_changed_at_runtime():
     assert renderer.frame_index == 3
     assert renderer._denoiser_reset_history is False
 
-    api = PathTracerAPI.__new__(PathTracerAPI)
+    api = PathTracer.__new__(PathTracer)
     api._viewer = renderer
     assert api.backface_culling is False
     api.set_backface_culling(True)
@@ -751,10 +751,10 @@ def test_global_backface_culling_can_be_changed_at_runtime():
 @pytest.mark.skipif(not wp.is_cuda_available(), reason="requires a CUDA device")
 def test_cuda_instance_batches_reuse_materials_after_count_changes():
     """Shrinking, hiding, and restoring batches must not rebuild materials."""
-    api = _FakePathTracerAPI()
+    api = _FakePathTracer()
     material_updates = []
     api.set_instance_material_arrays = lambda *args: material_updates.append(args)
-    viewer = PathTracingViewerBackend(device="cuda", headless=True, api=api)
+    viewer = ViewerBackend(device="cuda", headless=True, api=api)
     points, indices = _triangle()
     viewer.log_mesh("triangle", points, indices)
     colors = wp.array(np.ones((3, 3), dtype=np.float32), dtype=wp.vec3, device="cuda")

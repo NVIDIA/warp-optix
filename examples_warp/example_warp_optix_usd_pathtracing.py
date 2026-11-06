@@ -16,7 +16,7 @@ from warp_optix.gl import GLInteropViewer
 from warp_optix.pathtracing import (
     DEFAULT_VIEWER_HEIGHT,
     DEFAULT_VIEWER_WIDTH,
-    PathTracerAPI,
+    PathTracer,
 )
 
 
@@ -129,7 +129,7 @@ def _parse_args():
     return parser.parse_args()
 
 
-def _world_bounds(api: PathTracerAPI):
+def _world_bounds(api: PathTracer):
     scene = api.scene
     instance_bounds = []
     local_bounds = {}
@@ -193,7 +193,7 @@ def _camera_angles(position, direction):
     return np.asarray(position, dtype=np.float32), yaw, pitch
 
 
-def _authored_camera(api: PathTracerAPI, requested_path: str | None = None):
+def _authored_camera(api: PathTracer, requested_path: str | None = None):
     from pxr import UsdGeom, UsdRender
 
     usd_scene = api.usd_scene
@@ -249,7 +249,7 @@ def _authored_camera(api: PathTracerAPI, requested_path: str | None = None):
     return None
 
 
-def _camera_for_scene(api: PathTracerAPI, requested_path=None, use_authored=True):
+def _camera_for_scene(api: PathTracer, requested_path=None, use_authored=True):
     bounds_min, bounds_max = _world_bounds(api)
     center = (bounds_min + bounds_max) * 0.5
     radius = max(float(np.linalg.norm(bounds_max - bounds_min)) * 0.5, 1.0e-3)
@@ -281,7 +281,7 @@ def main():
         raise FileNotFoundError(f"USD scene does not exist: {scene_usd}")
 
     wp.init()
-    api = PathTracerAPI(
+    api = PathTracer(
         width=args.width,
         height=args.height,
         denoiser=args.denoiser,

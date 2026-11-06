@@ -50,6 +50,29 @@ class TraversableGraphFlags(IntFlag):
     ALLOW_SINGLE_LEVEL_INSTANCING = int(_backend.TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_LEVEL_INSTANCING)
 
 
+class RayFlags(IntFlag):
+    """Per-ray flags for ``optix_trace``/``optix_traverse`` and the ray queries; usable inside kernels."""
+
+    NONE = int(_backend.RAY_FLAG_NONE)
+    DISABLE_ANYHIT = int(_backend.RAY_FLAG_DISABLE_ANYHIT)
+    ENFORCE_ANYHIT = int(_backend.RAY_FLAG_ENFORCE_ANYHIT)
+    TERMINATE_ON_FIRST_HIT = int(_backend.RAY_FLAG_TERMINATE_ON_FIRST_HIT)
+    DISABLE_CLOSESTHIT = int(_backend.RAY_FLAG_DISABLE_CLOSESTHIT)
+    CULL_BACK_FACING_TRIANGLES = int(_backend.RAY_FLAG_CULL_BACK_FACING_TRIANGLES)
+    CULL_FRONT_FACING_TRIANGLES = int(_backend.RAY_FLAG_CULL_FRONT_FACING_TRIANGLES)
+    CULL_DISABLED_ANYHIT = int(_backend.RAY_FLAG_CULL_DISABLED_ANYHIT)
+    CULL_ENFORCED_ANYHIT = int(_backend.RAY_FLAG_CULL_ENFORCED_ANYHIT)
+    # Not exposed by PyOptiX 9.1; value from optix_types.h.
+    FORCE_OPACITY_MICROMAP_2_STATE = 1 << 10
+
+
+class HitKind(IntEnum):
+    """Hit kinds reported for built-in triangles; usable inside kernels."""
+
+    TRIANGLE_FRONT_FACE = int(_backend.HIT_KIND_TRIANGLE_FRONT_FACE)
+    TRIANGLE_BACK_FACE = int(_backend.HIT_KIND_TRIANGLE_BACK_FACE)
+
+
 class ExceptionFlags(IntFlag):
     NONE = int(_backend.EXCEPTION_FLAG_NONE)
     STACK_OVERFLOW = int(_backend.EXCEPTION_FLAG_STACK_OVERFLOW)

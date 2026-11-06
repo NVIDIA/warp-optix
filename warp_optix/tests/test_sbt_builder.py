@@ -28,15 +28,15 @@ def raygen(output: wp.array[wp.uint32], scene: wp.uint64, stride: wp.uint32, rad
         scene,
         wp.vec3(float(index // 2) * 2.0 + 0.25, 0.25, 1.0),
         wp.vec3(0.0, 0.0, -1.0),
-        0.0,
         100.0,
+        payload,
+        0.0,
         0.0,
         wp.uint32(255),
         wp.uint32(0),
         ray,
         stride,
         ray,
-        payload,
     )
     output[index] = payload.value
 
@@ -160,26 +160,20 @@ def test_empty_programs_for_hit_object_traversal():
 @pytest.mark.parametrize("options", [{"miss": (None,)}, {"hit_groups": ()}, {"ray_types": 1}])
 def test_builder_rejects_conflicting_options_before_compiling(options):
     with pytest.raises(ValueError, match="cannot be combined"):
-        wo.create_pipeline(None, raygen, sbt=wo.SbtBuilder(), **options)
+        wo.Pipeline(raygen, sbt=wo.SbtBuilder(), **options)
 
 
 @pytest.mark.parametrize("count", [0, -1, 16, 1.5, True])
 def test_invalid_trace_stride_is_rejected(count):
     with pytest.raises(ValueError, match="ray_types"):
-        wo.create_pipeline(None, raygen, ray_types=count)
+        wo.Pipeline(raygen, ray_types=count)
 
 
 @wp.kernel(module="unique")
 def write_instances(gas: wp.uint64, offsets: wp.array[wp.uint32], records: wp.array[wo.Instance]):
     i = wp.tid()
     records[i] = wo.make_instance(
-        wp.identity(3, float),
-        wp.vec3(float(i) * 2.0, 0.0, 0.0),
-        gas,
-        wp.uint32(i),
-        offsets[i],
-        wp.uint32(255),
-        wp.uint32(0),
+        wp.identity(3, float), wp.vec3(float(i) * 2.0, 0.0, 0.0), gas, wp.uint32(i), offsets[i], wp.uint32(255)
     )
 
 
@@ -190,39 +184,33 @@ def test_gpu_named_ray_and_instance_dispatch(rays, use_snapshot):
     if not wp.is_cuda_available():
         pytest.skip("CUDA unavailable")
     device = wp.get_device("cuda")
-    ctx = wo.create_context(device)
-    try:
-        builder = wo.SbtBuilder(rays)
-        glass = fill(builder)
-        metal = builder.add_hit_group(
-            "metal", radiance=wo.HitGroup(closest_hit=metal_hit), shadow=wo.HitGroup(closest_hit=metal_shadow)
-        )
-        pipeline = wo.create_pipeline(
-            ctx, raygen, sbt=builder.snapshot() if use_snapshot else builder, payload_words=1, device=device
-        )
-        layout = pipeline.sbt_layout
-        assert layout.get_sbt_offset(metal) == 2
-        vertices = wp.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=wp.vec3, device=device)
-        indices = wp.array([0, 1, 2], dtype=wp.uint32, device=device)
-        gas = wo.build_accel(ctx, [wo.triangles(vertices, indices)], device=device)
-        offsets = wp.array([layout.get_sbt_offset(glass), layout.get_sbt_offset(metal)], dtype=wp.uint32, device=device)
-        records = wp.empty(2, dtype=wo.Instance, device=device)
-        wp.launch(write_instances, dim=2, inputs=[gas.handle, offsets, records], device=device)
-        ias = wo.build_accel(ctx, [wo.instances(records)], device=device)
-        # Builder edits must not change the existing pipeline's layout or programs.
-        builder.set_miss("radiance", shadow_miss)
-        output = wp.zeros(6, dtype=wp.uint32, device=device)
-        wo.launch(
-            pipeline,
-            dim=(6,),
-            inputs=[
-                output,
-                ias.handle,
-                layout.trace_stride,
-                layout.ray_type_index("radiance"),
-                layout.ray_type_index("shadow"),
-            ],
-        )
-        np.testing.assert_array_equal(output.numpy(), [10, 11, 20, 21, 90, 91])
-    finally:
-        wo.destroy_context(ctx, device)
+    builder = wo.SbtBuilder(rays)
+    glass = fill(builder)
+    metal = builder.add_hit_group(
+        "metal", radiance=wo.HitGroup(closest_hit=metal_hit), shadow=wo.HitGroup(closest_hit=metal_shadow)
+    )
+    pipeline = wo.Pipeline(raygen, sbt=builder.snapshot() if use_snapshot else builder, payload_words=1, device=device)
+    layout = pipeline.sbt_layout
+    assert layout.get_sbt_offset(metal) == 2
+    vertices = wp.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=wp.vec3, device=device)
+    indices = wp.array([0, 1, 2], dtype=wp.uint32, device=device)
+    gas = wo.Accel([wo.triangles(vertices, indices)], device=device)
+    offsets = wp.array([layout.get_sbt_offset(glass), layout.get_sbt_offset(metal)], dtype=wp.uint32, device=device)
+    records = wp.empty(2, dtype=wo.Instance, device=device)
+    wp.launch(write_instances, dim=2, inputs=[gas.id, offsets, records], device=device)
+    ias = wo.Accel([wo.instances(records)], device=device)
+    # Builder edits must not change the existing pipeline's layout or programs.
+    builder.set_miss("radiance", shadow_miss)
+    output = wp.zeros(6, dtype=wp.uint32, device=device)
+    wo.launch(
+        pipeline,
+        dim=(6,),
+        inputs=[
+            output,
+            ias,
+            layout.trace_stride,
+            layout.ray_type_index("radiance"),
+            layout.ray_type_index("shadow"),
+        ],
+    )
+    np.testing.assert_array_equal(output.numpy(), [10, 11, 20, 21, 90, 91])

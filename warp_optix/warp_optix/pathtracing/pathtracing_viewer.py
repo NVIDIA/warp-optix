@@ -128,9 +128,9 @@ def _prepare_device_camera(
     states[0] = state
 
 
-class PathTracingViewer:
+class Renderer:
     """
-    OptiX Path Tracing Viewer.
+    OptiX path-tracing renderer.
 
     Renders a scene using hardware ray tracing with PBR materials.
     """
@@ -410,7 +410,6 @@ class PathTracingViewer:
                     (self.height + scale - 1) // scale,
                 )
                 self._optix_denoiser = OptixDenoiser(
-                    self._ctx,
                     self._render_width,
                     self._render_height,
                     upscale=self.optix_upscale,
@@ -620,12 +619,12 @@ class PathTracingViewer:
         if self._ctx is not None:
             self.close()
         self._optix = native
-        self._ctx = wo.create_context("cuda")
+        self._ctx = wo.get_context("cuda")
         try:
             self._set_active = False
 
             # Create scene
-            self._scene = Scene(self._ctx, enable_texture_mipmaps=self.enable_texture_mipmaps)
+            self._scene = Scene(enable_texture_mipmaps=self.enable_texture_mipmaps, device=self._ctx.device)
             if self._scene_setup is not None:
                 self._scene_setup(self._scene)
             else:
@@ -754,8 +753,7 @@ class PathTracingViewer:
         """
         linear = native.PRIMITIVE_TYPE_ROUND_LINEAR
         bezier = native.PRIMITIVE_TYPE_ROUND_CUBIC_BEZIER
-        self._pipeline = wo.create_pipeline(
-            self._ctx,
+        self._pipeline = wo.Pipeline(
             pwk.primary_raygen,
             miss=[pwk.primary_miss, pwk.secondary_miss],
             hit_groups=[
@@ -768,8 +766,8 @@ class PathTracingViewer:
             ],
             ray_types=2,
             payload_words=19,
-            graph_flags=native.TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_LEVEL_INSTANCING,
-            device="cuda",
+            graph_flags=wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
+            device=self._ctx.device,
         )
 
     @staticmethod
@@ -1331,10 +1329,12 @@ class PathTracingViewer:
         wp.synchronize_stream(self._render_stream)
         self._optix_graph_warmed = False
         self._destroy_denoisers()
-        # Destroying the context releases its pipelines and modules. GPU buffers
-        # are dropped afterwards so OptiX never sees them freed while in use.
-        if self._ctx is not None:
-            wo.destroy_context(self._ctx)
+        # Close explicitly rather than relying on refcounting: other objects
+        # (e.g. a UsdScene handle held by the caller) may still reference the scene.
+        if self._pipeline is not None:
+            self._pipeline.close()
+        if self._scene is not None:
+            self._scene.close()
         self._ctx = None
         self._pipeline = None
         self._scene = None
@@ -1352,7 +1352,7 @@ def main():
     logger.info("OptiX Path Tracing Viewer")
     logger.info("%s", "=" * 60)
 
-    viewer = PathTracingViewer(width=800, height=600)
+    viewer = Renderer(width=800, height=600)
 
     if not viewer.build():
         logger.error("Failed to build viewer.")

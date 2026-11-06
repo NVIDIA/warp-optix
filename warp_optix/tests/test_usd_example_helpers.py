@@ -38,7 +38,7 @@ def test_usd_bound_camera_is_preferred_and_bounds_are_world_space(tmp_path):
     stage.GetRootLayer().customLayerData = {"cameraSettings": {"boundCamera": "/World/Overview"}}
     stage.GetRootLayer().Save()
 
-    scene = Scene(None)
+    scene = Scene()
     assert scene.load_from_usd(path, apply_stage_units=False)
     result = _camera_for_scene(SimpleNamespace(scene=scene, usd_scene=scene.usd_scene))
     position, _yaw, _pitch, _fov, radius, camera_path = result
