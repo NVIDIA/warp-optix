@@ -53,6 +53,10 @@ Constructors and free functions take `device=` and, where they submit work, `str
 - only `device`: that device's current stream;
 - both: they must name the same device, otherwise `ValueError`.
 
+As with `wp.launch(stream=...)`, work submitted to a stream is ordered only after earlier work on
+that stream, not after the current stream; order producers on other streams with
+`stream.wait_stream()` or `stream.wait_event()`.
+
 `wo.Accel` without either uses the device of its inputs; `wo.launch` defaults to the pipeline's
 device. Methods of device-bound objects (`accel.refit()`, `params.assign()`) take only `stream=`.
 
@@ -147,8 +151,8 @@ max_registers, device)` compiles all programs into one module and builds the sha
   enables those debugging checks. Include `USER` when using `optix_throw_exception`.
 
 `wo.launch(pipeline, dim, inputs=None, device=None, stream=None, *, params=None)` mirrors `wp.launch`:
-it writes the launch parameters with a Warp kernel on `stream` and then launches OptiX on the same
-stream. Neither step synchronizes the host. `wo.Accel` objects in `inputs` are passed as their `id`
+it packs the launch parameters on the host, copies them to the device on `stream`, and then launches
+OptiX on the same stream. Neither step synchronizes the host. `wo.Accel` objects in `inputs` are passed as their `id`
 and kept alive for the launch. OptiX does not record its work into CUDA graphs, so `wo.launch`,
 `wo.Accel`, `refit()`/`rebuild()`, and `wo.Pipeline` raise `RuntimeError` during stream capture.
 Kernels written against a single launch-parameter struct (`def raygen(params: MyParams)`) work

@@ -140,14 +140,14 @@ def make_instance(
 class BuildInput:
     """A native descriptor together with the device arrays it borrows.
 
-    ``prepare`` (if set) runs on the build stream before every build and refit,
-    e.g. to pack separate bounds arrays into the layout OptiX reads.
+    ``prepare(stream)`` (if set) runs before every build and refit with the
+    build stream, e.g. to pack separate bounds arrays into the layout OptiX reads.
     """
 
     native: object
     arrays: tuple
     instance_records: wp.array | None = None
-    prepare: Callable[[], None] | None = None
+    prepare: Callable[[wp.Stream], None] | None = None
 
     @property
     def device(self) -> wp.Device:
@@ -257,10 +257,10 @@ def aabbs(
         if lowers.device != uppers.device or not lowers.device.is_cuda:
             raise ValueError("lowers and uppers must be CUDA arrays on the same device")
         bounds = wp.empty((lowers.size, 6), dtype=wp.float32, device=lowers.device)
-        packed, sources = bounds, (lowers, uppers)
-
-        def prepare():
-            wp.launch(_pack_bounds, lowers.size, inputs=[lowers, uppers, packed], device=packed.device)
+        sources = (lowers, uppers)
+        prepare = wp.launch(
+            _pack_bounds, lowers.size, inputs=[lowers, uppers, bounds], device=bounds.device, record_cmd=True
+        ).launch
 
     elif lowers is not None or uppers is not None:
         raise ValueError("pass either lowers and uppers, or bounds, not both")
@@ -394,10 +394,15 @@ class Accel:
         if compact and flags & BuildFlags.ALLOW_UPDATE:
             raise ValueError("compacted acceleration structures cannot be refit")
 
-        with wp.ScopedDevice(context.device), wp.ScopedStream(stream):
-            options = native.AccelBuildOptions(buildFlags=flags, operation=native.BUILD_OPERATION_BUILD)
+        def build_options(operation):
+            options = native.AccelBuildOptions(buildFlags=flags, operation=operation)
             if motion is not None:
                 options.motionOptions = motion
+            return [options] * len(inputs)
+
+        options = build_options(native.BUILD_OPERATION_BUILD)
+        native_inputs = [item.native for item in inputs]
+        with wp.ScopedDevice(context.device), wp.ScopedStream(stream, sync_enter=False):
             dependencies = []
             for item in inputs:
                 if item.instance_records is not None:
@@ -412,9 +417,8 @@ class Accel:
                         # Keep the child's memory, not just the object, so closing the child cannot free it.
                         dependencies.append((child, child._buffer))
                 if item.prepare is not None:
-                    item.prepare()
-            native_inputs = [item.native for item in inputs]
-            sizes = context.native.accelComputeMemoryUsage([options] * len(inputs), native_inputs)
+                    item.prepare(stream)
+            sizes = context.native.accelComputeMemoryUsage(options, native_inputs)
             scratch = wp.empty(
                 max(sizes.tempSizeInBytes, sizes.tempUpdateSizeInBytes), dtype=wp.uint8, device=context.device
             )
@@ -423,7 +427,7 @@ class Accel:
             emitted = [native.AccelEmitDesc(compacted_size.ptr, native.PROPERTY_TYPE_COMPACTED_SIZE)] if compact else []
             handle = context.native.accelBuild(
                 stream.cuda_stream,
-                [options] * len(inputs),
+                options,
                 native_inputs,
                 scratch.ptr,
                 scratch.size,
@@ -447,8 +451,10 @@ class Accel:
         self._scratch = scratch if flags & BuildFlags.ALLOW_UPDATE else None
         self._compacted = compact
         self._inputs = inputs
+        self._native_inputs = native_inputs
         self._flags = flags
-        self._motion = motion
+        self._rebuild_options = options
+        self._refit_options = build_options(native.BUILD_OPERATION_UPDATE) if flags & BuildFlags.ALLOW_UPDATE else None
         self._dependencies = tuple(dependencies)
         self._closed = False
         context._accels[self._id] = self
@@ -518,37 +524,35 @@ class Accel:
 
     def _update(self, *, rebuild: bool, stream: wp.Stream | None) -> None:
         self._check_open()
-        if not rebuild and not self._flags & BuildFlags.ALLOW_UPDATE:
+        if not rebuild and self._refit_options is None:
             raise ValueError("refit() requires an acceleration structure built with BuildFlags.ALLOW_UPDATE")
         if self._compacted:
             raise ValueError("compacted acceleration structures cannot be refit or rebuilt")
         context, stream = resolve(self.device, stream)
-        with wp.ScopedDevice(context.device), wp.ScopedStream(stream):
-            options = native.AccelBuildOptions(
-                buildFlags=self._flags,
-                operation=native.BUILD_OPERATION_BUILD if rebuild else native.BUILD_OPERATION_UPDATE,
-            )
-            if self._motion is not None:
-                options.motionOptions = self._motion
-            native_inputs = [item.native for item in self._inputs]
+        options = self._rebuild_options if rebuild else self._refit_options
+        with wp.ScopedDevice(context.device):
             scratch = self._scratch
             if scratch is None:
-                sizes = context.native.accelComputeMemoryUsage([options] * len(native_inputs), native_inputs)
-                scratch = wp.empty(sizes.tempSizeInBytes, dtype=wp.uint8, device=context.device)
+                sizes = context.native.accelComputeMemoryUsage(options, self._native_inputs)
+                with wp.ScopedStream(stream, sync_enter=False):
+                    scratch = wp.empty(sizes.tempSizeInBytes, dtype=wp.uint8, device=context.device)
             for item in self._inputs:
                 if item.prepare is not None:
-                    item.prepare()
-            handle = context.native.accelBuild(
-                stream.cuda_stream,
-                [options] * len(native_inputs),
-                native_inputs,
-                scratch.ptr,
-                scratch.size,
-                self._buffer.ptr,
-                self._buffer.size,
-                [],
+                    item.prepare(stream)
+            handle = int(
+                context.native.accelBuild(
+                    stream.cuda_stream,
+                    options,
+                    self._native_inputs,
+                    scratch.ptr,
+                    scratch.size,
+                    self._buffer.ptr,
+                    self._buffer.size,
+                    [],
+                )
             )
-        if context._accels.get(self._id) is self:
-            del context._accels[self._id]
-        self._id = int(handle)
-        context._accels[self._id] = self
+        if handle != self._id:
+            if context._accels.get(self._id) is self:
+                del context._accels[self._id]
+            self._id = handle
+            context._accels[handle] = self
