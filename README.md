@@ -3,7 +3,7 @@
 Warp ray tracing with PyOptiX 9.1.
 Write ray-generation, hit, miss, and callable programs as Warp kernels, or use
 the included path tracer. Applications import `warp_optix`. Installation brings
-in `pyoptix==9.1.0` for the standard OptiX bindings and builds a small extension
+in `pyoptix==9.1.1` for the standard OptiX bindings and builds a small extension
 for cooperative vectors and missing binding fields and fixes.
 
 > [!WARNING]
@@ -14,8 +14,11 @@ for cooperative vectors and missing binding fields and fixes.
 
 ## Installation
 
-Build from the repository root with Python 3.10+, a CUDA Toolkit and a C++17
-compiler. GPU execution requires a compatible NVIDIA driver. OptiX headers are fetched automatically.
+Releases publish wheels for Python 3.12 on Linux x86-64 and Windows x64 to PyPI
+(`pip install warp-optix`); they need only an NVIDIA driver. To build from source
+you need Python 3.12 and a C++17 compiler. No CUDA Toolkit or OptiX SDK is
+required: the build fetches the OptiX headers and takes `cuda.h` from the
+`nvidia-cuda-runtime-cu12` build requirement.
 
 The wheel includes unmodified OptiX SDK 9.1.0 headers under `warp_optix/include`
 for runtime kernel compilation, so a separate OptiX SDK installation is not

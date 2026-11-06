@@ -44,8 +44,8 @@ def _get_optix_include_dir():
 
 
 def _load_backend():
-    if version("pyoptix") != "9.1.0":
-        raise ImportError("warp-optix requires pyoptix==9.1.0; reinstall its dependencies")
+    if version("pyoptix") != "9.1.1":
+        raise ImportError("warp-optix requires pyoptix==9.1.1; reinstall its dependencies")
     upstream = import_module("optix")
     upstream_sdk = tuple(upstream.version())
     extension_sdk = tuple(_extensions.optix_version())
