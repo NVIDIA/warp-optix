@@ -3,7 +3,9 @@
 
 """Explicit parameter schemas, buffer ordering, and stage declarations."""
 
+import inspect
 import weakref
+from typing import Any
 
 import numpy as np
 import pytest
@@ -285,6 +287,51 @@ def test_raygen_arguments_are_checked():
         wo.launch(pipeline, (4,), [1, wp.empty(4, dtype=float, device="cuda")])
     with pytest.raises(TypeError):
         wo.launch(pipeline, (4,), [1.5, output])
+
+
+@wp.kernel(module="unique")
+def generic_write(value: Any, output: wp.array2d[Any]):
+    i, j = wp.tid()
+    output[i, j] = value * type(value)(i * 10 + j)
+
+
+@wp.kernel(module="unique")
+def generic_miss(value: Any):
+    wp.optix_set_payload(0, value + value)
+
+
+@wp.kernel(module="unique")
+def generic_array_miss(value: wp.array[Any]):
+    value[0] = value[0]
+
+
+def test_generic_programs_take_launch_parameter_types():
+    output = wp.zeros(4, dtype=wp.uint32, device="cuda")
+    wo.launch(wo.Pipeline(trace, miss=[generic_miss], params_type=Params, payload_words=1), (4,), [params(3, output)])
+    np.testing.assert_array_equal(output.numpy(), np.full(4, 6))
+
+    values = wp.zeros((2, 3), dtype=wp.float64, device="cuda")
+    wo.launch(
+        wo.Pipeline(wp.overload(generic_write, [wp.float64, wp.array2d[wp.float64]])), values.shape, [2.0, values]
+    )
+    np.testing.assert_array_equal(values.numpy(), [[0.0, 2.0, 4.0], [20.0, 22.0, 24.0]])
+
+    with pytest.raises(TypeError, match="type mismatch"):
+        wo.Pipeline(trace, miss=[generic_array_miss], params_type=Params)
+
+
+@wp.kernel(module="unique")
+def undefined_symbol(output: wp.array[wp.uint32]):
+    i = wp.tid()
+    output[i] = missing_symbol  # noqa: F821
+
+
+def test_program_errors_point_at_kernel_source():
+    lines, start = inspect.getsourcelines(undefined_symbol.func)
+    line = start + next(n for n, text in enumerate(lines) if "missing_symbol" in text)
+    with pytest.raises(wp.WarpCodegenKeyError, match="missing_symbol") as error:
+        wo.Pipeline(undefined_symbol)
+    assert f"{__file__}:{line}:" in str(error.value)
 
 
 def test_equal_pipelines_share_one_module_name():

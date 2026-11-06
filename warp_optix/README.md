@@ -84,7 +84,8 @@ OptiX programs can use ordinary `@wp.kernel(module="unique")` kernels. By defaul
 become the pipeline's launch parameters, and `wp.tid()` returns the launch index, so the same
 `dim` is used as with `wp.launch` (`dim=(height, width)` gives an OptiX launch of `width x
 height`). Every other program — miss, closest-hit, any-hit, intersection, direct callable, and
-exception — declares any subset of the raygen arguments **by name with identical types**:
+exception — declares any subset of the raygen arguments **by name with identical types** (a
+generic `typing.Any` argument takes the type of the launch parameter it binds):
 
 ```python
 @wp.struct
