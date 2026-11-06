@@ -22,8 +22,7 @@ def _renderer(monkeypatch, mode):
     renderer.denoiser = mode
     renderer.optix_upscale = False
     renderer._denoiser_explicit = True
-    renderer._ctx = object()
-    renderer._optix = object()
+    renderer._device = object()
     renderer._render_stream = object()
     renderer._optix_denoiser = None
     renderer._sync_prev_camera_matrices_to_current = lambda: None

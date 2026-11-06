@@ -17,9 +17,7 @@
 
 from __future__ import annotations
 
-import importlib.util
 import logging
-import os
 import sys
 from collections.abc import Iterable
 
@@ -37,7 +35,6 @@ from .arrows import (
 )
 from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH
 from .pathtracing_viewer import Renderer
-from .ptx_compiler import get_optix_include_dir
 from .scene import Curve, Mesh
 from .transform_utils import build_transform_matrix
 
@@ -96,18 +93,7 @@ class PathTracer:
         self._init_error: str | None = None
 
     def _build_init_error_message(self) -> str:
-        """Build actionable diagnostics for OptiX initialization failures."""
-        optix_available = importlib.util.find_spec("optix") is not None
-        optix_sdk_env = os.environ.get("OPTIX_SDK_INCLUDE_DIR")
-        optix_sdk_auto = get_optix_include_dir()
-        return (
-            "PathTracer initialization failed.\n"
-            f"- python executable: {sys.executable}\n"
-            f"- optix module importable: {optix_available}\n"
-            f"- OPTIX_SDK_INCLUDE_DIR: {optix_sdk_env!r}\n"
-            f"- auto-detected OptiX include dir: {optix_sdk_auto!r}\n"
-            "Ensure `optix` is installed in THIS interpreter and OptiX SDK include path is valid."
-        )
+        return f"PathTracer initialization failed (python executable: {sys.executable})"
 
     @property
     def viewer(self) -> Renderer:
@@ -344,7 +330,7 @@ class PathTracer:
 
     def build_scene(self):
         scene = self._require_scene()
-        scene.build(self._viewer._optix)
+        scene.build()
         self._viewer.sample_index = 0
         self._viewer.frame_index = 0
         self._viewer._denoiser_reset_history = True

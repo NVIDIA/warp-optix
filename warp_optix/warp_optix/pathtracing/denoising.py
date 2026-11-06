@@ -68,7 +68,6 @@ class OptixDenoiser:
     ):
         if width < 1 or height < 1:
             raise ValueError("Denoiser input dimensions must be positive")
-        self._optix = native
         context, self.stream = resolve(device, stream)
         self.width, self.height = int(width), int(height)
         scale = 2 if upscale else 1
@@ -127,7 +126,7 @@ class OptixDenoiser:
                 raise
 
     def _image(self, array, pixel_format, *, pixel_stride=None, width=None, height=None):
-        image = self._optix.Image2D()
+        image = native.Image2D()
         image.data = array.ptr
         image.width = self.width if width is None else width
         image.height = self.height if height is None else height
@@ -151,7 +150,6 @@ class OptixDenoiser:
                 raise ValueError(f"{name} must be a {dtype.__name__} array of shape {(self.height, self.width)}")
             if array.device != self.stream.device or not array.is_contiguous:
                 raise ValueError(f"{name} must be contiguous on {self.stream.device}")
-        optix = self._optix
         stream = int(self.stream.cuda_stream)
         with wp.ScopedStream(self.stream):
             if reset or not self._history_valid:
@@ -164,10 +162,10 @@ class OptixDenoiser:
                 inputs=[inputs.motion, self._flow],
                 stream=self.stream,
             )
-            guides = optix.DenoiserGuideLayer()
-            guides.albedo = self._image(inputs.albedo, optix.PIXEL_FORMAT_FLOAT3)
-            guides.normal = self._image(inputs.normal, optix.PIXEL_FORMAT_FLOAT3)
-            guides.flow = self._image(self._flow, optix.PIXEL_FORMAT_FLOAT2)
+            guides = native.DenoiserGuideLayer()
+            guides.albedo = self._image(inputs.albedo, native.PIXEL_FORMAT_FLOAT3)
+            guides.normal = self._image(inputs.normal, native.PIXEL_FORMAT_FLOAT3)
+            guides.flow = self._image(self._flow, native.PIXEL_FORMAT_FLOAT2)
             for field, buffer in (
                 ("previousOutputInternalGuideLayer", self._previous_guide),
                 ("outputInternalGuideLayer", self._output_guide),
@@ -177,27 +175,27 @@ class OptixDenoiser:
                     field,
                     self._image(
                         buffer,
-                        optix.PIXEL_FORMAT_INTERNAL_GUIDE_LAYER,
+                        native.PIXEL_FORMAT_INTERNAL_GUIDE_LAYER,
                         pixel_stride=self._guide_pixel_size,
                         width=self.output_width,
                         height=self.output_height,
                     ),
                 )
-            layer = optix.DenoiserLayer()
-            layer.input = self._image(inputs.color, optix.PIXEL_FORMAT_FLOAT4)
+            layer = native.DenoiserLayer()
+            layer.input = self._image(inputs.color, native.PIXEL_FORMAT_FLOAT4)
             layer.output = self._image(
                 self._output,
-                optix.PIXEL_FORMAT_FLOAT4,
+                native.PIXEL_FORMAT_FLOAT4,
                 width=self.output_width,
                 height=self.output_height,
             )
             layer.previousOutput = self._image(
                 self._previous_output,
-                optix.PIXEL_FORMAT_FLOAT4,
+                native.PIXEL_FORMAT_FLOAT4,
                 width=self.output_width,
                 height=self.output_height,
             )
-            params = optix.DenoiserParams()
+            params = native.DenoiserParams()
             params.hdrAverageColor = self._average_color.ptr
             params.temporalModeUsePreviousLayers = int(self._history_valid)
             self._denoiser.computeAverageColor(
