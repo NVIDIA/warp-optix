@@ -12,16 +12,20 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 if TYPE_CHECKING:
-    from .pipeline import HitGroup
+    from .pipeline import HitGroup, Record
 
 
 def _validate_entry(entry):
+    from .pipeline import Record
+
+    if isinstance(entry, Record):
+        entry = entry.program
     if entry is not None and not isinstance(entry, wp.Kernel):
         raise TypeError("Expected an ordinary Warp kernel or None")
 
 
 def _entry_name(entry):
-    return "(none)" if entry is None else entry.key
+    return "(none)" if entry is None else getattr(entry, "program", entry).key
 
 
 @dataclass(frozen=True)
@@ -48,7 +52,7 @@ class SbtLayout:
 
     ray_types: tuple[str, ...]
     hit_groups: tuple[HitGroupHandle, ...]
-    _miss_entries: tuple[wp.Kernel | None, ...] = field(repr=False)
+    _miss_entries: tuple[wp.Kernel | Record | None, ...] = field(repr=False)
     _hit_kernels: tuple[tuple[HitGroup, ...], ...] = field(repr=False)
 
     @property
@@ -144,7 +148,7 @@ class SbtBuilder:
         except ValueError:
             raise KeyError(f"Unknown ray type {name!r}; expected one of {self.ray_types}") from None
 
-    def set_miss(self, ray_type: str, kernel: wp.Kernel | None) -> None:
+    def set_miss(self, ray_type: str, kernel: wp.Kernel | Record | None) -> None:
         self.ray_type_index(ray_type)
         try:
             _validate_entry(kernel)

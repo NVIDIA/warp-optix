@@ -44,6 +44,7 @@ from warp_optix.enums import TraversableGraphFlags as TraversableGraphFlags
 from warp_optix.pipeline import HitGroup as HitGroup
 from warp_optix.pipeline import LaunchParams as LaunchParams
 from warp_optix.pipeline import Pipeline as Pipeline
+from warp_optix.pipeline import Record as Record
 from warp_optix.pipeline import launch as launch
 from warp_optix.program import ProgramKind as ProgramKind
 from warp_optix.program import kernel as kernel
@@ -71,6 +72,7 @@ __all__ = [
     "PrimitiveType",
     "ProgramKind",
     "RayFlags",
+    "Record",
     "SbtBuilder",
     "SbtLayout",
     "TraversableGraphFlags",

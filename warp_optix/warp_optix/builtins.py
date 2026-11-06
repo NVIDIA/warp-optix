@@ -102,6 +102,11 @@ _FUNCTIONS = {
     "optix_continuation_call": ({"sbt_index": _Int}, None, "Call the continuation-callable program at ``sbt_index``."),
     "optix_load_payload": ({"payload": Any}, None, "Read the payload registers into a Warp value."),
     "optix_store_payload": ({"payload": Any}, None, "Write a Warp value into the payload registers."),
+    "optix_load_sbt_data": (
+        {"data": Any},
+        None,
+        "Read this program's SBT record data into a Warp struct of the type given as ``data=`` on the host.",
+    ),
     "optix_get_payload": ({"index": _Int}, wp.uint32, "Read payload register ``index`` (0-31; use a constant)."),
     "optix_set_payload": ({"index": _Int, "value": wp.uint32}, None, "Write payload register ``index`` (0-31)."),
     "optix_get_attribute": ({"index": _Int}, wp.uint32, "Read intersection attribute ``index`` (0-7)."),
