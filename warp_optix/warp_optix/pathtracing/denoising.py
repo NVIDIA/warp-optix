@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import warp as wp
 
-from warp_optix import native
+from warp_optix import _ext, native
 from warp_optix.context import resolve
 
 
@@ -85,7 +85,7 @@ class OptixDenoiser:
         self._denoiser = None
         self._history_valid = False
         model_name = "DENOISER_MODEL_KIND_TEMPORAL_UPSCALE2X" if upscale else "DENOISER_MODEL_KIND_TEMPORAL_AOV"
-        if not hasattr(native, model_name) or not hasattr(native.DenoiserParams(), "temporalModeUsePreviousLayers"):
+        if not hasattr(native, model_name):
             raise RuntimeError("OptiX temporal denoising requires updated PyOptiX denoiser bindings")
         options = native.DenoiserOptions()
         options.guideAlbedo = 1
@@ -95,11 +95,12 @@ class OptixDenoiser:
             try:
                 self._denoiser = context.native.denoiserCreate(getattr(native, model_name), options)
                 sizes = self._denoiser.computeMemoryResources(self.width, self.height)
+                average_color_size, guide_pixel_size = _ext.denoiser_temporal_sizes(sizes)
                 self._state = wp.empty(sizes.stateSizeInBytes, dtype=wp.uint8, device=device)
                 self._scratch = wp.empty(
                     max(
                         sizes.withoutOverlapScratchSizeInBytes,
-                        sizes.computeAverageColorSizeInBytes,
+                        average_color_size,
                     ),
                     dtype=wp.uint8,
                     device=device,
@@ -114,7 +115,7 @@ class OptixDenoiser:
                     if (target_height, target_width) != shape
                     else None
                 )
-                self._guide_pixel_size = int(sizes.internalGuideLayerPixelSizeInBytes)
+                self._guide_pixel_size = int(guide_pixel_size)
                 guide_size = self.output_width * self.output_height * self._guide_pixel_size
                 self._previous_guide = wp.zeros(guide_size, dtype=wp.uint8, device=device)
                 self._output_guide = wp.zeros(guide_size, dtype=wp.uint8, device=device)
@@ -173,21 +174,19 @@ class OptixDenoiser:
             guides.albedo = self._image(inputs.albedo, optix.PIXEL_FORMAT_FLOAT3)
             guides.normal = self._image(inputs.normal, optix.PIXEL_FORMAT_FLOAT3)
             guides.flow = self._image(self._flow, optix.PIXEL_FORMAT_FLOAT2)
-            for field, buffer in (
-                ("previousOutputInternalGuideLayer", self._previous_guide),
-                ("outputInternalGuideLayer", self._output_guide),
-            ):
-                setattr(
-                    guides,
-                    field,
+            _ext.set_internal_guide_layers(
+                guides,
+                *(
                     self._image(
                         buffer,
                         optix.PIXEL_FORMAT_INTERNAL_GUIDE_LAYER,
                         pixel_stride=self._guide_pixel_size,
                         width=self.output_width,
                         height=self.output_height,
-                    ),
-                )
+                    )
+                    for buffer in (self._previous_guide, self._output_guide)
+                ),
+            )
             layer = optix.DenoiserLayer()
             layer.input = self._image(inputs.color, optix.PIXEL_FORMAT_FLOAT4)
             layer.output = self._image(
@@ -204,7 +203,7 @@ class OptixDenoiser:
             )
             params = optix.DenoiserParams()
             params.hdrAverageColor = self._average_color.ptr
-            params.temporalModeUsePreviousLayers = int(self._history_valid)
+            _ext.set_temporal_mode_use_previous_layers(params, int(self._history_valid))
             self._denoiser.computeAverageColor(
                 stream,
                 layer.input,

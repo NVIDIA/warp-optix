@@ -100,7 +100,7 @@ def upload_asset(
     output_element_type = native.COOP_VEC_ELEM_TYPE_FLOAT8_E4M3
     with wp.ScopedDevice(device):
         context = wo.get_context(device).native
-        flags = context.getProperty(native.DEVICE_PROPERTY_COOP_VEC)
+        flags = native.getCoopVecProperty(context)
     if not flags & int(native.DEVICE_PROPERTY_COOP_VEC_FLAG_STANDARD):
         raise RuntimeError("the selected OptiX device does not support cooperative vectors")
 
@@ -136,7 +136,8 @@ def upload_asset(
         for layer in asset.layers:
             matrix_total = _align(matrix_total, ALIGNMENT)
             weight_offsets.append(matrix_total)
-            size = context.coopVecMatrixComputeSize(
+            size = native.coopVecMatrixComputeSize(
+                context,
                 layer.weights.shape[0],
                 layer.weights.shape[1],
                 output_element_type,
@@ -194,7 +195,7 @@ def upload_asset(
                     dst_size,
                 )
             )
-        context.coopVecMatrixConvert(stream, input_descs, d_source.ptr, output_descs, d_matrices.ptr)
+        native.coopVecMatrixConvert(context, stream, input_descs, d_source.ptr, output_descs, d_matrices.ptr)
 
         wp.synchronize_device(device)
     return NeuralTextureRuntime(

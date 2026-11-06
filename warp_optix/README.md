@@ -389,9 +389,9 @@ deliberately not exposed.
 OptiX 9 cooperative vectors are native SDK facilities, not Warp operations. The Python extension
 exposes the host-side SDK pieces needed to prepare matrices:
 
-- `DEVICE_PROPERTY_COOP_VEC` and `DevicePropertyCoopVecFlags` for support queries.
+- `getCoopVecProperty(context)` and `DevicePropertyCoopVecFlags` for support queries.
 - `CoopVecElemType`, `CoopVecMatrixLayout`, and `CoopVecMatrixDescription`.
-- `DeviceContext.coopVecMatrixComputeSize()` and `DeviceContext.coopVecMatrixConvert()`.
+- `coopVecMatrixComputeSize(context, ...)` and `coopVecMatrixConvert(context, ...)`.
 
 The conversion call is asynchronous and follows OptiX's 64-byte alignment and allocation-lifetime
 requirements. Device-side intrinsics use explicit output vectors, the convention required by
