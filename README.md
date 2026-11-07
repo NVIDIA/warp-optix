@@ -2,7 +2,7 @@
 
 [![](docs/images/banner.jpg)](docs/images/banner.jpg)
 
-_Rendered with the included path tracer: a procedural chess set in wood, the same set in glass and gold, and glass and metal spheres refracting and reflecting the light._
+_Rendered with the included path tracer: a chess set in glass and gold; [Glass of Water](https://benedikt-bitterli.me/resources/) by aXel (CC0); and [The Breakfast Room](https://benedikt-bitterli.me/resources/) by Wig42 ([CC BY 3.0](https://creativecommons.org/licenses/by/3.0/), relit with a procedural sun) with one bounce of light on the left and eight on the right. Scenes from Benedikt Bitterli's rendering resources._
 
 warp-optix brings NVIDIA OptiX ray tracing to [Warp](https://github.com/NVIDIA/warp).
 OptiX programs (ray generation, hit, miss, callables) are ordinary Warp kernels,
