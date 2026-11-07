@@ -286,7 +286,8 @@ retain their Warp **device** arrays:
 | `wo.instances(records)` | `wp.array(dtype=wo.Instance)` |
 
 Geometry defaults to `GeometryFlags.DISABLE_ANYHIT`; pass `flags=wo.GeometryFlags.NONE` when an
-any-hit program must run.
+any-hit program must run. Any build input may be empty (no primitives or records); the structure
+then has nothing to intersect, which suits dynamic geometry that has no elements yet.
 
 `triangles()` and `curves()` read indices back once to validate their bounds.
 Keep those indices unchanged when reusing a build input; create a new input

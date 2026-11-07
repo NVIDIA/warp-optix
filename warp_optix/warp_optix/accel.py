@@ -204,18 +204,18 @@ def triangles(
     """
     keys = [points] if isinstance(points, wp.array) else list(points)
     num_vertices = _vertex_count(keys)
-    if indices.size == 0:
-        raise ValueError("triangles() needs at least one triangle")
     _validate_indices(indices, num_vertices, keys[0].device, triplets=True)
     build_input = native.BuildInputTriangleArray()
     build_input.vertexFormat = native.VERTEX_FORMAT_FLOAT3
     build_input.vertexStrideInBytes = 12
-    build_input.numVertices = num_vertices
-    build_input.vertexBuffers = [key.ptr for key in keys]
+    # OptiX requires null buffers for empty geometry, which builds a structure nothing intersects.
+    empty = indices.size == 0
+    build_input.numVertices = 0 if empty else num_vertices
+    build_input.vertexBuffers = [] if empty else [key.ptr for key in keys]
     build_input.indexFormat = native.INDICES_FORMAT_UNSIGNED_INT3
     build_input.indexStrideInBytes = 12
     build_input.numIndexTriplets = indices.size * wp.types.type_size_in_bytes(indices.dtype) // 12
-    build_input.indexBuffer = indices.ptr
+    build_input.indexBuffer = 0 if empty else indices.ptr
     build_input.flags = [int(flags)]
     build_input.numSbtRecords = 1
     return BuildInput(build_input, (*keys, indices))
@@ -268,8 +268,6 @@ def aabbs(
         raise ValueError("pass either lowers and uppers, or bounds, not both")
     if bounds.dtype != wp.float32 or bounds.size % 6 or not bounds.device.is_cuda or not bounds.is_contiguous:
         raise ValueError("bounds must be a contiguous CUDA float32 array of AABB sextuplets")
-    if bounds.size == 0:
-        raise ValueError("aabbs() needs at least one AABB")
     flags = [int(f) for f in flags] if isinstance(flags, Sequence) else [int(flags)]
     if not flags:
         raise ValueError("flags must contain at least one SBT record flag")
@@ -278,7 +276,7 @@ def aabbs(
             raise ValueError("sbt_indices must contain one uint32 value per AABB")
         _validate_indices(sbt_indices, len(flags), bounds.device)
     descriptor = native.BuildInputCustomPrimitiveArray(
-        aabbBuffers=[bounds.ptr],
+        aabbBuffers=[bounds.ptr] if bounds.size else [],
         numPrimitives=bounds.size // 6,
         strideInBytes=24,
         flags=flags,
@@ -325,8 +323,6 @@ def curves(
     degree = _CURVE_DEGREES.get(int(curve_type))
     if degree is None:
         raise ValueError(f"curve_type must be a curve PrimitiveType, got {curve_type!r}")
-    if indices.size == 0:
-        raise ValueError("curves() needs at least one segment")
     _validate_indices(indices, num_vertices - degree, point_keys[0].device)
     if len(width_keys) != len(point_keys) or any(
         key.dtype != wp.float32
@@ -336,27 +332,28 @@ def curves(
         for key in width_keys
     ):
         raise ValueError("widths must provide one float32 value per point on the points device")
+    if indices.size:
+        buffers = {
+            "vertexBuffers": [key.ptr for key in point_keys],
+            "numVertices": num_vertices,
+            "vertexStrideInBytes": 12,
+            "widthBuffers": [key.ptr for key in width_keys],
+            "widthStrideInBytes": 4,
+            "normalBuffers": [0] * len(point_keys),
+            "indexBuffer": indices.ptr,
+            "indexStrideInBytes": 4,
+        }
+    else:
+        # OptiX requires null buffers and zero strides for empty geometry.
+        buffers = {}
     descriptor = native.BuildInputCurveArray(
-        curveType=native.PrimitiveType(int(curve_type)),
-        numPrimitives=indices.size,
-        vertexBuffers=[key.ptr for key in point_keys],
-        numVertices=num_vertices,
-        vertexStrideInBytes=12,
-        widthBuffers=[key.ptr for key in width_keys],
-        widthStrideInBytes=4,
-        normalBuffers=[0] * len(point_keys),
-        indexBuffer=indices.ptr,
-        indexStrideInBytes=4,
-        flag=int(flags),
+        curveType=native.PrimitiveType(int(curve_type)), numPrimitives=indices.size, flag=int(flags), **buffers
     )
     return BuildInput(descriptor, (*point_keys, *width_keys, indices))
 
 
 def instances(records: wp.array) -> BuildInput:
-    """Instance input retaining its records; child ids must stay unchanged on refits.
-
-    ``records`` may be empty, which builds a structure nothing intersects.
-    """
+    """Instance input retaining its records; child ids must stay unchanged on refits."""
     if records.dtype is not Instance or not records.device.is_cuda or not records.is_contiguous:
         raise ValueError("records must be a contiguous CUDA array of Instance")
     return BuildInput(

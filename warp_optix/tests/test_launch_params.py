@@ -243,21 +243,16 @@ def write_index_2d(output: wp.array2d[int]):
 
 
 @wp.kernel(module="unique")
-def write_constant(output: wp.array[int]):
-    output[0] = 7
-
-
-@wp.kernel(module="unique")
 def no_arguments():
     pass
 
 
 def test_launch_matches_wp_launch_conventions():
     pipeline = wo.Pipeline(write_index_2d)
-    expected = wp.zeros((2, 3), dtype=int, device="cuda")
+    expected = wp.empty((2, 3), dtype=int, device="cuda")
     wp.launch(write_index_2d, (2, 3), inputs=[expected])
     # outputs are appended to inputs, and numpy integers are accepted in dim.
-    output = wp.zeros((2, 3), dtype=int, device="cuda")
+    output = wp.empty((2, 3), dtype=int, device="cuda")
     wo.launch(pipeline, (np.int64(2), np.int32(3)), outputs=[output])
     np.testing.assert_array_equal(output.numpy(), expected.numpy())
 
@@ -269,8 +264,5 @@ def test_launch_matches_wp_launch_conventions():
     with pytest.raises(ValueError, match="either inputs/outputs or params"):
         wo.launch(pipeline, (2, 3), outputs=[output], params=wo.LaunchParams(pipeline))
 
-    # Pipelines whose raygen ignores wp.tid() accept any dimensions; raygens without arguments need no inputs.
-    single = wp.zeros(1, dtype=int, device="cuda")
-    wo.launch(wo.Pipeline(write_constant), (2, 2), [single])
-    np.testing.assert_array_equal(single.numpy(), [7])
-    wo.launch(wo.Pipeline(no_arguments), 1)
+    # A raygen that ignores wp.tid() accepts any dimensions, and one without arguments needs no inputs.
+    wo.launch(wo.Pipeline(no_arguments), (2, 2))

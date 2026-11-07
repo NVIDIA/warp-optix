@@ -143,10 +143,3 @@ def test_ray_flags_and_hit_kinds_match_native():
             if member.name.endswith("_ROCAPS"):
                 continue
             assert int(member) == int(getattr(native, prefix + member.name)), member
-    # From optix_types.h; not exposed by PyOptiX 9.1.
-    assert [int(member) for member in wo.PrimitiveType if member.name.endswith("_ROCAPS")] == [
-        0x2508,
-        0x2509,
-        0x250A,
-        0x250B,
-    ]

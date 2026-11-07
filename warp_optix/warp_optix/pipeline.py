@@ -55,6 +55,14 @@ class HitGroup:
     intersection: wp.Kernel | None = None
     builtin: int | None = None
 
+    def __post_init__(self):
+        if self.builtin is None:
+            return
+        if self.intersection is not None:
+            raise ValueError("HitGroup intersection and builtin cannot be combined")
+        if int(self.builtin) not in _BUILTIN_PRIMITIVE_FLAGS:
+            raise ValueError(f"HitGroup.builtin must be a curve PrimitiveType, got {self.builtin!r}")
+
 
 class Pipeline:
     """Warp kernels compiled into a linked OptiX pipeline with its shader binding table.
@@ -125,13 +133,6 @@ class Pipeline:
             raise ValueError("hit_groups must contain one group per geometry type and ray type")
         if not miss:
             raise ValueError("miss must contain at least one entry (None for a record without a program)")
-        for group in hit_groups:
-            if group.builtin is None:
-                continue
-            if group.intersection is not None:
-                raise ValueError("a HitGroup cannot combine an intersection program with a builtin intersection")
-            if int(group.builtin) not in _BUILTIN_PRIMITIVE_FLAGS:
-                raise ValueError(f"HitGroup.builtin must be a curve PrimitiveType, got {group.builtin!r}")
         if params_type is not None and not all(hasattr(params_type, name) for name in ("vars", "ctype")):
             raise TypeError("params_type must be a Warp struct type")
         context, _ = resolve(device)
