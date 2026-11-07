@@ -45,7 +45,7 @@ ui = ["imgui-bundle>=1.92", "PyOpenGL>=3.1"]
 
 [project.urls]
 Homepage = "https://github.com/NVIDIA/warp-optix"
-Documentation = "https://github.com/NVIDIA/warp-optix/blob/main/warp_optix/README.md"
+Documentation = "https://github.com/NVIDIA/warp-optix#readme"
 Repository = "https://github.com/NVIDIA/warp-optix"
 Issues = "https://github.com/NVIDIA/warp-optix/issues"
 
