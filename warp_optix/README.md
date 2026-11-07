@@ -119,15 +119,17 @@ may be omitted but not skipped by keyword, because Warp's external-builtin API h
 arguments; `wp.optix_traverse()` takes the same arguments with an optional payload. Flags, masks,
 SBT indices, and register indices accept any integer type, so `wo.RayFlags` members need no cast.
 
-`wo.Pipeline(raygen, *, sbt, callables, continuation_callables, exception, exception_flags,
+`wo.Pipeline(raygen, *, sbt, callables, exception, exception_flags,
 payload_words, attribute_words, max_trace_depth, max_traversable_depth, graph_flags, motion_blur,
 max_registers, device)` compiles all programs into one module and builds the shader binding table:
 
 - `sbt` is a [`wo.SbtLayout`](#sbt-layouts) of ray types, miss records, and hit groups. The
   default is one ray type with a miss record without a program and one empty hit group.
-- `callables` are direct-callable programs, invoked with `wp.optix_direct_call(index)` in list
-  order. Callables use a no-argument, void interface: they read launch parameters and write
-  referenced Warp arrays. Miss and callable entries may be `wo.Record(kernel, data=)` to carry
+- `callables` are callable programs; `index` is the position in the list. Call a direct callable
+  with `wp.optix_direct_call(index)`, and declare a continuation callable with
+  `@wo.kernel(kind=wo.ProgramKind.CONTINUATION_CALLABLE)` and call it with
+  `wp.optix_continuation_call(index)`. Callables use a no-argument, void interface: they read
+  launch parameters and write referenced Warp arrays. Miss and callable entries may be `wo.Record(kernel, data=)` to carry
   [record data](#per-record-sbt-data).
 - `exception` enables user exceptions. Raise one with `wp.optix_throw_exception(code, ...)` (up
   to eight optional details) and read it with `wp.optix_get_exception_code()` and

@@ -62,7 +62,6 @@ class Pipeline:
         *,
         sbt: SbtLayout | None = None,
         callables: Sequence[wp.Kernel | Record] = (),
-        continuation_callables: Sequence[wp.Kernel | Record] = (),
         exception: wp.Kernel | None = None,
         exception_flags: int | None = None,
         params_type: type | None = None,
@@ -85,9 +84,8 @@ class Pipeline:
             raise TypeError("params_type must be a Warp struct type")
         miss, miss_data = _split_records(miss)
         callables, callable_data = _split_records(callables)
-        continuation_callables, continuation_data = _split_records(continuation_callables)
         hit_data = [group.data for group in hit_groups]
-        record_data = [*miss_data, *hit_data, *callable_data, *continuation_data]
+        record_data = [*miss_data, *hit_data, *callable_data]
         if any(data is not None and not _is_struct(data) for data in record_data):
             raise TypeError("SBT record data must be a Warp struct instance")
         context, _ = resolve(device)
@@ -112,8 +110,14 @@ class Pipeline:
                 )
                 for g in hit_groups
             ]
-            callable_programs = [program(k, ProgramKind.DIRECT_CALLABLE) for k in callables]
-            continuation_programs = [program(k, ProgramKind.CONTINUATION_CALLABLE) for k in continuation_callables]
+            # A callable is direct unless declared with wo.kernel(kind=ProgramKind.CONTINUATION_CALLABLE).
+            callable_kinds = [
+                ProgramKind.CONTINUATION_CALLABLE
+                if getattr(k, "_optix_kind", None) is ProgramKind.CONTINUATION_CALLABLE
+                else ProgramKind.DIRECT_CALLABLE
+                for k in callables
+            ]
+            callable_programs = [program(k, kind) for k, kind in zip(callables, callable_kinds)]
             exception_program = program(exception, ProgramKind.EXCEPTION)
 
             module = wp.get_module(module_name)
@@ -194,8 +198,12 @@ class Pipeline:
                 )
                 for group, (ch, ah, is_) in zip(hit_groups, hit_programs)
             ]
-            callable_descs = [native.ProgramGroupDesc(**slot("callables", "DC", k)) for k in callable_programs]
-            callable_descs += [native.ProgramGroupDesc(**slot("callables", "CC", k)) for k in continuation_programs]
+            callable_descs = [
+                native.ProgramGroupDesc(
+                    **slot("callables", "CC" if kind is ProgramKind.CONTINUATION_CALLABLE else "DC", k)
+                )
+                for k, kind in zip(callable_programs, callable_kinds)
+            ]
             exception_descs = (
                 [native.ProgramGroupDesc(**slot("exception", "", exception_program))] if exception_program else []
             )
@@ -214,7 +222,10 @@ class Pipeline:
                 native.util.accumulateStackSizes(group, stack_sizes, pipeline)
             pipeline.setStackSize(
                 *native.util.computeStackSizes(
-                    stack_sizes, max_trace_depth, 1 if continuation_callables else 0, 1 if callables else 0
+                    stack_sizes,
+                    max_trace_depth,
+                    int(ProgramKind.CONTINUATION_CALLABLE in callable_kinds),
+                    int(ProgramKind.DIRECT_CALLABLE in callable_kinds),
                 ),
                 max_traversable_depth,
             )
@@ -222,7 +233,7 @@ class Pipeline:
             # One device buffer holds every SBT record in descriptor order: the header, then
             # the record data. Each section's stride fits its largest record.
             header = native.SBT_RECORD_HEADER_SIZE
-            sections = [[None], [None] * len(exception_descs), miss_data, hit_data, callable_data + continuation_data]
+            sections = [[None], [None] * len(exception_descs), miss_data, hit_data, callable_data]
             strides = [_record_stride(section) for section in sections]
             bases = list(itertools.accumulate((len(s) * n for s, n in zip(sections, strides)), initial=0))
             offsets = [base + i * n for s, n, base in zip(sections, strides, bases) for i in range(len(s))]
