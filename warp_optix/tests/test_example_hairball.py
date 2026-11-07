@@ -9,12 +9,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples_warp"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples"))
 
-from example_warp_optix_pathtraced_hairball import (  # noqa: E402
-    generate_hair_ball,
-    rainbow_segment_slots,
-)
+from scenes.hairball import generate_hair_ball, rainbow_segment_slots
 
 
 def test_hair_ball_geometry_is_disjoint_tapered_and_deterministic():
