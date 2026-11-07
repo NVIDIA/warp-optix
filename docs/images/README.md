@@ -24,6 +24,7 @@ not part of this repository.
 ## Examples
 
 The other images show the examples in [`examples/`](../../examples/README.md):
-`chess`, `hairball` and `arrowball` are converged renders of
-`example_pathtracing.py` scenes (4,096 spp); `raytracing`, `mixed_geometry`,
+`chess`, `hairball`, `arrowball`, `glass_chess`, `glass_of_water` and
+`breakfast_room` are converged renders of `example_pathtracing.py` scenes
+(4,096 to 8,192 spp); `raytracing`, `mixed_geometry`,
 `curves` and `motion_blur` are the image outputs of the corresponding examples.

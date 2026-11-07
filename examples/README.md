@@ -17,15 +17,28 @@ uv sync --extra pathtracing --extra ui --extra usd
     <td width="33%" align="center"><a href="example_pathtracing.py"><img src="../docs/images/hairball.jpg" alt="--scene hairball"></a><br><code>--scene hairball</code></td>
     <td width="33%" align="center"><a href="example_pathtracing.py"><img src="../docs/images/arrowball.jpg" alt="--scene arrowball"></a><br><code>--scene arrowball</code></td>
   </tr>
+  <tr>
+    <td width="33%" align="center"><a href="example_pathtracing.py"><img src="../docs/images/glass_chess.jpg" alt="--scene glass_chess"></a><br><code>--scene glass_chess</code></td>
+    <td width="33%" align="center"><a href="example_pathtracing.py"><img src="../docs/images/glass_of_water.jpg" alt="--scene glass_of_water"></a><br><code>--scene glass_of_water</code></td>
+    <td width="33%" align="center"><a href="example_pathtracing.py"><img src="../docs/images/breakfast_room.jpg" alt="--scene breakfast_room"></a><br><code>--scene breakfast_room</code></td>
+  </tr>
 </table>
 
 ```bash
-uv run python examples/example_pathtracing.py --scene chess          # procedural chess set
-uv run python examples/example_pathtracing.py --scene hairball       # cubic Bézier curves
-uv run python examples/example_pathtracing.py --scene arrowball      # ArrowBatch curve arrows
-uv run python examples/example_pathtracing.py --scene contact_lines  # 100k OpenGL lines over the frame
-uv run python examples/example_pathtracing.py --gltf scene.glb       # or --usd scene.usd
+uv run python examples/example_pathtracing.py --scene chess           # procedural chess set
+uv run python examples/example_pathtracing.py --scene hairball        # cubic Bézier curves
+uv run python examples/example_pathtracing.py --scene arrowball       # ArrowBatch curve arrows
+uv run python examples/example_pathtracing.py --scene contact_lines   # 100k OpenGL lines over the frame
+uv run python examples/example_pathtracing.py --scene glass_chess     # glass and gold pieces
+uv run python examples/example_pathtracing.py --scene glass_of_water  # downloaded on first use (CC0)
+uv run python examples/example_pathtracing.py --scene breakfast_room  # downloaded on first use (CC BY 3.0)
+uv run python examples/example_pathtracing.py --gltf scene.glb        # or --usd scene.usd
 ```
+
+`glass_of_water` and `breakfast_room` are downloaded from Benedikt Bitterli's
+[rendering resources](https://benedikt-bitterli.me/resources/) into `~/.cache/warp-optix`:
+*Glass of Water* by aXel (CC0) and *The Breakfast Room* by Wig42
+([CC BY 3.0](https://creativecommons.org/licenses/by/3.0/)).
 
 Common options: `--width`, `--height`, `--denoiser {auto,optix,none}`, `--exposure`,
 `--max-frames N`, `--screenshot out.png`. Run with `--help` for per-scene options.
