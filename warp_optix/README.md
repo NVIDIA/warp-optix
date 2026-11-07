@@ -64,16 +64,15 @@ with `.close()` or `with`:
 - `close()` makes a resource unusable at once (`RuntimeError` on further use) and frees its device
   memory right away. That memory is `wp.array` storage, which Warp frees in stream order, so work
   already submitted can still read it. It never blocks the host.
-- A pipeline's native OptiX objects (pipeline, module, program groups), its shader binding table,
-  and its automatic parameter storage are released under the device's CUDA context once the launches
-  submitted before the close have finished, on whichever streams they ran, and never during a graph
-  capture on the device.
+- A pipeline's native OptiX objects (pipeline, module, program groups) are destroyed under the
+  device's CUDA context once the launches submitted before the close have finished, and never during
+  a graph capture on the device.
 - Kernels see an acceleration structure only as the integer `accel.id`. As with `wp.Mesh.id`, keep
   the `wo.Accel` alive while work that reads the id may still be submitted. A `wo.Accel` passed in
   launch inputs is referenced by the pipeline's parameter storage until the next launch on that
   stream replaces it.
 - An instance structure keeps the memory of its child structures alive, at every level of nesting,
-  even if a child is closed.
+  even if a child is closed or dropped.
 - Failed pipeline construction destroys only the native objects it created.
 
 ## Programs and pipelines

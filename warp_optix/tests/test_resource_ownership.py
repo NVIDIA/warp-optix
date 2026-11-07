@@ -126,15 +126,18 @@ def test_pipeline_close_defers_native_objects_and_buffers_until_launches_finish(
     settle()
     records = weakref.ref(pipeline._records)
     params = weakref.ref(pipeline._buffers[stream.cuda_stream].data)
+    sizes = [records().capacity, params().capacity]
     output = wp.empty(1, dtype=float, device="cuda")
     gate.block(stream)
     wo.launch(pipeline, 1, [output], stream=stream)
 
-    # close() returns at once; native objects and launch buffers survive the pending launch.
+    # close() returns at once and frees device memory in stream order, like wp.array;
+    # the native objects are destroyed only after the pending launch.
     pipeline.close()
-    gc.collect()
     assert pipeline.closed and destroyed == [] and len(context._releases) == 1
-    assert records() is not None and params() is not None
+    assert records() is None and params() is None
+    # Without stream-ordered frees, these allocations could reuse and overwrite that memory now.
+    clobber = [wp.full(size, 255, dtype=wp.uint8, device="cuda") for size in sizes]
     with pytest.raises(RuntimeError, match="closed"):
         wo.launch(pipeline, 1, [output])
 
@@ -142,8 +145,8 @@ def test_pipeline_close_defers_native_objects_and_buffers_until_launches_finish(
     settle()
     assert context._releases == []
     assert {id(obj) for obj in destroyed} == {id(obj) for obj in owned}
-    assert records() is None and params() is None
     np.testing.assert_array_equal(output.numpy(), [42.0])
+    del clobber
 
 
 def test_dropping_a_launched_pipeline_releases_it_without_garbage_collection(destroyed):
@@ -251,17 +254,16 @@ def test_instances_keep_closed_children_alive_at_every_level():
     settle()
     vertices, indices = geometry()
     gas = wo.Accel([wo.triangles(vertices, indices)])
-    gas_buffer = weakref.ref(gas._buffer)
+    gas_ref, gas_buffer = weakref.ref(gas), weakref.ref(gas._buffer)
     inner_records = instance_records(gas)
     inner = wo.Accel([wo.instances(inner_records)])
-    assert [child for child, _, _ in inner._dependencies] == [gas]
     outer = wo.Accel([wo.instances(instance_records(inner))])
 
-    gas.close()
+    # Instances keep their children's memory, not the objects: a dropped child is collected.
+    del gas, vertices, indices
     inner.close()
-    del vertices, indices
     settle()
-    assert gas_buffer() is not None
+    assert gas_ref() is None and gas_buffer() is not None
     depth = wp.empty(1, dtype=float, device="cuda")
     wo.launch(wo.Pipeline(depth_raygen, max_traversable_depth=3), 1, [outer, depth])
     np.testing.assert_allclose(depth.numpy(), [5.0])

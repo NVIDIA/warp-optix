@@ -69,9 +69,9 @@ class Pipeline:
     ``ray_types``; the pipeline keeps the snapshot as :attr:`sbt_layout`.
 
     Release is automatic when the last reference is dropped, or explicit with
-    :meth:`close` or ``with``. The native OptiX objects, the shader binding
-    table, and the automatic parameter storage are released once the launches
-    submitted before the release have finished, on whichever streams they ran.
+    :meth:`close` or ``with``. Device memory is freed in stream order, like
+    ``wp.array``; the native OptiX objects are destroyed once the launches
+    submitted before the release have finished.
     """
 
     def __init__(
@@ -329,7 +329,6 @@ class Pipeline:
         self._closed = True
         owned = self._owned
         streams = tuple(self._streams.values())
-        retained = [self._records, self._buffers]
         self._buffers = {}
         self._streams = {}
         self._owned = ()
@@ -338,7 +337,6 @@ class Pipeline:
         def destroy():
             for obj in reversed(owned):
                 obj.destroy()
-            retained.clear()
 
         self._context.release(destroy, streams)
 
