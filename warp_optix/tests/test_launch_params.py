@@ -154,46 +154,34 @@ def test_invalid_params_schemas_and_stage_placements():
         wo.launch(pipeline, (1,), params=launch_params)
 
 
-@wp.kernel(module="unique")
-def spin(iterations: int, sink: wp.array[float]):
-    x = float(0.0)
-    for _ in range(iterations):
-        x = wp.sin(x + 1.0)
-    sink[0] = x
-
-
-def test_dropping_launch_params_frees_storage_in_stream_order():
+def test_dropping_launch_params_frees_storage_in_stream_order(gate):
     pipeline = wo.Pipeline(write, params_type=Params)
     device = pipeline.device
     stream = wp.Stream(device)
-    sink = wp.empty(1, dtype=float, device=device)
-    # Warm up every kernel first: loading a CUDA module synchronizes the device.
+    # Warm-up: loading a CUDA module synchronizes the device.
     warm = wo.LaunchParams(pipeline)
     warm.assign(params(1, wp.empty(1, dtype=wp.uint32, device=device)), stream=stream)
     wo.launch(pipeline, (1,), params=warm, stream=stream)
-    wp.launch(spin, 1, inputs=[1, sink], stream=stream)
     wp.synchronize_device(device)
 
-    # Keep the stream busy (about one second) so the launch below is still pending.
-    wp.launch(spin, 1, inputs=[4_000_000, sink], stream=stream)
-    busy = stream.record_event()
+    gate.block(stream)
     output = wp.empty(128, dtype=wp.uint32, device=device)
     launch_params = wo.LaunchParams(pipeline)
     storage_ref = weakref.ref(launch_params.data)
     launch_params.assign(params(53, output), stream=stream)
     wo.launch(pipeline, (128,), params=launch_params, stream=stream)
-    assert not busy.is_complete, "busy kernel finished too early for this test"
     # Like a wp.array, the storage goes away with its last reference (no garbage collection
     # needed); Warp frees the device memory in stream order, so the pending launch still reads it.
     del launch_params
     assert storage_ref() is None
+    gate.open()
     wp.synchronize_stream(stream)
     np.testing.assert_array_equal(output.numpy(), np.full(128, 53))
 
 
 def test_launch_params_close_and_with():
     pipeline = wo.Pipeline(write, params_type=Params)
-    output = wp.zeros(16, dtype=wp.uint32, device=pipeline.device)
+    output = wp.empty(16, dtype=wp.uint32, device=pipeline.device)
     with wo.LaunchParams(pipeline) as launch_params:
         storage_ref = weakref.ref(launch_params.data)
         launch_params.assign(params(7, output))
