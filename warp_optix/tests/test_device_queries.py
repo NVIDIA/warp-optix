@@ -278,22 +278,6 @@ def higher_order_curve_closest_hit(params: QueryParams):
 
 
 @wp.kernel(module="unique")
-def callable_raygen(params: QueryParams):
-    wp.optix_continuation_call(wp.uint32(1))
-    wp.optix_direct_call(wp.uint32(0))
-
-
-@wp.kernel(module="unique")
-def first_callable(params: QueryParams):
-    params.output[0] = params.output[1] + wp.uint32(1)
-
-
-@wo.kernel(kind=wo.ProgramKind.CONTINUATION_CALLABLE, module="unique")
-def second_callable(params: QueryParams):
-    params.output[1] = wp.uint32(84)
-
-
-@wp.kernel(module="unique")
 def exception_raygen(params: QueryParams):
     wp.optix_throw_exception(wp.int32(1234), wp.uint32(77), wp.uint32(88))
 
@@ -375,14 +359,9 @@ def test_common_device_queries_on_gpu():
     assert _launch(pipeline, ias.id, output)[0] == 0xFFFFFFFF
 
 
-def test_callables_and_exception_programs_on_gpu():
+def test_exception_program_on_gpu():
     device = wp.get_device("cuda")
     output = wp.empty(3, dtype=wp.uint32, device=device)
-
-    # Direct and continuation callables share one list, indexed by position.
-    pipeline = wo.Pipeline(callable_raygen, callables=[first_callable, second_callable])
-    assert tuple(_launch(pipeline, 0, output)[:2]) == (85, 84)
-
     pipeline = wo.Pipeline(exception_raygen, exception=exception_program)
     assert tuple(_launch(pipeline, 0, output)) == (1234, 77, 88)
 

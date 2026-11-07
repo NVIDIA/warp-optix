@@ -95,12 +95,6 @@ def layout(rays=("radiance", "shadow"), **groups):
 METAL = {"radiance": wo.HitGroup(closest_hit=metal_hit), "shadow": wo.HitGroup(closest_hit=metal_shadow)}
 
 
-@pytest.mark.parametrize("names", [[], [""], ["a", "a"], [None], [str(i) for i in range(16)]])
-def test_invalid_ray_types(names):
-    with pytest.raises(ValueError):
-        wo.SbtLayout(names, miss=None, hit_groups={})
-
-
 def test_named_offsets_and_description():
     sbt = layout(metal=METAL)
     assert sbt.get_sbt_offset("glass") == 0
@@ -117,6 +111,9 @@ def test_named_offsets_and_description():
         sbt.hit_groups["copper"] = METAL
     description = sbt.describe()
     assert "shadow_miss" in description and "glass_shadow" in description and "metal" in description
+    # Indices follow the declared ray order; offsets count records per group.
+    reversed_sbt = layout(("shadow", "radiance"), metal=METAL)
+    assert reversed_sbt.ray_type_index("radiance") == 1 and reversed_sbt.get_sbt_offset("metal") == 2
 
 
 def test_bare_entries_apply_to_every_ray_type():
@@ -136,6 +133,9 @@ def test_bare_entries_apply_to_every_ray_type():
 
 
 def test_missing_and_incompatible_entries():
+    for names in ([], [""], ["a", "a"], [None], [str(i) for i in range(16)]):
+        with pytest.raises(ValueError):
+            wo.SbtLayout(names, miss=None, hit_groups={})
     with pytest.raises(ValueError, match="Miss.*missing.*shadow"):
         wo.SbtLayout(("radiance", "shadow"), miss={"radiance": None})
     with pytest.raises(TypeError, match="Warp kernel"):
@@ -165,12 +165,11 @@ def write_instances(gas: wp.uint64, offsets: wp.array[wp.uint32], records: wp.ar
 
 
 @pytest.mark.gpu
-@pytest.mark.parametrize("rays", [("radiance", "shadow"), ("shadow", "radiance")])
-def test_gpu_named_ray_and_instance_dispatch(rays):
-    if not wp.is_cuda_available():
-        pytest.skip("CUDA unavailable")
+@pytest.mark.skipif(not wp.is_cuda_available(), reason="CUDA unavailable")
+def test_gpu_named_ray_and_instance_dispatch():
     device = wp.get_device("cuda")
-    pipeline = wo.Pipeline(raygen, sbt=layout(rays, metal=METAL), payload_words=1, device=device)
+    # Reversed ray order, so the dispatch relies on the layout's indices rather than declaration order.
+    pipeline = wo.Pipeline(raygen, sbt=layout(("shadow", "radiance"), metal=METAL), payload_words=1, device=device)
     sbt = pipeline.sbt_layout
     vertices = wp.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=wp.vec3, device=device)
     indices = wp.array([0, 1, 2], dtype=wp.uint32, device=device)
@@ -179,7 +178,7 @@ def test_gpu_named_ray_and_instance_dispatch(rays):
     records = wp.empty(2, dtype=wo.Instance, device=device)
     wp.launch(write_instances, dim=2, inputs=[gas.id, offsets, records], device=device)
     ias = wo.Accel([wo.instances(records)], device=device)
-    output = wp.zeros(6, dtype=wp.uint32, device=device)
+    output = wp.empty(6, dtype=wp.uint32, device=device)
     wo.launch(
         pipeline,
         dim=(6,),
