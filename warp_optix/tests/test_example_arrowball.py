@@ -9,9 +9,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples_warp"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples"))
 
-from example_warp_optix_pathtraced_arrowball import generate_arrow_ball  # noqa: E402
+from scenes.arrowball import generate_arrow_ball
 
 
 def test_arrow_ball_is_outward_randomized_and_deterministic():

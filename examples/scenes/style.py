@@ -1,9 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared palette and scene styling for path-traced geometry examples."""
+"""Shared palette, ground, sky, and camera helpers for the path-tracing scenes."""
 
 from __future__ import annotations
+
+import math
 
 import numpy as np
 
@@ -113,3 +115,12 @@ def configure_demo_sky(api) -> None:
         sun_disk_intensity=1.2,
         sun_glow_intensity=0.8,
     )
+
+
+def camera_angles(position, direction) -> tuple[np.ndarray, float, float]:
+    """Return (position, yaw, pitch) in degrees for a camera looking along `direction`."""
+    direction = np.asarray(direction, dtype=np.float64)
+    direction /= max(float(np.linalg.norm(direction)), 1.0e-20)
+    yaw = math.degrees(math.atan2(float(direction[0]), float(direction[2])))
+    pitch = math.degrees(math.asin(float(np.clip(direction[1], -1.0, 1.0))))
+    return np.asarray(position, dtype=np.float32), yaw, pitch

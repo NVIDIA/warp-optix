@@ -10,14 +10,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples_warp"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples"))
 
-from example_warp_optix_usd_pathtracing import (
-    _authored_camera,
-    _camera_for_scene,
-    _default_camera_speed,
-    _world_bounds,
-)
+from scenes.usd import authored_camera, camera_for_scene, default_camera_speed, world_bounds
 from warp_optix.pathtracing.scene import Scene
 
 
@@ -40,7 +35,7 @@ def test_usd_bound_camera_is_preferred_and_bounds_are_world_space(tmp_path):
 
     scene = Scene()
     assert scene.load_from_usd(path, apply_stage_units=False)
-    result = _camera_for_scene(SimpleNamespace(scene=scene, usd_scene=scene.usd_scene))
+    result = camera_for_scene(SimpleNamespace(scene=scene, usd_scene=scene.usd_scene))
     position, _yaw, _pitch, _fov, radius, camera_path = result
     np.testing.assert_allclose(position, (0.0, 2.0, 5.0))
     assert radius == pytest.approx(np.sqrt(2.0))
@@ -63,15 +58,15 @@ def test_fallback_camera_bounds_ignore_extreme_flat_ground():
         _instance_transform_cache=np.repeat(np.eye(4, dtype=np.float32)[None], 2, axis=0),
     )
 
-    minimum, maximum = _world_bounds(SimpleNamespace(scene=scene))
+    minimum, maximum = world_bounds(SimpleNamespace(scene=scene))
 
     np.testing.assert_allclose(minimum, (-0.1, 0.0, -0.05))
     np.testing.assert_allclose(maximum, (0.1, 0.08, 0.05))
 
 
 def test_camera_speed_has_practical_floor_for_centimeter_assets():
-    assert _default_camera_speed(0.1) == pytest.approx(0.25)
-    assert _default_camera_speed(10.0) == pytest.approx(7.5)
+    assert default_camera_speed(0.1) == pytest.approx(0.25)
+    assert default_camera_speed(10.0) == pytest.approx(7.5)
 
 
 @pytest.mark.usd
@@ -85,4 +80,4 @@ def test_unbound_follow_camera_is_not_selected_automatically(tmp_path):
     stage.GetRootLayer().Save()
     usd_scene = SimpleNamespace(stage=stage)
 
-    assert _authored_camera(SimpleNamespace(usd_scene=usd_scene)) is None
+    assert authored_camera(SimpleNamespace(usd_scene=usd_scene)) is None

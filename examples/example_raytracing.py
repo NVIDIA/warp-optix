@@ -13,33 +13,74 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tiny Warp OptiX ray tracer with optional zero-copy OpenGL live viewer.
+"""Example Ray Tracing
 
-The raygen, miss, and closest-hit programs are ordinary Warp kernels; the
-raygen arguments are the launch parameters of :func:`warp_optix.launch`.
+Traces a triangle-mesh Cornell box with direct lighting, shadows, and one
+sampled bounce, using Warp kernels as the OptiX programs. Writes a BMP image,
+or accumulates samples in an interactive OpenGL viewer with `--live`.
+
+Runs:
+- `python examples/example_raytracing.py`
+- `python examples/example_raytracing.py --live`
 """
 
 from __future__ import annotations
 
 import argparse
 import math
-import os
 import struct
+from pathlib import Path
 
 import numpy as np
 import warp as wp
-from warp_optix.gl import GLInteropViewer
 
 import warp_optix as wo
 
 
 @wp.func
-def pack_rgba8(color: wp.vec3) -> wp.uint32:
-    r = wp.uint32(wp.max(0.0, wp.min(255.0, color[0] * 255.0)))
-    g = wp.uint32(wp.max(0.0, wp.min(255.0, color[1] * 255.0)))
-    b = wp.uint32(wp.max(0.0, wp.min(255.0, color[2] * 255.0)))
-    a = wp.uint32(255)
-    return (a << wp.uint32(24)) | (b << wp.uint32(16)) | (g << wp.uint32(8)) | r
+def _to_u8(value: float) -> wp.uint32:
+    return wp.uint32(wp.clamp(value * 255.0, 0.0, 255.0))
+
+
+@wp.func
+def _pack_rgba8(color: wp.vec3) -> wp.uint32:
+    return (
+        wp.uint32(255) << wp.uint32(24)
+        | _to_u8(color[2]) << wp.uint32(16)
+        | _to_u8(color[1]) << wp.uint32(8)
+        | _to_u8(color[0])
+    )
+
+
+@wp.func
+def _background(direction: wp.vec3) -> wp.vec3:
+    scale = 2.5 / wp.max(-direction[2], 0.001)
+    x = direction[0] * scale
+    y = direction[1] * scale
+    key = wp.exp(-0.85 * (0.65 * x * x + (y - 0.15) * (y - 0.15)))
+    fill = wp.exp(-2.8 * ((x + 0.95) * (x + 0.95) + (y - 0.6) * (y - 0.6)))
+    floor = wp.exp(-3.2 * (0.55 * x * x + (y + 0.9) * (y + 0.9)))
+    return (
+        wp.vec3(0.72, 0.75, 0.80)
+        + key * wp.vec3(0.27, 0.245, 0.18)
+        + fill * wp.vec3(0.025, 0.045, 0.08)
+        + floor * wp.vec3(0.05, 0.035, 0.015)
+    )
+
+
+def save_bmp(path: Path, pixels: np.ndarray) -> None:
+    """Write packed RGBA8 pixels with row 0 at the bottom of the image."""
+    height, width = pixels.shape
+    bgr = np.stack(((pixels >> 16) & 0xFF, (pixels >> 8) & 0xFF, pixels & 0xFF), axis=-1).astype(np.uint8)
+    row_stride = (width * 3 + 3) & ~3
+    pixel_data_size = row_stride * height
+    padding = b"\x00" * (row_stride - width * 3)
+    with path.open("wb") as output:
+        output.write(struct.pack("<2sIHHI", b"BM", 54 + pixel_data_size, 0, 0, 54))
+        output.write(struct.pack("<IiiHHIIiiII", 40, width, height, 1, 24, 0, pixel_data_size, 0, 0, 0, 0))
+        for row in bgr:
+            output.write(row.tobytes())
+            output.write(padding)
 
 
 @wp.struct
@@ -60,11 +101,6 @@ class TracePayload:
     b_u8: wp.uint32
     rand0: wp.uint32
     rand1: wp.uint32
-
-
-@wp.func
-def _to_u8(v: float) -> wp.uint32:
-    return wp.uint32(wp.max(0.0, wp.min(255.0, v * 255.0)))
 
 
 @wp.func
@@ -98,6 +134,7 @@ def _cosine_sample_hemisphere(n: wp.vec3, u1: float, u2: float) -> wp.vec3:
 
 @wp.func
 def _room_radiance(p: wp.vec3, d: wp.vec3) -> wp.vec3:
+    """Analytic one-bounce estimate: the color of the room wall hit by (p, d)."""
     eps = 1.0e-4
     t_best = 1.0e20
     c = wp.vec3(0.0, 0.0, 0.0)
@@ -177,7 +214,7 @@ def _segment_hits_aabb(p0: wp.vec3, p1: wp.vec3, bmin: wp.vec3, bmax: wp.vec3) -
 
 
 @wp.kernel(module="unique")
-def tiny_raygen(
+def cornell_raygen(
     scene: wp.uint64,
     camera: Camera,
     frame_index: wp.uint32,
@@ -205,26 +242,10 @@ def tiny_raygen(
 
     wp.optix_trace(scene, ray_origin, ray_direction, 1.0e16, payload, 0.001)
 
-    hit_color = wp.vec3(float(payload.r_u8) / 255.0, float(payload.g_u8) / 255.0, float(payload.b_u8) / 255.0)
-    color = hit_color
+    color = wp.vec3(float(payload.r_u8) / 255.0, float(payload.g_u8) / 255.0, float(payload.b_u8) / 255.0)
     if payload.hit == wp.uint32(0):
-        scale = 2.5 / wp.max(-ray_direction[2], 0.001)
-        x = ray_direction[0] * scale
-        y = ray_direction[1] * scale
-        key = wp.exp(-0.85 * (0.65 * x * x + (y - 0.15) * (y - 0.15)))
-        fill = wp.exp(-2.8 * ((x + 0.95) * (x + 0.95) + (y - 0.6) * (y - 0.6)))
-        floor = wp.exp(-3.2 * (0.55 * x * x + (y + 0.9) * (y + 0.9)))
-        display_sky = (
-            wp.vec3(0.72, 0.75, 0.80)
-            + key * wp.vec3(0.27, 0.245, 0.18)
-            + fill * wp.vec3(0.025, 0.045, 0.08)
-            + floor * wp.vec3(0.05, 0.035, 0.015)
-        )
-        color = wp.vec3(
-            wp.pow(display_sky[0], 2.2),
-            wp.pow(display_sky[1], 2.2),
-            wp.pow(display_sky[2], 2.2),
-        )
+        sky = _background(ray_direction)
+        color = wp.vec3(wp.pow(sky[0], 2.2), wp.pow(sky[1], 2.2), wp.pow(sky[2], 2.2))
 
     prev = accum[iy, ix]
     fi = float(frame_index)
@@ -235,26 +256,41 @@ def tiny_raygen(
         wp.pow(wp.max(0.0, wp.min(1.0, mean[1])), 1.0 / 2.2),
         wp.pow(wp.max(0.0, wp.min(1.0, mean[2])), 1.0 / 2.2),
     )
-    image[pixel_idx] = pack_rgba8(display)
+    image[pixel_idx] = _pack_rgba8(display)
 
 
 @wp.kernel(module="unique")
-def tiny_miss():
+def cornell_miss():
     wp.optix_set_payload(0, wp.uint32(0))
     wp.optix_set_payload(1, wp.uint32(0))
     wp.optix_set_payload(2, wp.uint32(0))
     wp.optix_set_payload(3, wp.uint32(0))
 
 
+@wp.func
+def _box_face_normal(face: int) -> wp.vec3:
+    if face == 0:
+        return wp.vec3(1.0, 0.0, 0.0)
+    elif face == 1:
+        return wp.vec3(-1.0, 0.0, 0.0)
+    elif face == 2:
+        return wp.vec3(0.0, 0.0, 1.0)
+    elif face == 3:
+        return wp.vec3(0.0, 0.0, -1.0)
+    elif face == 4:
+        return wp.vec3(0.0, 1.0, 0.0)
+    return wp.vec3(0.0, -1.0, 0.0)
+
+
 @wp.kernel(module="unique")
-def tiny_closest_hit():
+def cornell_closest_hit():
     pid = int(wp.optix_get_primitive_index())
 
     n = wp.vec3(0.0, 0.0, 1.0)
     albedo = wp.vec3(0.75, 0.75, 0.75)
     emissive = wp.vec3(0.0, 0.0, 0.0)
 
-    # Room quads are emitted in fixed order in _build_cornell_box_mesh().
+    # Primitive ranges follow the quad order in build_cornell_box_mesh().
     if pid < 2:
         n = wp.vec3(0.0, 1.0, 0.0)  # floor
         albedo = wp.vec3(0.74, 0.74, 0.74)
@@ -265,44 +301,19 @@ def tiny_closest_hit():
         n = wp.vec3(0.0, 0.0, 1.0)  # back wall
         albedo = wp.vec3(0.72, 0.72, 0.72)
     elif pid < 8:
-        n = wp.vec3(1.0, 0.0, 0.0)  # left wall (red)
+        n = wp.vec3(1.0, 0.0, 0.0)  # left wall
         albedo = wp.vec3(0.78, 0.18, 0.14)
     elif pid < 10:
-        n = wp.vec3(-1.0, 0.0, 0.0)  # right wall (green)
+        n = wp.vec3(-1.0, 0.0, 0.0)  # right wall
         albedo = wp.vec3(0.16, 0.64, 0.2)
     elif pid < 12:
-        # Small emissive ceiling panel.
-        n = wp.vec3(0.0, -1.0, 0.0)
+        n = wp.vec3(0.0, -1.0, 0.0)  # light panel
         emissive = wp.vec3(1.0, 0.95, 0.8)
     elif pid < 24:
-        face = (pid - 12) // 2  # short box
-        if face == 0:
-            n = wp.vec3(1.0, 0.0, 0.0)
-        elif face == 1:
-            n = wp.vec3(-1.0, 0.0, 0.0)
-        elif face == 2:
-            n = wp.vec3(0.0, 0.0, 1.0)
-        elif face == 3:
-            n = wp.vec3(0.0, 0.0, -1.0)
-        elif face == 4:
-            n = wp.vec3(0.0, 1.0, 0.0)
-        else:
-            n = wp.vec3(0.0, -1.0, 0.0)
+        n = _box_face_normal((pid - 12) // 2)  # short box
         albedo = wp.vec3(0.72, 0.72, 0.72)
     elif pid < 36:
-        face = (pid - 24) // 2  # tall box
-        if face == 0:
-            n = wp.vec3(1.0, 0.0, 0.0)
-        elif face == 1:
-            n = wp.vec3(-1.0, 0.0, 0.0)
-        elif face == 2:
-            n = wp.vec3(0.0, 0.0, 1.0)
-        elif face == 3:
-            n = wp.vec3(0.0, 0.0, -1.0)
-        elif face == 4:
-            n = wp.vec3(0.0, 1.0, 0.0)
-        else:
-            n = wp.vec3(0.0, -1.0, 0.0)
+        n = _box_face_normal((pid - 24) // 2)  # tall box
         albedo = wp.vec3(0.68, 0.68, 0.68)
 
     ro = wp.optix_get_world_ray_origin()
@@ -344,44 +355,14 @@ def tiny_closest_hit():
     wp.optix_set_payload(3, _to_u8(color[2]))
 
 
-def _save_bmp(path: str, pixels_rgba_u32: np.ndarray, width: int, height: int):
-    rgba = pixels_rgba_u32.reshape(height, width)
-    bgr = np.empty((height, width, 3), dtype=np.uint8)
-    bgr[..., 0] = ((rgba >> 16) & 0xFF).astype(np.uint8)
-    bgr[..., 1] = ((rgba >> 8) & 0xFF).astype(np.uint8)
-    bgr[..., 2] = (rgba & 0xFF).astype(np.uint8)
-
-    row_stride = (width * 3 + 3) & ~3
-    pixel_data_size = row_stride * height
-    # Positive height means bottom-to-top row order, which matches our
-    # kernel layout (iy=0 is the bottom of the image) -- no flip needed.
-    with open(path, "wb") as f:
-        f.write(struct.pack("<2sIHHI", b"BM", 54 + pixel_data_size, 0, 0, 54))
-        f.write(struct.pack("<IiiHHIIiiII", 40, width, height, 1, 24, 0, pixel_data_size, 0, 0, 0, 0))
-        pad = b"\x00" * (row_stride - width * 3)
-        for y in range(height):
-            f.write(bgr[y].tobytes())
-            if pad:
-                f.write(pad)
-
-
-def _add_quad(vertices: list[tuple[float, float, float]], indices: list[tuple[int, int, int]], v0, v1, v2, v3):
+def _add_quad(vertices, indices, v0, v1, v2, v3):
     base = len(vertices)
     vertices.extend((v0, v1, v2, v3))
     indices.append((base, base + 1, base + 2))
     indices.append((base, base + 2, base + 3))
 
 
-def _add_box(
-    vertices: list[tuple[float, float, float]],
-    indices: list[tuple[int, int, int]],
-    x0: float,
-    y0: float,
-    z0: float,
-    x1: float,
-    y1: float,
-    z1: float,
-):
+def _add_box(vertices, indices, x0, y0, z0, x1, y1, z1):
     p000 = (x0, y0, z0)
     p001 = (x0, y0, z1)
     p010 = (x0, y1, z0)
@@ -390,8 +371,6 @@ def _add_box(
     p101 = (x1, y0, z1)
     p110 = (x1, y1, z0)
     p111 = (x1, y1, z1)
-
-    # Keep quad order stable so primitive id -> normal mapping stays tiny and deterministic.
     _add_quad(vertices, indices, p100, p110, p111, p101)  # +X
     _add_quad(vertices, indices, p001, p011, p010, p000)  # -X
     _add_quad(vertices, indices, p101, p111, p011, p001)  # +Z
@@ -400,48 +379,35 @@ def _add_box(
     _add_quad(vertices, indices, p001, p000, p100, p101)  # -Y
 
 
-def _build_cornell_box_mesh() -> tuple[np.ndarray, np.ndarray]:
-    vertices: list[tuple[float, float, float]] = []
-    indices: list[tuple[int, int, int]] = []
-
-    # Cornell-style room: floor, ceiling, back wall, left wall, right wall.
+def build_cornell_box_mesh() -> tuple[np.ndarray, np.ndarray]:
+    vertices = []
+    indices = []
+    # Floor, ceiling, back, left, and right walls, then the light panel and two boxes.
     _add_quad(vertices, indices, (-1.0, -1.0, -1.0), (1.0, -1.0, -1.0), (1.0, -1.0, 1.0), (-1.0, -1.0, 1.0))
     _add_quad(vertices, indices, (-1.0, 1.0, 1.0), (1.0, 1.0, 1.0), (1.0, 1.0, -1.0), (-1.0, 1.0, -1.0))
     _add_quad(vertices, indices, (-1.0, -1.0, -1.0), (-1.0, 1.0, -1.0), (1.0, 1.0, -1.0), (1.0, -1.0, -1.0))
     _add_quad(vertices, indices, (-1.0, -1.0, 1.0), (-1.0, 1.0, 1.0), (-1.0, 1.0, -1.0), (-1.0, -1.0, -1.0))
     _add_quad(vertices, indices, (1.0, -1.0, -1.0), (1.0, 1.0, -1.0), (1.0, 1.0, 1.0), (1.0, -1.0, 1.0))
-
-    # Ceiling light panel.
     _add_quad(vertices, indices, (-0.25, 0.99, -0.65), (0.25, 0.99, -0.65), (0.25, 0.99, -0.2), (-0.25, 0.99, -0.2))
-
-    # Two interior blocks.
     _add_box(vertices, indices, -0.65, -1.0, -0.35, -0.15, -0.25, 0.25)
     _add_box(vertices, indices, 0.2, -1.0, -0.8, 0.65, 0.45, -0.25)
-
-    verts_np = np.asarray(vertices, dtype=np.float32)
-    inds_np = np.asarray(indices, dtype=np.uint32)
-    return verts_np, inds_np
+    return np.asarray(vertices, dtype=np.float32), np.asarray(indices, dtype=np.uint32)
 
 
-def _make_camera(
-    position: np.ndarray,
-    yaw_deg: float,
-    pitch_deg: float,
-    fov_deg: float,
-    width: int,
-    height: int,
-):
-    yaw_rad = math.radians(yaw_deg)
-    pitch_rad = math.radians(pitch_deg)
-    cos_pitch = math.cos(pitch_rad)
+def _forward_right(yaw_deg: float, pitch_deg: float) -> tuple[np.ndarray, np.ndarray]:
+    yaw = math.radians(yaw_deg)
+    pitch = math.radians(pitch_deg)
     forward = np.array(
-        [math.sin(yaw_rad) * cos_pitch, math.sin(pitch_rad), math.cos(yaw_rad) * cos_pitch],
-        dtype=np.float32,
+        [math.sin(yaw) * math.cos(pitch), math.sin(pitch), math.cos(yaw) * math.cos(pitch)], dtype=np.float32
     )
-    forward /= np.linalg.norm(forward) + 1.0e-8
-    world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-    right = np.cross(forward, world_up)
+    right = np.cross(forward, np.array([0.0, 1.0, 0.0], dtype=np.float32))
     right /= np.linalg.norm(right) + 1.0e-8
+    return forward, right
+
+
+def make_camera(position, yaw_deg: float, pitch_deg: float, fov_deg: float, width: int, height: int) -> Camera:
+    forward, right = _forward_right(yaw_deg, pitch_deg)
+    forward /= np.linalg.norm(forward) + 1.0e-8
     up = np.cross(right, forward)
     up /= np.linalg.norm(up) + 1.0e-8
 
@@ -455,9 +421,10 @@ def _make_camera(
     return camera
 
 
-class FreeCameraController:
-    def __init__(self, viewer: GLInteropViewer, width: int, height: int):
-        self.window = viewer.window
+class FreeCamera:
+    """WASD/QE to move (Shift for faster), left-drag to look, mouse wheel to zoom."""
+
+    def __init__(self, viewer, width: int, height: int):
         self.pyglet = viewer.pyglet
         self.width = int(width)
         self.height = int(height)
@@ -465,29 +432,14 @@ class FreeCameraController:
         self.yaw = 180.0
         self.pitch = -4.0
         self.fov = 50.0
-        self._keys_down: set[int] = set()
-        self._cam_speed = 1.6
-        self._look_sensitivity = 0.12
-        self._dirty = True
-        self.window.push_handlers(self)
-        self._write(mark_dirty=False)
+        self.keys_down: set[int] = set()
+        self.changed = False
+        self.camera = make_camera(self.position, self.yaw, self.pitch, self.fov, self.width, self.height)
+        viewer.window.push_handlers(self)
 
-    def _forward_right(self) -> tuple[np.ndarray, np.ndarray]:
-        yaw_rad = math.radians(self.yaw)
-        pitch_rad = math.radians(self.pitch)
-        cos_pitch = math.cos(pitch_rad)
-        forward = np.array(
-            [math.sin(yaw_rad) * cos_pitch, math.sin(pitch_rad), math.cos(yaw_rad) * cos_pitch], dtype=np.float32
-        )
-        world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-        right = np.cross(forward, world_up)
-        right /= np.linalg.norm(right) + 1.0e-8
-        return forward, right
-
-    def _write(self, mark_dirty: bool = True):
-        self.camera = _make_camera(self.position, self.yaw, self.pitch, self.fov, self.width, self.height)
-        if mark_dirty:
-            self._dirty = True
+    def _write(self):
+        self.camera = make_camera(self.position, self.yaw, self.pitch, self.fov, self.width, self.height)
+        self.changed = True
 
     def resize(self, width: int, height: int):
         self.width = int(width)
@@ -496,47 +448,35 @@ class FreeCameraController:
 
     def update(self, dt: float):
         key = self.pyglet.window.key
-
-        forward, right = self._forward_right()
-        world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        forward, right = _forward_right(self.yaw, self.pitch)
+        up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
         move = np.zeros(3, dtype=np.float32)
-        if key.W in self._keys_down or key.UP in self._keys_down:
-            move += forward
-        if key.S in self._keys_down or key.DOWN in self._keys_down:
-            move -= forward
-        if key.A in self._keys_down or key.LEFT in self._keys_down:
-            move -= right
-        if key.D in self._keys_down or key.RIGHT in self._keys_down:
-            move += right
-        if key.Q in self._keys_down:
-            move -= world_up
-        if key.E in self._keys_down:
-            move += world_up
-
-        move_norm = float(np.linalg.norm(move))
-        if move_norm > 1.0e-6:
-            speed = self._cam_speed
-            if key.LSHIFT in self._keys_down or key.RSHIFT in self._keys_down:
-                speed *= 3.5
-            self.position += (move / move_norm) * speed * max(0.0, min(dt, 0.1))
+        for symbols, direction in (
+            ((key.W, key.UP), forward),
+            ((key.S, key.DOWN), -forward),
+            ((key.A, key.LEFT), -right),
+            ((key.D, key.RIGHT), right),
+            ((key.Q,), -up),
+            ((key.E,), up),
+        ):
+            if any(symbol in self.keys_down for symbol in symbols):
+                move += direction
+        norm = float(np.linalg.norm(move))
+        if norm > 1.0e-6:
+            speed = 1.6 * (3.5 if {key.LSHIFT, key.RSHIFT} & self.keys_down else 1.0)
+            self.position += move / norm * speed * max(0.0, min(dt, 0.1))
             self._write()
 
-    def consume_changed(self) -> bool:
-        was_dirty = self._dirty
-        self._dirty = False
-        return was_dirty
-
     def on_key_press(self, symbol, _modifiers):
-        self._keys_down.add(symbol)
+        self.keys_down.add(symbol)
 
     def on_key_release(self, symbol, _modifiers):
-        self._keys_down.discard(symbol)
+        self.keys_down.discard(symbol)
 
     def on_mouse_drag(self, _x, _y, dx, dy, buttons, _modifiers):
         if buttons & self.pyglet.window.mouse.LEFT:
-            self.yaw -= float(dx) * self._look_sensitivity
-            self.pitch += float(dy) * self._look_sensitivity
-            self.pitch = max(-89.0, min(89.0, self.pitch))
+            self.yaw -= float(dx) * 0.12
+            self.pitch = max(-89.0, min(89.0, self.pitch + float(dy) * 0.12))
             self._write()
 
     def on_mouse_scroll(self, _x, _y, _sx, sy):
@@ -544,79 +484,74 @@ class FreeCameraController:
         self._write()
 
 
+def cornell(args) -> np.ndarray | None:
+    vertices, indices = build_cornell_box_mesh()
+    accel = wo.Accel(
+        [wo.triangles(wp.array(vertices, dtype=wp.vec3), wp.array(indices, dtype=wp.uint32))], compact=True
+    )
+    pipeline = wo.Pipeline(
+        cornell_raygen,
+        miss=[cornell_miss],
+        hit_groups=[wo.HitGroup(closest_hit=cornell_closest_hit)],
+        payload_words=6,
+    )
+    seed = wp.uint32(1337)
+    accum = wp.zeros((args.height, args.width), dtype=wp.vec3)
+
+    if not args.live:
+        camera = make_camera((0.0, 0.05, 2.5), 180.0, -4.0, 50.0, args.width, args.height)
+        image = wp.empty(args.width * args.height, dtype=wp.uint32)
+        wo.launch(pipeline, dim=accum.shape, inputs=[accel, camera, wp.uint32(0), seed, accum, image])
+        return image.numpy().reshape(args.height, args.width)
+
+    from warp_optix.gl import GLInteropViewer
+
+    sample_count = 0
+    controller = None
+
+    def on_resize(width: int, height: int):
+        nonlocal accum, sample_count
+        accum = wp.zeros((int(height), int(width)), dtype=wp.vec3)
+        controller.resize(width, height)
+        sample_count = 0
+
+    viewer = GLInteropViewer(
+        width=args.width, height=args.height, device=args.device, title="Cornell Box", fps=60, on_resize=on_resize
+    )
+    controller = FreeCamera(viewer, args.width, args.height)
+    last_elapsed = 0.0
+
+    def render(mapped_image: wp.array, _frame: int, elapsed: float):
+        nonlocal last_elapsed, sample_count
+        controller.update(elapsed - last_elapsed)
+        last_elapsed = elapsed
+        if controller.changed:
+            controller.changed = False
+            sample_count = 0
+        inputs = [accel, controller.camera, wp.uint32(sample_count), seed, accum, mapped_image]
+        wo.launch(pipeline, dim=accum.shape, inputs=inputs)
+        sample_count += 1
+
+    print(FreeCamera.__doc__)
+    viewer.run(render, max_frames=args.max_frames)
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--device", default="cuda")
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=360)
-    parser.add_argument("--output", type=str, default="tiny_optix_raytracer.bmp")
-    parser.add_argument("--live", action="store_true", help="Run OpenGL interop viewer (zero-copy PBO path)")
-    parser.add_argument("--fps", type=int, default=60)
-    parser.add_argument("--max-frames", type=int, default=0, help="Auto-exit after N frames in live mode (0=forever)")
+    parser.add_argument("--output", type=Path, default=Path("raytracing.bmp"))
+    parser.add_argument("--live", action="store_true", help="Open an interactive viewer instead of writing a BMP.")
+    parser.add_argument("--max-frames", type=int, default=0, help="Exit the viewer after N frames (0 = never).")
     args = parser.parse_args()
 
     with wp.ScopedDevice(args.device):
-        vertices, indices = _build_cornell_box_mesh()
-        vertices = wp.array(vertices, dtype=wp.vec3)
-        indices = wp.array(indices, dtype=wp.uint32)
-        accel = wo.Accel([wo.triangles(vertices, indices)], compact=True)
-        pipeline = wo.Pipeline(
-            tiny_raygen,
-            miss=[tiny_miss],
-            hit_groups=[wo.HitGroup(closest_hit=tiny_closest_hit)],
-            payload_words=6,
-        )
-        seed = wp.uint32(1337)
-        accum = wp.zeros((args.height, args.width), dtype=wp.vec3)
-
-        if args.live:
-            sample_count = 0
-            controller: FreeCameraController | None = None
-
-            def _on_resize(width: int, height: int):
-                nonlocal accum, sample_count
-                accum = wp.zeros((int(height), int(width)), dtype=wp.vec3)
-                controller.resize(width, height)
-                sample_count = 0
-
-            viewer = GLInteropViewer(
-                width=args.width,
-                height=args.height,
-                device=args.device,
-                title="Warp OptiX Tiny RT",
-                fps=args.fps,
-                on_resize=_on_resize,
-            )
-            controller = FreeCameraController(viewer, args.width, args.height)
-            last_elapsed = 0.0
-
-            def _render(mapped_image: wp.array, _frame_idx: int, elapsed_sec: float):
-                nonlocal last_elapsed, sample_count
-                dt = elapsed_sec - last_elapsed
-                last_elapsed = elapsed_sec
-                controller.update(dt)
-                if controller.consume_changed():
-                    sample_count = 0
-                wo.launch(
-                    pipeline,
-                    dim=accum.shape,
-                    inputs=[accel, controller.camera, wp.uint32(sample_count), seed, accum, mapped_image],
-                )
-                sample_count += 1
-
-            viewer.run(_render, max_frames=args.max_frames)
-            print("Controls: WASD move, Q/E down/up, Shift faster, Left-drag look, Mouse wheel zoom.")
-            print("Live viewer finished.")
-        else:
-            camera = _make_camera(
-                np.array([0.0, 0.05, 2.5], dtype=np.float32), 180.0, -4.0, 50.0, args.width, args.height
-            )
-            image = wp.empty(args.width * args.height, dtype=wp.uint32)
-            wo.launch(pipeline, dim=accum.shape, inputs=[accel, camera, wp.uint32(0), seed, accum, image])
-            pixels = image.numpy()
-            _save_bmp(args.output, pixels, args.width, args.height)
-            print(f"Image checksum: {int(np.bitwise_xor.reduce(pixels))}")
-            print(f"Wrote: {os.path.abspath(args.output)}")
+        pixels = cornell(args)
+    if pixels is not None:
+        save_bmp(args.output, pixels)
+        print(f"Wrote {args.output} (checksum {int(np.bitwise_xor.reduce(pixels, axis=None)):#010x})")
 
 
 if __name__ == "__main__":

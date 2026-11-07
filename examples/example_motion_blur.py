@@ -1,7 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Render vertex motion blur by tracing several shutter times per pixel."""
+"""Example Motion Blur
+
+Builds a two-key vertex motion acceleration structure and traces several
+shutter times per pixel. The top triangle moves; the bottom one is a static
+reference. Writes a BMP image.
+
+Runs:
+- `python examples/example_motion_blur.py`
+"""
 
 from __future__ import annotations
 
@@ -117,7 +125,7 @@ def main() -> None:
         parser.error("--samples must be at least 1")
 
     with wp.ScopedDevice(args.device):
-        # Two motion keys: the top triangle slides from left to right over the shutter interval.
+        # The top triangle slides from left to right between the two motion keys.
         moving = np.array([[-0.38, 0.12, 0.0], [0.38, 0.12, 0.0], [0.0, 0.92, 0.0]], dtype=np.float32)
         static = np.array([[-0.38, -1.0, 0.0], [0.38, -1.0, 0.0], [0.0, -0.20, 0.0]], dtype=np.float32)
         keys = [wp.array(np.concatenate((moving + [dx, 0.0, 0.0], static)), dtype=wp.vec3) for dx in (-1.15, 1.15)]
@@ -138,7 +146,6 @@ def main() -> None:
         pixels = image.numpy()
         _save_bmp(args.output, pixels)
         print(f"Wrote {args.output} (checksum {int(np.bitwise_xor.reduce(pixels, axis=None)):#010x})")
-        print("Top: moving triangle. Bottom: static reference.")
 
 
 if __name__ == "__main__":

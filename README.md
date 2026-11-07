@@ -40,7 +40,7 @@ For a repository-local uv environment:
 
 ```bash
 uv sync --python 3.12 --no-default-groups --extra pathtracing --extra ui
-uv run --no-sync python examples_warp/example_warp_optix_pathtraced_hairball.py
+uv run --no-sync python examples/example_pathtracing.py --scene hairball
 ```
 
 ## Public API
@@ -81,7 +81,7 @@ launches remain asynchronous on the selected Warp stream.
 SBT records are built automatically. For named ray types and explicit hit-group
 layouts, pass a `wo.SbtBuilder` to `wo.Pipeline(..., sbt=builder)`.
 
-See the [API guide](warp_optix/README.md) and runnable [examples](examples_warp/README.md).
+See the [API guide](warp_optix/README.md) and runnable [examples](examples/README.md).
 
 ## Advanced native interface
 
@@ -114,7 +114,7 @@ Install feature extras and pytest, then run the test suite:
 
 ```powershell
 python -m pytest warp_optix/tests
-python -m pytest examples_warp/neural_texture
+python -m pytest examples/neural_texture
 ```
 
 Tests can be selected with the markers registered in `pyproject.toml`
@@ -127,7 +127,7 @@ bindings. The dependency is maintained in
 retain their BSD license; Warp integration sources use Apache 2.0. OptiX headers retain their
 NVIDIA license terms. License texts accompany the distribution.
 
-Runnable samples are in `examples_warp/`.
+Runnable samples are in `examples/`.
 
 ## Licenses and contributions
 

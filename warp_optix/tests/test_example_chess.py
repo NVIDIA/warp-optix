@@ -25,7 +25,7 @@ import numpy as np
 
 
 def _load_helper():
-    path = Path(__file__).resolve().parents[2] / "examples_warp" / "example_warp_optix_chess_scene.py"
+    path = Path(__file__).resolve().parents[2] / "examples" / "scenes" / "chess.py"
     spec = importlib.util.spec_from_file_location("procedural_chess", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
