@@ -11,9 +11,13 @@ uv sync --extra pathtracing --extra ui --extra usd
 
 `example_pathtracing.py` opens an interactive viewer (WASD to move, drag to look).
 
-[![Chess](../docs/images/chess.jpg)](example_pathtracing.py)
-[![Hairball](../docs/images/hairball.jpg)](example_pathtracing.py)
-[![Arrowball](../docs/images/arrowball.jpg)](example_pathtracing.py)
+<table>
+  <tr>
+    <td width="33%" align="center"><a href="example_pathtracing.py"><img src="../docs/images/chess.jpg" alt="--scene chess"></a><br><code>--scene chess</code></td>
+    <td width="33%" align="center"><a href="example_pathtracing.py"><img src="../docs/images/hairball.jpg" alt="--scene hairball"></a><br><code>--scene hairball</code></td>
+    <td width="33%" align="center"><a href="example_pathtracing.py"><img src="../docs/images/arrowball.jpg" alt="--scene arrowball"></a><br><code>--scene arrowball</code></td>
+  </tr>
+</table>
 
 ```bash
 uv run python examples/example_pathtracing.py --scene chess          # procedural chess set
@@ -30,10 +34,18 @@ Common options: `--width`, `--height`, `--denoiser {auto,optix,none}`, `--exposu
 
 These write a BMP image (`--output`); `example_raytracing.py --live` opens a viewer.
 
-[![Ray tracing](../docs/images/raytracing.jpg)](example_raytracing.py)
-[![Mixed geometry](../docs/images/mixed_geometry.jpg)](example_mixed_geometry.py)
-[![Curves](../docs/images/curves.jpg)](example_curves.py)
-[![Motion blur](../docs/images/motion_blur.jpg)](example_motion_blur.py)
+<table>
+  <tr>
+    <td width="33%" align="center"><a href="example_raytracing.py"><img src="../docs/images/raytracing.jpg" alt="example_raytracing.py"></a><br><code>example_raytracing.py</code></td>
+    <td width="33%" align="center"><a href="example_mixed_geometry.py"><img src="../docs/images/mixed_geometry.jpg" alt="example_mixed_geometry.py"></a><br><code>example_mixed_geometry.py</code></td>
+    <td width="33%" align="center"><a href="example_curves.py"><img src="../docs/images/curves.jpg" alt="example_curves.py"></a><br><code>example_curves.py</code></td>
+  </tr>
+  <tr>
+    <td width="33%" align="center"><a href="example_motion_blur.py"><img src="../docs/images/motion_blur.jpg" alt="example_motion_blur.py"></a><br><code>example_motion_blur.py</code></td>
+    <td width="33%"></td>
+    <td width="33%"></td>
+  </tr>
+</table>
 
 | Example | Shows |
 | --- | --- |
