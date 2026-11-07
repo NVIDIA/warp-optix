@@ -2,7 +2,7 @@
 
 [![](docs/images/banner.jpg)](docs/images/banner.jpg)
 
-_Rendered with the included path tracer: a procedural chess set, 4,000 hairs of native cubic Bézier curves, and 1,800 curve arrows._
+_Rendered with the included path tracer: a procedural chess set in wood, the same set in glass and gold, and glass and metal spheres refracting and reflecting the light._
 
 warp-optix brings NVIDIA OptiX ray tracing to [Warp](https://github.com/NVIDIA/warp).
 OptiX programs (ray generation, hit, miss, callables) are ordinary Warp kernels,
