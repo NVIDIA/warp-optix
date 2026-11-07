@@ -11,9 +11,9 @@ uv sync --extra pathtracing --extra ui --extra usd
 
 `example_pathtracing.py` opens an interactive viewer (WASD to move, drag to look).
 
-[![Chess](../docs/images/examples/chess.jpg)](example_pathtracing.py)
-[![Hairball](../docs/images/examples/hairball.jpg)](example_pathtracing.py)
-[![Arrowball](../docs/images/examples/arrowball.jpg)](example_pathtracing.py)
+[![Chess](../docs/images/chess.jpg)](example_pathtracing.py)
+[![Hairball](../docs/images/hairball.jpg)](example_pathtracing.py)
+[![Arrowball](../docs/images/arrowball.jpg)](example_pathtracing.py)
 
 ```bash
 uv run python examples/example_pathtracing.py --scene chess          # procedural chess set
@@ -30,10 +30,10 @@ Common options: `--width`, `--height`, `--denoiser {auto,optix,none}`, `--exposu
 
 These write a BMP image (`--output`); `example_raytracing.py --live` opens a viewer.
 
-[![Ray tracing](../docs/images/examples/raytracing.jpg)](example_raytracing.py)
-[![Mixed geometry](../docs/images/examples/mixed_geometry.jpg)](example_mixed_geometry.py)
-[![Curves](../docs/images/examples/curves.jpg)](example_curves.py)
-[![Motion blur](../docs/images/examples/motion_blur.jpg)](example_motion_blur.py)
+[![Ray tracing](../docs/images/raytracing.jpg)](example_raytracing.py)
+[![Mixed geometry](../docs/images/mixed_geometry.jpg)](example_mixed_geometry.py)
+[![Curves](../docs/images/curves.jpg)](example_curves.py)
+[![Motion blur](../docs/images/motion_blur.jpg)](example_motion_blur.py)
 
 | Example | Shows |
 | --- | --- |

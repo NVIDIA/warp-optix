@@ -2,8 +2,6 @@
 
 [![](docs/images/banner.webp)](docs/images/banner.webp)
 
-_Rendered with the included path tracer: a chess set in glass and gold, [Glass of Water](https://benedikt-bitterli.me/resources/) by aXel (CC0), and [The Breakfast Room](https://benedikt-bitterli.me/resources/) by Wig42 ([CC BY 3.0](https://creativecommons.org/licenses/by/3.0/), relit with a procedural sun). Scenes from Benedikt Bitterli's rendering resources._
-
 warp-optix brings NVIDIA OptiX ray tracing to [Warp](https://github.com/NVIDIA/warp).
 OptiX programs (ray generation, hit, miss, callables) are ordinary Warp kernels,
 acceleration structures are built from Warp arrays, and `wo.launch` mirrors
