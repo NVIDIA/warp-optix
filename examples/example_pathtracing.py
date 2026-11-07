@@ -18,9 +18,14 @@
 Interactive `warp_optix.pathtracing` viewer for a procedural scene, a glTF
 file, or a USD stage. The hairball and arrowball scenes use native OptiX
 curves; contact_lines draws changing OpenGL lines over the path-traced frame.
+glass_of_water and breakfast_room are downloaded on first use from Benedikt
+Bitterli's rendering resources (CC0 and CC BY 3.0).
 
 Runs:
 - `python examples/example_pathtracing.py --scene chess`
+- `python examples/example_pathtracing.py --scene glass_chess`
+- `python examples/example_pathtracing.py --scene glass_of_water`
+- `python examples/example_pathtracing.py --scene breakfast_room`
 - `python examples/example_pathtracing.py --scene hairball`
 - `python examples/example_pathtracing.py --scene arrowball`
 - `python examples/example_pathtracing.py --scene contact_lines`
@@ -158,6 +163,45 @@ def setup_chess(api: PathTracer, args) -> View:
     return View(position, yaw, pitch, chess.CAMERA_FOV, speed=2.0, exposure=0.68)
 
 
+def setup_glass_chess(api: PathTracer, args) -> View:
+    chess.build_chess_scene(api, pieces="glass")
+    api.build_scene()
+    position = (-8.4, 3.9, -7.6)
+    position, yaw, pitch = style.camera_angles(position, np.subtract((-0.2, -0.3, 0.2), position))
+    return View(position, yaw, pitch, 36.0, speed=2.0, exposure=0.68)
+
+
+def _mitsuba_view(scene, speed: float, exposure: float) -> View:
+    position, direction, fov = scene.camera()
+    position, yaw, pitch = style.camera_angles(position, direction)
+    return View(position, yaw, pitch, fov, speed=speed, exposure=exposure)
+
+
+def setup_glass_of_water(api: PathTracer, args) -> View:
+    from scenes import mitsuba
+
+    # The scene's large area light is replaced by a sphere light, which the path tracer samples directly.
+    scene = mitsuba.MitsubaScene(mitsuba.fetch("glass-of-water"), emitters=False)
+    scene.build(api)
+    api.scene.add_light_sphere((0.0, 10.5, 26.2), 3.0, (0.5, 0.85, 1.0), 90.0)
+    api.build_scene()
+    api.set_use_procedural_sky(False)
+    api.set_environment_color((0.0, 0.0, 0.0))
+    return _mitsuba_view(scene, speed=3.0, exposure=0.85)
+
+
+def setup_breakfast_room(api: PathTracer, args) -> View:
+    from scenes import mitsuba
+
+    scene = mitsuba.MitsubaScene(mitsuba.fetch("dining-room"))
+    scene.build(api)
+    api.build_scene()
+    # A low sun shines through the blinds instead of the scene's HDR environment.
+    api.set_use_procedural_sky(True)
+    api.set_sky_parameters((0.8, 0.5, 0.3), multiplier=1.5, haze=0.05, sun_disk_intensity=2.0, sun_glow_intensity=0.5)
+    return _mitsuba_view(scene, speed=1.0, exposure=0.68)
+
+
 def setup_hairball(api: PathTracer, args) -> View:
     segments = 5
     points, radii, segment_indices = hairball.generate_hair_ball(args.hair_count, segments)
@@ -225,9 +269,19 @@ def setup_usd(api: PathTracer, args) -> View:
 
 SCENES = {
     "chess": setup_chess,
+    "glass_chess": setup_glass_chess,
+    "glass_of_water": setup_glass_of_water,
+    "breakfast_room": setup_breakfast_room,
     "hairball": setup_hairball,
     "arrowball": setup_arrowball,
     "contact_lines": setup_contact_lines,
+}
+
+# Glass needs deeper paths, and the downloaded scenes contain single-sided walls and glass.
+SCENE_OPTIONS = {
+    "glass_chess": {"max_bounces": 12},
+    "glass_of_water": {"max_bounces": 16, "backface_culling": False},
+    "breakfast_room": {"max_bounces": 8, "backface_culling": False},
 }
 
 
@@ -261,7 +315,8 @@ def main():
         raise ValueError("width and height must be positive")
 
     wp.init()
-    api = PathTracer(width=args.width, height=args.height, denoiser=args.denoiser)
+    options = SCENE_OPTIONS.get(args.scene, {}) if args.usd is None and args.gltf is None else {}
+    api = PathTracer(width=args.width, height=args.height, denoiser=args.denoiser, **options)
     if not api.initialize():
         raise RuntimeError("Failed to initialize pathtracing API.")
 
