@@ -1,7 +1,7 @@
 # Warp-OptiX: Ray Tracing with NVIDIA Warp
 
 [Documentation](https://github.com/NVIDIA/warp-optix/blob/main/warp_optix/README.md) |
-[Examples](https://github.com/NVIDIA/warp-optix/blob/main/examples_warp/README.md)
+[Examples](https://github.com/NVIDIA/warp-optix/blob/main/examples/README.md)
 
 Warp-OptiX brings NVIDIA OptiX ray tracing to Warp. Write ray-generation, hit,
 miss, and callable programs as Warp kernels, or use the included path tracer.
@@ -41,7 +41,7 @@ from warp_optix.pathtracing import PathTracer
 
 Follow the [API guide](https://github.com/NVIDIA/warp-optix/blob/main/warp_optix/README.md)
 to build a custom ray tracer, or explore the
-[runnable examples](https://github.com/NVIDIA/warp-optix/blob/main/examples_warp/README.md).
+[runnable examples](https://github.com/NVIDIA/warp-optix/blob/main/examples/README.md).
 Advanced applications can access PyOptiX and supplemental bindings through
 `warp_optix.native`.
 

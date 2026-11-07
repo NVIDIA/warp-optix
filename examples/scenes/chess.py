@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Original procedural chess geometry and textures; no external assets required.
+"""Procedural chess set with wood textures, generated with NumPy.
 
 Coordinates are in board-square units, with Y up. Components are closed solids;
 UV seams and sharp edges intentionally duplicate vertices.

@@ -3,7 +3,7 @@
 """Compare 4/8/16-output OptiX decoders without changing the public asset format.
 
 Usage:
-    uv run python examples_warp/neural_texture/benchmark_outputs.py image.wnt
+    uv run python examples/neural_texture/benchmark_outputs.py image.wnt
 
 The final matrix is truncated, preserving trained outputs exactly. Each case
 gets an independent OptiX module to avoid cross-entry-point compiler outlining.

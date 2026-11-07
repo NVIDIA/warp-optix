@@ -1,7 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Render triangle, native curve, and analytical custom geometry together."""
+"""Example Mixed Geometry
+
+Renders triangles, built-in curves, and custom intersection programs together.
+Instances are written on the GPU with `wo.make_instance()`, and a named SBT
+layout assigns each instance its hit group. Writes a BMP image.
+
+Runs:
+- `python examples/example_mixed_geometry.py`
+"""
 
 from __future__ import annotations
 
@@ -399,7 +407,6 @@ def main() -> None:
         pixels = image.numpy()
         _save_bmp(args.output, pixels)
         print(f"Wrote {args.output} (checksum {int(np.bitwise_xor.reduce(pixels, axis=None)):#010x})")
-        print("Top: sphere, cylinder, cone. Bottom: cube, capsule, ellipsoid. Gold: round curve.")
 
 
 if __name__ == "__main__":

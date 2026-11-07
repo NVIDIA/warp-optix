@@ -11,7 +11,7 @@ FP8 E4M3 inference-optimal layout.
 Only offline compression depends on `warp-nn`:
 
 ```bash
-uv run --group training python examples_warp/neural_texture/compress.py \
+uv run --group training python examples/neural_texture/compress.py \
   --output material.wnt --reconstruction material-decoded.npy
 ```
 
@@ -24,8 +24,8 @@ The package is not installed; scripts and tests import it from this directory.
 Run the tests from the repository root (training tests skip without warp-nn):
 
 ```bash
-uv run pytest examples_warp/neural_texture
-uv run --group training pytest examples_warp/neural_texture
+uv run pytest examples/neural_texture
+uv run --group training pytest examples/neural_texture
 ```
 
 The Python API is equally direct:
@@ -137,7 +137,7 @@ pyramids, and filtering guidance, consult NVIDIA's
 Run from the repository root with an existing 16-output `.wnt` asset:
 
 ```bash
-uv run python examples_warp/neural_texture/benchmark_outputs.py material.wnt
+uv run python examples/neural_texture/benchmark_outputs.py material.wnt
 ```
 
 This is an inference-only experiment; it needs no warp-nn. It truncates the

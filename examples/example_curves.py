@@ -1,7 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Render a varying-width native OptiX round-linear curve with Warp shaders."""
+"""Example Curves
+
+Renders a varying-width curve with OptiX's built-in round-linear curve
+intersector and writes a BMP image.
+
+Runs:
+- `python examples/example_curves.py`
+"""
 
 from __future__ import annotations
 

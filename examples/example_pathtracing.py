@@ -13,22 +13,46 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pathtrace a procedural chess set or a user-supplied glTF/GLB scene."""
+"""Example Path Tracing
+
+Interactive `warp_optix.pathtracing` viewer for a procedural scene, a glTF
+file, or a USD stage. The hairball and arrowball scenes use native OptiX
+curves; contact_lines draws changing OpenGL lines over the path-traced frame.
+
+Runs:
+- `python examples/example_pathtracing.py --scene chess`
+- `python examples/example_pathtracing.py --scene hairball`
+- `python examples/example_pathtracing.py --scene arrowball`
+- `python examples/example_pathtracing.py --scene contact_lines`
+- `python examples/example_pathtracing.py --gltf scene.glb`
+- `python examples/example_pathtracing.py --usd scene.usd`
+"""
 
 from __future__ import annotations
 
 import argparse
 import math
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import warp as wp
+from scenes import arrowball, chess, hairball, style
 from warp_optix.gl import GLInteropViewer
-from warp_optix.pathtracing import (
-    DEFAULT_VIEWER_HEIGHT,
-    DEFAULT_VIEWER_WIDTH,
-    PathTracer,
-)
+from warp_optix.pathtracing import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH, PathTracer
+
+
+@dataclass
+class View:
+    position: tuple
+    yaw: float
+    pitch: float
+    fov: float
+    speed: float = 1.0
+    exposure: float = 0.32
+
+
+BALL_VIEW = View((0.0, 0.18, 3.55), 180.0, -3.0, 42.0)
 
 
 @wp.kernel
@@ -50,255 +74,241 @@ def _pack_display_rgba8(
     dst[y * width + x] = (a << wp.uint32(24)) | (b << wp.uint32(16)) | (g << wp.uint32(8)) | r
 
 
+class FreeCameraController:
+    """Left-drag to look, WASD/arrows to move, Q/E down/up, Shift faster, wheel to zoom, 1-9 debug views."""
+
+    def __init__(self, viewer, api: PathTracer, view: View):
+        self.pyglet = viewer.pyglet
+        self.api = api
+        self.position = np.array(view.position, dtype=np.float32)
+        self.yaw = float(view.yaw)
+        self.pitch = float(view.pitch)
+        self.fov = float(view.fov)
+        self.speed = max(0.0, float(view.speed))
+        self.keys_down: set[int] = set()
+        self._apply()
+        viewer.window.push_handlers(self)
+
+    def _apply(self):
+        self.api.set_camera_angles(self.position, self.yaw, self.pitch, self.fov)
+
+    def update(self, dt: float):
+        key = self.pyglet.window.key
+        yaw = math.radians(self.yaw)
+        pitch = math.radians(self.pitch)
+        forward = np.array(
+            [math.sin(yaw) * math.cos(pitch), math.sin(pitch), math.cos(yaw) * math.cos(pitch)], dtype=np.float32
+        )
+        up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        right = np.cross(forward, up)
+        right_norm = float(np.linalg.norm(right))
+        if right_norm > 1.0e-6:
+            right /= right_norm
+
+        move = np.zeros(3, dtype=np.float32)
+        for symbols, direction in (
+            ((key.W, key.UP), forward),
+            ((key.S, key.DOWN), -forward),
+            ((key.A, key.LEFT), -right),
+            ((key.D, key.RIGHT), right),
+            ((key.Q,), -up),
+            ((key.E,), up),
+        ):
+            if any(symbol in self.keys_down for symbol in symbols):
+                move += direction
+        move_norm = float(np.linalg.norm(move))
+        if move_norm > 1.0e-6:
+            speed = self.speed * (4.0 if {key.LSHIFT, key.RSHIFT} & self.keys_down else 1.0)
+            self.position += move / move_norm * speed * max(0.0, min(dt, 0.1))
+            self._apply()
+
+    def on_key_press(self, symbol, _modifiers):
+        # 1 final, 2 radiance, 3 depth, 4 motion, 5 normal, 6 roughness, 7 diffuse, 8 specular, 9 spec hit distance.
+        key = self.pyglet.window.key
+        debug_keys = (key._1, key._2, key._3, key._4, key._5, key._6, key._7, key._8, key._9)
+        if symbol in debug_keys:
+            self.api.set_debug_buffer_mode(debug_keys.index(symbol))
+        self.keys_down.add(symbol)
+
+    def on_key_release(self, symbol, _modifiers):
+        self.keys_down.discard(symbol)
+
+    def on_mouse_drag(self, _x, _y, dx, dy, buttons, _modifiers):
+        if buttons & self.pyglet.window.mouse.LEFT:
+            self.yaw -= float(dx) * 0.1
+            self.pitch = max(-89.0, min(89.0, self.pitch + float(dy) * 0.1))
+            self._apply()
+
+    def on_mouse_scroll(self, _x, _y, _scroll_x, scroll_y):
+        self.fov = max(15.0, min(90.0, self.fov - float(scroll_y) * 2.0))
+        self._apply()
+
+
+def _add_ball_and_ground(api: PathTracer, core_material: int, ball_radius: float = 0.8):
+    api.add_sphere((0.0, 0.0, 0.0), ball_radius * 1.005, 64, core_material)
+    style.add_checker_ground(api, height=-1.38)
+
+
+def setup_chess(api: PathTracer, args) -> View:
+    chess.build_chess_scene(api)
+    api.build_scene()
+    position, yaw, pitch = style.camera_angles(
+        chess.CAMERA_POSITION, np.subtract(chess.CAMERA_TARGET, chess.CAMERA_POSITION)
+    )
+    return View(position, yaw, pitch, chess.CAMERA_FOV, speed=2.0, exposure=0.68)
+
+
+def setup_hairball(api: PathTracer, args) -> View:
+    segments = 5
+    points, radii, segment_indices = hairball.generate_hair_ball(args.hair_count, segments)
+    core_material = api.create_pbr_material((0.025, 0.03, 0.04), 0.72, 0.0)
+    palette = style.create_rainbow_materials(api)
+    _add_ball_and_ground(api, core_material)
+    curve = api.create_curve(
+        points,
+        radii,
+        segment_indices,
+        material_id=int(palette[0]),
+        material_ids=palette[hairball.rainbow_segment_slots(points, segments)],
+        basis="cubic_bezier",
+    )
+    api.create_instance(curve)
+    api.build_scene()
+    style.configure_demo_sky(api)
+    return BALL_VIEW
+
+
+def setup_arrowball(api: PathTracer, args) -> View:
+    starts, ends, slots = arrowball.generate_arrow_ball(args.arrow_count)
+    core_material = api.create_pbr_material((0.025, 0.03, 0.04), 0.72, 0.0)
+    palette = style.create_rainbow_materials(api)
+    _add_ball_and_ground(api, core_material)
+    arrows = api.create_arrow_batch(
+        capacity=args.arrow_count,
+        small_radius=0.011,
+        large_radius=0.034,
+        tip_length_ratio=0.28,
+        material_id=int(palette[0]),
+        material_ids=palette[slots],
+    )
+    api.update_arrow_batch(arrows, starts, ends)
+    api.build_scene()
+    style.configure_demo_sky(api)
+    return BALL_VIEW
+
+
+def setup_contact_lines(api: PathTracer, args) -> View:
+    core_material = api.create_pbr_material((0.025, 0.03, 0.04), 0.72, 0.0)
+    _add_ball_and_ground(api, core_material)
+    api.build_scene()
+    style.configure_demo_sky(api)
+    return BALL_VIEW
+
+
+def setup_gltf(api: PathTracer, args) -> View:
+    path = args.gltf.expanduser().resolve()
+    if not api.load_scene_from_gltf(str(path), build_scene=True):
+        raise RuntimeError(f"Failed to load glTF scene: {path}")
+    return View((-0.803, 0.340, 0.327), 115.2, -21.8, 45.0, speed=2.0, exposure=0.68)
+
+
+def setup_usd(api: PathTracer, args) -> View:
+    from scenes import usd
+
+    path = args.usd.expanduser().resolve()
+    if not api.load_scene_from_usd(str(path), max_texture_size=args.max_texture_size or None):
+        raise RuntimeError(f"USD stage contained no supported render meshes: {path}")
+    position, yaw, pitch, fov, radius, camera_path = usd.camera_for_scene(api, requested_path=args.usd_camera)
+    print(f"[optix] camera: {camera_path or 'framed from geometry bounds'}")
+    return View(position, yaw, pitch, fov, speed=usd.default_camera_speed(radius), exposure=0.68)
+
+
+SCENES = {
+    "chess": setup_chess,
+    "hairball": setup_hairball,
+    "arrowball": setup_arrowball,
+    "contact_lines": setup_contact_lines,
+}
+
+
 def _parse_args():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument(
-        "--scene-gltf",
-        type=str,
-        default=None,
-        help="Optional path to a glTF/GLB scene. If omitted, generates a procedural chess scene.",
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--scene", choices=SCENES, default="chess", help="Procedural scene to render.")
+    source.add_argument("--gltf", type=Path, help="Render a .gltf/.glb file instead of a procedural scene.")
+    source.add_argument(
+        "--usd", type=Path, help="Render a USD stage instead of a procedural scene (needs the usd extra)."
     )
     parser.add_argument("--width", type=int, default=DEFAULT_VIEWER_WIDTH)
     parser.add_argument("--height", type=int, default=DEFAULT_VIEWER_HEIGHT)
-    parser.add_argument("--fps", type=int, default=0, help="Presentation rate cap (0 = unlimited).")
-    parser.add_argument("--max-frames", type=int, default=0, help="Auto-exit after N frames (0 = run forever).")
+    parser.add_argument("--max-frames", type=int, default=0, help="Exit after N frames (0 = run until closed).")
+    parser.add_argument("--screenshot", type=Path, help="Save the last frame as a PNG on exit.")
+    parser.add_argument("--denoiser", choices=("auto", "optix", "none"), default="auto")
+    parser.add_argument("--exposure", type=float, help="Display exposure (default depends on the scene).")
+    parser.add_argument("--hair-count", type=int, default=4000, help="Number of strands (hairball).")
+    parser.add_argument("--arrow-count", type=int, default=1800, help="Number of arrows (arrowball).")
+    parser.add_argument("--contact-count", type=int, default=100_000, help="Maximum number of lines (contact_lines).")
+    parser.add_argument("--usd-camera", help="USD camera prim path; defaults to the stage's bound camera.")
     parser.add_argument(
-        "--screenshot",
-        type=Path,
-        default=None,
-        help="Save the final tone-mapped frame as a PNG (use with --max-frames).",
-    )
-    parser.add_argument("--title", type=str, default="Warp OptiX Basic Pathtracing")
-    parser.add_argument("--camera-speed", type=float, default=2.0, help="Camera movement speed in scene units/second.")
-    parser.add_argument("--camera-position", type=float, nargs=3, default=None)
-    parser.add_argument("--camera-target", type=float, nargs=3, default=None)
-    parser.add_argument("--camera-fov", type=float, default=None)
-    parser.add_argument("--exposure", type=float, default=0.68, help="Linear display exposure multiplier.")
-    parser.add_argument("--contrast", type=float, default=1.08, help="Display contrast multiplier.")
-    parser.add_argument("--saturation", type=float, default=1.1, help="Display saturation multiplier.")
-    parser.add_argument(
-        "--denoiser",
-        choices=("auto", "optix", "none"),
-        default=None,
-        help="Select the denoiser backend.",
-    )
-    parser.add_argument("--optix-upscale", action="store_true", help="Enable OptiX temporal 2x upscaling.")
-    parser.add_argument("--no-set", action="store_true", help="Disable Shader Execution Reordering.")
-    parser.add_argument(
-        "--no-backface-culling",
-        action="store_true",
-        help="Render back-facing triangles for globally two-sided traversal.",
+        "--max-texture-size", type=int, default=512, help="Maximum USD texture size per tile (0 = full size)."
     )
     return parser.parse_args()
 
 
-def _camera_angles(position, target):
-    direction = np.asarray(target, dtype=np.float64) - np.asarray(position, dtype=np.float64)
-    direction /= max(float(np.linalg.norm(direction)), 1.0e-20)
-    yaw = math.degrees(math.atan2(float(direction[0]), float(direction[2])))
-    pitch = math.degrees(math.asin(float(np.clip(direction[1], -1.0, 1.0))))
-    return tuple(position), yaw, pitch
-
-
-def _resolve_scene_gltf(scene_gltf_arg: str | None) -> Path | None:
-    if scene_gltf_arg is None:
-        return None
-    scene_gltf = Path(scene_gltf_arg).expanduser().resolve()
-    if not scene_gltf.is_file():
-        raise FileNotFoundError(f"--scene-gltf does not exist: {scene_gltf}")
-    return scene_gltf
-
-
-class FreeCameraController:
-    """Newton-style interactive camera controls for the basic pathtracing example."""
-
-    def __init__(self, viewer, api: PathTracer, position, yaw: float, pitch: float, fov: float, movement_speed: float):
-        self.window = viewer.window
-        self.pyglet = viewer.pyglet
-        self.api = api
-        self.position = np.array(position, dtype=np.float32)
-        self.yaw = float(yaw)
-        self.pitch = float(pitch)
-        self.fov = float(fov)
-        self._keys_down: set[int] = set()
-        self._cam_speed = max(0.0, float(movement_speed))
-        self._look_sensitivity = 0.1
-
-        # Push initial camera state.
-        self.api.set_camera_angles(self.position, self.yaw, self.pitch, self.fov)
-        self.window.push_handlers(self)
-
-    def _forward_right(self) -> tuple[np.ndarray, np.ndarray]:
-        yaw_rad = math.radians(self.yaw)
-        pitch_rad = math.radians(self.pitch)
-        cos_pitch = math.cos(pitch_rad)
-
-        forward = np.array(
-            [
-                math.sin(yaw_rad) * cos_pitch,
-                math.sin(pitch_rad),
-                math.cos(yaw_rad) * cos_pitch,
-            ],
-            dtype=np.float32,
-        )
-        world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-        right = np.cross(forward, world_up)
-        right_norm = float(np.linalg.norm(right))
-        if right_norm > 1.0e-6:
-            right /= right_norm
-        return forward, right
-
-    def update(self, dt: float):
-        try:
-            key = self.pyglet.window.key
-        except Exception:
-            # Fallback to no-op if backend doesn't expose key symbols.
-            return
-
-        forward, right = self._forward_right()
-        world_up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-        move = np.zeros(3, dtype=np.float32)
-
-        if key.W in self._keys_down or key.UP in self._keys_down:
-            move += forward
-        if key.S in self._keys_down or key.DOWN in self._keys_down:
-            move -= forward
-        if key.A in self._keys_down or key.LEFT in self._keys_down:
-            move -= right
-        if key.D in self._keys_down or key.RIGHT in self._keys_down:
-            move += right
-        if key.Q in self._keys_down:
-            move -= world_up
-        if key.E in self._keys_down:
-            move += world_up
-
-        move_norm = float(np.linalg.norm(move))
-        if move_norm > 1.0e-6:
-            speed = self._cam_speed
-            if key.LSHIFT in self._keys_down or key.RSHIFT in self._keys_down:
-                speed *= 4.0
-            self.position += (move / move_norm) * speed * max(0.0, min(dt, 0.1))
-            self.api.set_camera_angles(self.position, self.yaw, self.pitch, self.fov)
-
-    def on_key_press(self, symbol, _modifiers):
-        try:
-            key = self.pyglet.window.key
-        except Exception:
-            key = None
-
-        if key is not None:
-            mode_by_key = {
-                key._1: 0,  # final
-                key._2: 1,  # radiance
-                key._3: 2,  # depth
-                key._4: 3,  # motion
-                key._5: 4,  # normal
-                key._6: 5,  # roughness
-                key._7: 6,  # diffuse
-                key._8: 7,  # specular
-                key._9: 8,  # spec hit distance
-            }
-            if symbol in mode_by_key:
-                self.api.set_debug_buffer_mode(mode_by_key[symbol])
-
-        self._keys_down.add(symbol)
-
-    def on_key_release(self, symbol, _modifiers):
-        self._keys_down.discard(symbol)
-
-    def on_mouse_drag(self, _x, _y, dx, dy, buttons, _modifiers):
-        try:
-            mouse = self.pyglet.window.mouse
-        except Exception:
-            return
-
-        if buttons & mouse.LEFT:
-            self.yaw -= float(dx) * self._look_sensitivity
-            self.pitch += float(dy) * self._look_sensitivity
-            self.pitch = max(-89.0, min(89.0, self.pitch))
-            self.api.set_camera_angles(self.position, self.yaw, self.pitch, self.fov)
-
-    def on_mouse_scroll(self, _x, _y, _scroll_x, scroll_y):
-        self.fov = max(15.0, min(90.0, self.fov - float(scroll_y) * 2.0))
-        self.api.set_camera_angles(self.position, self.yaw, self.pitch, self.fov)
-
-
 def main():
     args = _parse_args()
-    scene_gltf = _resolve_scene_gltf(args.scene_gltf)
+    if args.width < 1 or args.height < 1:
+        raise ValueError("width and height must be positive")
 
     wp.init()
-
-    api = PathTracer(
-        width=args.width,
-        height=args.height,
-        denoiser=args.denoiser,
-        optix_upscale=args.optix_upscale,
-        enable_set=not args.no_set,
-        backface_culling=not args.no_backface_culling,
-    )
+    api = PathTracer(width=args.width, height=args.height, denoiser=args.denoiser)
     if not api.initialize():
         raise RuntimeError("Failed to initialize pathtracing API.")
-    # Match Newton's ViewerOptix display defaults.
-    api.tonemap_exposure = args.exposure
-    api.tonemap_contrast = args.contrast
-    api.tonemap_saturation = args.saturation
 
-    if scene_gltf is not None and not api.load_scene_from_gltf(str(scene_gltf), build_scene=True):
-        raise RuntimeError(f"Failed to load glTF scene: {scene_gltf}")
+    if args.usd is not None:
+        name, view = args.usd.name, setup_usd(api, args)
+    elif args.gltf is not None:
+        name, view = args.gltf.name, setup_gltf(api, args)
+    else:
+        name, view = args.scene, SCENES[args.scene](api, args)
+    api.tonemap_exposure = view.exposure if args.exposure is None else args.exposure
+    api.tonemap_contrast = 1.08
+    api.tonemap_saturation = 1.1
 
-    # Camera preset mirrored from Newton basic OptiX pathtracing example.
-    cam_pos = (-0.803, 0.340, 0.327)
-    cam_yaw = 115.2
-    cam_pitch = -21.8
-    cam_fov = 45.0
-    if scene_gltf is None:
-        from example_warp_optix_chess_scene import (
-            CAMERA_FOV,
-            CAMERA_POSITION,
-            CAMERA_TARGET,
-            build_chess_scene,
-        )
+    lines = None
+    if args.usd is None and args.gltf is None and args.scene == "contact_lines":
+        from scenes.contact_lines import ContactLines
 
-        build_chess_scene(api)
-        api.build_scene()
-        cam_pos, cam_yaw, cam_pitch = _camera_angles(CAMERA_POSITION, CAMERA_TARGET)
-        cam_fov = CAMERA_FOV
-    if (args.camera_position is None) != (args.camera_target is None):
-        raise ValueError("--camera-position and --camera-target must be supplied together")
-    if args.camera_position is not None:
-        cam_pos, cam_yaw, cam_pitch = _camera_angles(args.camera_position, args.camera_target)
-    if args.camera_fov is not None:
-        cam_fov = float(np.clip(args.camera_fov, 5.0, 120.0))
+        lines = ContactLines(api, args.contact_count)
 
-    render_width = int(args.width)
-    render_height = int(args.height)
+    render_width, render_height = args.width, args.height
     last_elapsed = 0.0
 
-    def _on_resize(width: int, height: int):
+    def on_resize(width: int, height: int):
         nonlocal render_width, render_height, last_elapsed
         render_width, render_height = int(width), int(height)
         api.resize(render_width, render_height)
+        if lines is not None:
+            lines.resize()
         last_elapsed = 0.0
 
     viewer = GLInteropViewer(
         width=args.width,
         height=args.height,
         device="cuda",
-        title=args.title,
-        fps=args.fps,
-        on_resize=_on_resize,
-        vsync=args.fps > 0,
+        title=f"Path Tracing - {name}",
+        on_resize=on_resize,
     )
+    if lines is not None:
+        lines.attach(viewer)
+    controller = FreeCameraController(viewer, api, view)
 
-    # Attach Newton-style free camera controls to the viewer window.
-    controller = FreeCameraController(viewer, api, cam_pos, cam_yaw, cam_pitch, cam_fov, args.camera_speed)
-
-    def _render(mapped_image: wp.array, _frame_idx: int, elapsed_sec: float):
+    def render(mapped_image: wp.array, frame: int, elapsed: float):
         nonlocal last_elapsed
-        dt = elapsed_sec - last_elapsed
-        last_elapsed = elapsed_sec
-        controller.update(dt)
+        controller.update(elapsed - last_elapsed)
+        last_elapsed = elapsed
+        if lines is not None:
+            lines.update(frame, elapsed)
         api.render_frame()
         wp.launch(
             _pack_display_rgba8,
@@ -307,13 +317,14 @@ def main():
             device="cuda",
         )
 
-    print(f"[optix] scene: {scene_gltf if scene_gltf is not None else 'procedural chess'}")
-    print(
-        f"[optix] denoiser: {api.active_denoiser}, "
-        f"render: {api.viewer._render_width}x{api.viewer._render_height}, "
-        f"output: {api.width}x{api.height}"
-    )
-    viewer.run(_render, max_frames=args.max_frames)
+    print(f"[optix] scene: {name}, denoiser: {api.active_denoiser}")
+    print(f"[optix] controls: {FreeCameraController.__doc__}")
+    try:
+        viewer.run(render, max_frames=args.max_frames)
+    finally:
+        if lines is not None:
+            lines.close()
+
     if args.screenshot is not None:
         from PIL import Image
 

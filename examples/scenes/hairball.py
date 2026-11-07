@@ -1,30 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Interactive PBR path-traced hair ball using native OptiX curves."""
+
+"""Procedural hair ball made of tapered helical cubic Bezier strands."""
 
 from __future__ import annotations
 
-import argparse
-from pathlib import Path
-
 import numpy as np
-import warp as wp
-from example_warp_optix_basic_pathtracing import (
-    FreeCameraController,
-    _pack_display_rgba8,
-)
-from example_warp_optix_pathtraced_scene import (
-    add_checker_ground,
-    configure_demo_sky,
-    create_rainbow_materials,
-    rainbow_height_slots,
-)
-from warp_optix.gl import GLInteropViewer
-from warp_optix.pathtracing import (
-    DEFAULT_VIEWER_HEIGHT,
-    DEFAULT_VIEWER_WIDTH,
-    PathTracer,
-)
+
+from .style import rainbow_height_slots
 
 
 def rainbow_segment_slots(points: np.ndarray, segments: int) -> np.ndarray:
@@ -34,46 +17,15 @@ def rainbow_segment_slots(points: np.ndarray, segments: int) -> np.ndarray:
     return np.repeat(strand_slots, segments)
 
 
-def _parse_args():
-    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument("--hair-count", type=int, default=4000)
-    parser.add_argument("--segments", type=int, default=5, help="Cubic Bezier segments per hair.")
-    parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--ball-radius", type=float, default=0.8)
-    parser.add_argument("--hair-length", type=float, default=0.48)
-    parser.add_argument("--curl-radius", type=float, default=0.065)
-    parser.add_argument("--curl-turns", type=float, default=1.65)
-    parser.add_argument("--root-radius", type=float, default=0.012)
-    parser.add_argument("--width", type=int, default=DEFAULT_VIEWER_WIDTH)
-    parser.add_argument("--height", type=int, default=DEFAULT_VIEWER_HEIGHT)
-    parser.add_argument("--fps", type=int, default=0, help="Presentation rate cap; 0 is unlimited.")
-    parser.add_argument(
-        "--max-frames",
-        type=int,
-        default=0,
-        help="Auto-exit after N frames; 0 runs forever.",
-    )
-    parser.add_argument("--screenshot", type=Path, default=None)
-    parser.add_argument("--title", default="Warp OptiX Path-traced Hair Ball")
-    parser.add_argument("--camera-speed", type=float, default=1.0)
-    parser.add_argument("--exposure", type=float, default=0.32)
-    parser.add_argument("--contrast", type=float, default=1.08)
-    parser.add_argument("--saturation", type=float, default=1.1)
-    parser.add_argument("--denoiser", choices=("auto", "optix", "none"), default="auto")
-    parser.add_argument("--no-cuda-graphs", action="store_true")
-    parser.add_argument("--no-set", action="store_true")
-    return parser.parse_args()
-
-
 def generate_hair_ball(
-    hair_count: int,
-    segments: int,
-    ball_radius: float,
-    hair_length: float,
-    curl_radius: float,
-    curl_turns: float,
-    root_radius: float,
-    seed: int,
+    hair_count: int = 4000,
+    segments: int = 5,
+    ball_radius: float = 0.8,
+    hair_length: float = 0.48,
+    curl_radius: float = 0.065,
+    curl_turns: float = 1.65,
+    root_radius: float = 0.012,
+    seed: int = 7,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Pack disjoint tapered helical hairs as C1-continuous cubic Beziers."""
     if hair_count < 1:
@@ -151,103 +103,3 @@ def generate_hair_ball(
         radii.astype(np.float32).reshape(-1),
         segment_indices,
     )
-
-
-def main():
-    args = _parse_args()
-    if args.width < 1 or args.height < 1:
-        raise ValueError("width and height must be positive")
-    points, radii, segment_indices = generate_hair_ball(
-        args.hair_count,
-        args.segments,
-        args.ball_radius,
-        args.hair_length,
-        args.curl_radius,
-        args.curl_turns,
-        args.root_radius,
-        args.seed,
-    )
-
-    wp.init()
-    api = PathTracer(
-        width=args.width,
-        height=args.height,
-        denoiser=args.denoiser,
-        enable_cuda_graphs=not args.no_cuda_graphs,
-        enable_set=not args.no_set,
-    )
-    if not api.initialize():
-        raise RuntimeError("Failed to initialize pathtracing API.")
-    api.tonemap_exposure = args.exposure
-    api.tonemap_contrast = args.contrast
-    api.tonemap_saturation = args.saturation
-
-    core_mat = api.create_pbr_material((0.025, 0.03, 0.04), 0.72, 0.0)
-    palette_materials = create_rainbow_materials(api)
-    segment_material_ids = palette_materials[rainbow_segment_slots(points, args.segments)]
-    api.add_sphere((0.0, 0.0, 0.0), args.ball_radius * 1.005, 64, core_mat)
-    add_checker_ground(api, height=-1.38)
-    curve_id = api.create_curve(
-        points,
-        radii,
-        segment_indices,
-        material_id=int(palette_materials[0]),
-        material_ids=segment_material_ids,
-        basis="cubic_bezier",
-    )
-    api.create_instance(curve_id)
-    api.build_scene()
-    configure_demo_sky(api)
-
-    render_width, render_height = args.width, args.height
-    last_elapsed = 0.0
-
-    def _on_resize(width: int, height: int):
-        nonlocal render_width, render_height, last_elapsed
-        render_width, render_height = int(width), int(height)
-        api.resize(render_width, render_height)
-        last_elapsed = 0.0
-
-    viewer = GLInteropViewer(
-        width=args.width,
-        height=args.height,
-        device="cuda",
-        title=args.title,
-        fps=args.fps,
-        on_resize=_on_resize,
-        vsync=args.fps > 0,
-    )
-    controller = FreeCameraController(viewer, api, (0.0, 0.18, 3.55), 180.0, -3.0, 42.0, args.camera_speed)
-
-    def _render(mapped_image: wp.array, _frame_idx: int, elapsed_sec: float):
-        nonlocal last_elapsed
-        controller.update(elapsed_sec - last_elapsed)
-        last_elapsed = elapsed_sec
-        api.render_frame()
-        wp.launch(
-            _pack_display_rgba8,
-            dim=(render_width, render_height),
-            inputs=[
-                api.viewer.tonemapped_output,
-                mapped_image,
-                render_width,
-                render_height,
-            ],
-            device="cuda",
-        )
-
-    print(f"[optix] hair ball: {args.hair_count:,} strands, {len(segment_indices):,} cubic Bezier segments")
-    print("[optix] controls: left-drag look, WASD move, Q/E down/up, wheel zoom")
-    viewer.run(_render, max_frames=args.max_frames)
-    if args.screenshot is not None:
-        from PIL import Image
-
-        screenshot = args.screenshot.expanduser().resolve()
-        screenshot.parent.mkdir(parents=True, exist_ok=True)
-        frame = np.clip(api.get_frame(), 0.0, 1.0)
-        Image.fromarray((frame[..., :3] * 255.0 + 0.5).astype(np.uint8), mode="RGB").save(screenshot)
-        print(f"[optix] saved screenshot: {screenshot}")
-
-
-if __name__ == "__main__":
-    main()
