@@ -23,6 +23,11 @@ import math
 import numpy as np
 
 
+def cross3(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Cross product of two 3-vectors; np.cross is several times slower for a single pair."""
+    return np.array((a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]), dtype=a.dtype)
+
+
 class Camera:
     """First-person/orbit camera with smooth movement and rotation."""
 
@@ -55,7 +60,7 @@ class Camera:
     @property
     def right(self) -> np.ndarray:
         """Get the right direction vector."""
-        r = np.cross(self.forward, self.up)
+        r = cross3(self.forward, self.up)
         return r / np.linalg.norm(r)
 
     @property
@@ -192,7 +197,7 @@ class Camera:
             delta_y: Vertical pan amount
         """
         right = self.right
-        up = np.cross(right, self.forward)
+        up = cross3(right, self.forward)
 
         offset = right * delta_x + up * delta_y
         self.position += offset
@@ -204,10 +209,10 @@ class Camera:
         f = center - eye
         f = f / np.linalg.norm(f)
 
-        s = np.cross(f, up)
+        s = cross3(f, up)
         s = s / np.linalg.norm(s)
 
-        u = np.cross(s, f)
+        u = cross3(s, f)
 
         result = np.eye(4, dtype=np.float32)
         result[0, 0] = s[0]

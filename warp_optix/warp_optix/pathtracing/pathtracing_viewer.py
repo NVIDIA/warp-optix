@@ -34,7 +34,7 @@ import warp_optix as wo
 from warp_optix import native
 
 from . import pathtracing_warp_kernels as pwk
-from .camera import Camera
+from .camera import Camera, cross3
 from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH
 from .denoising import DenoiserInputs, OptixDenoiser
 from .environment_map import EnvironmentMap
@@ -236,6 +236,7 @@ class Renderer:
         self._prev_instance_transforms_valid = False
 
         self._launch_params = None
+        self._array_views: dict = {}
         self._instance_transform_count = 0
         self._device_camera_positions = None
         self._device_camera_targets = None
@@ -730,14 +731,14 @@ class Renderer:
         else:
             forward /= forward_norm
 
-        right = np.cross(forward, world_up)
+        right = cross3(forward, world_up)
         right_norm = np.linalg.norm(right)
         if right_norm < 1.0e-8:
             right = np.array([1.0, 0.0, 0.0], dtype=np.float32)
         else:
             right /= right_norm
 
-        up = np.cross(right, forward)
+        up = cross3(right, forward)
         up_norm = np.linalg.norm(up)
         if up_norm < 1.0e-8:
             up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
@@ -844,7 +845,6 @@ class Renderer:
         p.analytic_light_intensity = float(self.analytic_light_intensity)
         p.emissive_material_intensity = float(self.emissive_material_intensity)
         p.output_mode = int(self.OUTPUT_FINAL)
-        p.device_camera = self._device_camera_state
         if self.use_halton_jitter and self._optix_denoiser is None:
             jitter_x = self._halton(frame_index_value, 2) - 0.5
             jitter_y = self._halton(frame_index_value, 3) - 0.5
@@ -887,19 +887,9 @@ class Renderer:
         p.override_metallic = float(self.override_metallic)
         p.bitangent_flip = float(self.bitangent_flip)
         p.use_procedural_sky = wp.uint32(1 if self._env_map is None else 0)
-        p.env_map = None if self._env_map is None else self._env_map._env_map_buffer
         p.env_map_length = wp.uint32(0 if self._env_map is None else self._env_map.width * self._env_map.height * 4)
         p.env_map_width = wp.uint32(0 if self._env_map is None else self._env_map.width)
         p.env_map_height = wp.uint32(0 if self._env_map is None else self._env_map.height)
-        p.env_accel = (
-            None
-            if self._env_map is None or self._env_map._env_accel_buffer is None
-            else wp.array(
-                ptr=self._env_map._env_accel_buffer.ptr,
-                shape=(self._env_map.accel_count,),
-                dtype=pwk.EnvAccel,
-            )
-        )
         p.env_accel_count = wp.uint32(0 if self._env_map is None else self._env_map.accel_count)
 
         sky = pwk.PhysicalSkyParams()
@@ -946,81 +936,79 @@ class Renderer:
                 stream=self._render_stream,
             )
             self._sky_lut_state = sky_state
-        p.sky_lut = self._sky_lut_buffer
         p.sky_lut_width = wp.uint32(self._sky_lut_buffer.shape[1])
         p.sky_lut_height = wp.uint32(self._sky_lut_buffer.shape[0])
 
-        p.sphere_lights = (
-            None
-            if self._scene._sphere_light_data is None
-            else wp.array(
-                ptr=self._scene._sphere_light_data.ptr,
-                shape=(self._scene.light_count,),
-                dtype=pwk.SphereLight,
-            )
-        )
-        p.sphere_light_count = wp.uint32(self._scene.light_count)
-        p.render_primitives = (
-            None
-            if self._scene._render_primitives is None or self._scene.geometry_count == 0
-            else wp.array(
-                ptr=self._scene._render_primitives.ptr,
-                shape=(self._scene.geometry_count,),
-                dtype=pwk.RenderPrimitive,
-            )
-        )
-        p.render_prim_count = wp.uint32(self._scene.geometry_count)
-        p.instance_render_prim_ids = self._scene._instance_render_prim_ids
-        p.instance_geometry_types = self._scene._instance_geometry_types
-        p.instance_material_ids = self._scene._instance_material_ids
-        p.instance_count = wp.uint32(self._scene.instance_count)
-        p.instance_transforms = (
-            None
-            if self._instance_transforms_buffer is None
-            else wp.array(
-                ptr=self._instance_transforms_buffer.ptr,
-                shape=(self._scene.instance_count,),
-                dtype=pwk.TransformMatrix3x4,
-            )
-        )
-        p.prev_instance_transforms = (
-            None
-            if self._prev_instance_transforms_buffer is None
-            else wp.array(
-                ptr=self._prev_instance_transforms_buffer.ptr,
-                shape=(self._scene.instance_count,),
-                dtype=pwk.TransformMatrix3x4,
-            )
-        )
-        p.compact_materials = (
-            None
-            if self._scene._compact_materials is None or self._scene.materials.count == 0
-            else wp.array(
-                ptr=self._scene._compact_materials.ptr,
-                shape=(self._scene.materials.count,),
-                dtype=pwk.CompactMaterial,
-            )
-        )
-        p.packed_indices = self._scene._packed_indices
-        p.packed_positions = self._scene._packed_positions
-        p.packed_radii = self._scene._packed_radii
-        p.packed_normals = self._scene._packed_normals
-        p.packed_tangents = self._scene._packed_tangents
-        p.packed_texcoords0 = self._scene._packed_texcoords0
-        p.packed_texcoords1 = self._scene._packed_texcoords1
-        p.packed_prev_positions = self._scene._packed_prev_positions
-        p.packed_material_ids = self._scene._packed_material_ids
-        p.material_count = wp.uint32(self._scene.materials.count)
-        p.textures = self._scene._texture_data
-        p.texture_count = wp.uint32(self._scene.texture_count)
+        scene = self._scene
+        p.sphere_light_count = wp.uint32(scene.light_count)
+        p.render_prim_count = wp.uint32(scene.geometry_count)
+        p.instance_count = wp.uint32(scene.instance_count)
+        p.material_count = wp.uint32(scene.materials.count)
+        p.texture_count = wp.uint32(scene.texture_count)
 
-        p.color_output = self._color_buffer
-        p.normal_roughness_output = self._normal_roughness_buffer
-        p.motion_output = self._motion_buffer
-        p.depth_output = self._depth_buffer
-        p.diffuse_output = self._diffuse_buffer
-        p.specular_output = self._specular_buffer
-        p.spec_hit_dist_output = self._spec_hit_dist_buffer
+        env_map = self._env_map
+        arrays = {
+            "device_camera": self._device_camera_state,
+            "env_map": None if env_map is None else env_map._env_map_buffer,
+            "env_accel": self._array_view(
+                "env_accel",
+                None if env_map is None else env_map._env_accel_buffer,
+                0 if env_map is None else env_map.accel_count,
+                pwk.EnvAccel,
+            ),
+            "sky_lut": self._sky_lut_buffer,
+            "sphere_lights": self._array_view(
+                "sphere_lights", scene._sphere_light_data, scene.light_count, pwk.SphereLight
+            ),
+            "render_primitives": self._array_view(
+                "render_primitives", scene._render_primitives, scene.geometry_count, pwk.RenderPrimitive
+            ),
+            "instance_render_prim_ids": scene._instance_render_prim_ids,
+            "instance_geometry_types": scene._instance_geometry_types,
+            "instance_material_ids": scene._instance_material_ids,
+            "instance_transforms": self._array_view(
+                "instance_transforms", self._instance_transforms_buffer, scene.instance_count, pwk.TransformMatrix3x4
+            ),
+            "prev_instance_transforms": self._array_view(
+                "prev_instance_transforms",
+                self._prev_instance_transforms_buffer,
+                scene.instance_count,
+                pwk.TransformMatrix3x4,
+            ),
+            "compact_materials": self._array_view(
+                "compact_materials", scene._compact_materials, scene.materials.count, pwk.CompactMaterial
+            ),
+            "packed_indices": scene._packed_indices,
+            "packed_positions": scene._packed_positions,
+            "packed_radii": scene._packed_radii,
+            "packed_normals": scene._packed_normals,
+            "packed_tangents": scene._packed_tangents,
+            "packed_texcoords0": scene._packed_texcoords0,
+            "packed_texcoords1": scene._packed_texcoords1,
+            "packed_prev_positions": scene._packed_prev_positions,
+            "packed_material_ids": scene._packed_material_ids,
+            "textures": scene._texture_data,
+            "color_output": self._color_buffer,
+            "normal_roughness_output": self._normal_roughness_buffer,
+            "motion_output": self._motion_buffer,
+            "depth_output": self._depth_buffer,
+            "diffuse_output": self._diffuse_buffer,
+            "specular_output": self._specular_buffer,
+            "spec_hit_dist_output": self._spec_hit_dist_buffer,
+        }
+        # Assigning an array field re-validates it, and the arrays change only with the scene or size.
+        for name, value in arrays.items():
+            if getattr(p, name) is not value:
+                setattr(p, name, value)
+
+    def _array_view(self, name: str, buffer, count: int, dtype):
+        """A typed view of a scene byte buffer for field ``name``, reused while the buffer and count are unchanged."""
+        if buffer is None or count == 0:
+            return None
+        cached = self._array_views.get(name)
+        if cached is None or cached.ptr != buffer.ptr or cached.shape[0] != count:
+            cached = self._array_views[name] = wp.array(ptr=buffer.ptr, shape=(count,), dtype=dtype)
+        return cached
 
     def _update_temporal_state(
         self,
@@ -1052,7 +1040,9 @@ class Renderer:
         view_inv: np.ndarray,
         proj_inv: np.ndarray,
     ):
-        """Launch OptiX path tracing and optional external accumulation kernels."""
+        """Launch the frame's samples and return the buffer holding the frame."""
+        # A single sample without external accumulation is the frame itself; skip the copy pass.
+        accumulate = use_external_accum or samples_this_frame > 1
         for s in range(samples_this_frame):
             launch_frame_index = self.sample_index + s
             self._update_launch_params(
@@ -1095,17 +1085,19 @@ class Renderer:
                     stream=self._render_stream,
                 )
 
-            accum_sample_index = int(self.frame_index if use_external_accum else s)
-            wp.launch(
-                _accumulate_sample,
-                dim=(self._render_height, self._render_width),
-                inputs=[self._color_buffer, self._accum_buffer, accum_sample_index],
-                device="cuda",
-                stream=self._render_stream,
-            )
+            if accumulate:
+                accum_sample_index = int(self.frame_index if use_external_accum else s)
+                wp.launch(
+                    _accumulate_sample,
+                    dim=(self._render_height, self._render_width),
+                    inputs=[self._color_buffer, self._accum_buffer, accum_sample_index],
+                    device="cuda",
+                    stream=self._render_stream,
+                )
 
             if use_external_accum:
                 self.frame_index += 1
+        return self._accum_buffer if accumulate else self._color_buffer
 
     def _launch_optix(self):
         if self.enable_cuda_graphs and self._cuda_graph_error is None:
@@ -1179,7 +1171,7 @@ class Renderer:
         samples_this_frame = self.samples_per_frame
         reset_temporal = self._update_temporal_state(current_view, current_proj, use_external_accum)
         self._update_instance_transform_buffers()
-        self._launch_samples(
+        frame = self._launch_samples(
             samples_this_frame,
             use_external_accum,
             view=current_view,
@@ -1201,13 +1193,13 @@ class Renderer:
 
         if self._optix_denoiser is not None:
             output = self._optix_denoiser.apply(
-                self._denoiser_inputs(self._accum_buffer),
+                self._denoiser_inputs(frame),
                 reset=reset_temporal or self._denoiser_reset_history,
             )
             self._denoiser_reset_history = False
             self._process_output(output, resize_final_to_render=False)
         else:
-            self._process_output(self._accum_buffer, resize_final_to_render=True)
+            self._process_output(frame, resize_final_to_render=True)
         self.sample_index += samples_this_frame
 
     def get_output(self) -> np.ndarray:

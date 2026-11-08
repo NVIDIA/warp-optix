@@ -301,7 +301,10 @@ def debug_visualize_kernel(
 
 
 # Explicit overloads avoid relying on generic texture argument inference.
+# Concrete overloads, so launches skip resolving the generic hdr_input type every frame.
+_tonemap_array_kernel = wp.overload(tonemap_kernel, {"hdr_input": wp.array2d(dtype=wp.vec4)})
 _tonemap_texture_kernel = wp.overload(tonemap_kernel, {"hdr_input": wp.Texture2D})
+_meter_array_kernel = wp.overload(_meter_auto_exposure, {"hdr_input": wp.array2d(dtype=wp.vec4)})
 _meter_texture_kernel = wp.overload(_meter_auto_exposure, {"hdr_input": wp.Texture2D})
 
 
@@ -401,7 +404,7 @@ class Tonemapper:
             )
             samples = ((self.width + 3) // 4) * ((self.height + 3) // 4)
             wp.launch_tiled(
-                _meter_texture_kernel if is_texture else _meter_auto_exposure,
+                _meter_texture_kernel if is_texture else _meter_array_kernel,
                 dim=[(samples + _METER_BLOCK_DIM - 1) // _METER_BLOCK_DIM],
                 block_dim=_METER_BLOCK_DIM,
                 inputs=[
@@ -432,7 +435,7 @@ class Tonemapper:
             )
             self._auto_exposure_initialized = True
         wp.launch(
-            _tonemap_texture_kernel if is_texture else tonemap_kernel,
+            _tonemap_texture_kernel if is_texture else _tonemap_array_kernel,
             dim=(self.height, self.width),
             inputs=[
                 hdr_input,

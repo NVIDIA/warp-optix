@@ -612,7 +612,8 @@ def test_volume_composite_launches_only_when_bound(monkeypatch):
     matrix = np.eye(4, dtype=np.float32)
 
     viewer._volume = None
-    viewer._launch_samples(
+    # One sample without external accumulation is the frame itself: no accumulation pass.
+    frame = viewer._launch_samples(
         1,
         False,
         view=matrix,
@@ -620,7 +621,7 @@ def test_volume_composite_launches_only_when_bound(monkeypatch):
         view_inv=matrix,
         proj_inv=matrix,
     )
-    assert launches == [viewer_module._accumulate_sample]
+    assert launches == [] and frame is viewer._color_buffer
 
     viewer._volume = SimpleNamespace(id=1)
     viewer._volume_min = (0.0, 0.0, 0.0)
@@ -641,11 +642,7 @@ def test_volume_composite_launches_only_when_bound(monkeypatch):
         view_inv=matrix,
         proj_inv=matrix,
     )
-    assert launches == [
-        viewer_module._accumulate_sample,
-        viewer_module.composite_volume,
-        viewer_module._accumulate_sample,
-    ]
+    assert launches == [viewer_module.composite_volume]
 
 
 def test_tlas_refit_keeps_but_scene_rebuild_resets_temporal_history():
