@@ -609,17 +609,12 @@ def test_volume_composite_launches_only_when_bound(monkeypatch):
         "launch",
         lambda kernel, **kwargs: launches.append(kernel),
     )
-    matrix = np.eye(4, dtype=np.float32)
 
     viewer._volume = None
-    # One sample without external accumulation is the frame itself: no accumulation pass.
     frame = viewer._launch_samples(
         1,
         False,
-        view=matrix,
-        proj=matrix,
-        view_inv=matrix,
-        proj_inv=matrix,
+        camera=None,
     )
     assert launches == [] and frame is viewer._color_buffer
 
@@ -637,10 +632,7 @@ def test_volume_composite_launches_only_when_bound(monkeypatch):
     viewer._launch_samples(
         1,
         False,
-        view=matrix,
-        proj=matrix,
-        view_inv=matrix,
-        proj_inv=matrix,
+        camera=None,
     )
     assert launches == [viewer_module.composite_volume]
 

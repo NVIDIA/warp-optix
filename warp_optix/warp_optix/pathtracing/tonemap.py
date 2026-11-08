@@ -345,11 +345,29 @@ class Tonemapper:
 
         # Output buffer
         self._ldr_output = wp.zeros((height, width), dtype=wp.vec4, device="cuda")
+        self._recorded: dict = {}
 
     @property
     def output(self) -> wp.array:
         """Get the LDR output buffer."""
         return self._ldr_output
+
+    def _launch(self, kernel, dim, inputs, *, block_dim: int | None = None) -> None:
+        """Launch ``kernel``, replaying a recorded command while its inputs are unchanged.
+
+        A recorded command keeps its inputs alive, so their ids identify them.
+        """
+        key = (dim, *(value if isinstance(value, (int, float)) else id(value) for value in inputs))
+        recorded = self._recorded.get(kernel)
+        if recorded is None or recorded[0] != key:
+            if block_dim is None:
+                command = wp.launch(kernel, dim=dim, inputs=inputs, device="cuda", record_cmd=True)
+            else:
+                command = wp.launch_tiled(
+                    kernel, dim=dim, inputs=inputs, block_dim=block_dim, device="cuda", record_cmd=True
+                )
+            recorded = self._recorded[kernel] = (key, command)
+        recorded[1].launch()
 
     def resize(self, width: int, height: int):
         """Resize the output buffer."""
@@ -396,18 +414,12 @@ class Tonemapper:
         """
         is_texture = isinstance(hdr_input, wp.Texture2D)
         if self.auto_exposure:
-            wp.launch(
-                _reset_auto_exposure_stats,
-                dim=1,
-                inputs=[self._auto_exposure_stats],
-                device="cuda",
-            )
+            self._launch(_reset_auto_exposure_stats, 1, [self._auto_exposure_stats])
             samples = ((self.width + 3) // 4) * ((self.height + 3) // 4)
-            wp.launch_tiled(
+            self._launch(
                 _meter_texture_kernel if is_texture else _meter_array_kernel,
-                dim=[(samples + _METER_BLOCK_DIM - 1) // _METER_BLOCK_DIM],
-                block_dim=_METER_BLOCK_DIM,
-                inputs=[
+                ((samples + _METER_BLOCK_DIM - 1) // _METER_BLOCK_DIM,),
+                [
                     hdr_input,
                     self._auto_exposure_stats,
                     int(self.width),
@@ -415,7 +427,7 @@ class Tonemapper:
                     self.auto_exposure_min_luminance_ev,
                     self.auto_exposure_max_luminance_ev,
                 ],
-                device="cuda",
+                block_dim=_METER_BLOCK_DIM,
             )
             wp.launch(
                 _adapt_auto_exposure,
@@ -434,10 +446,10 @@ class Tonemapper:
                 device="cuda",
             )
             self._auto_exposure_initialized = True
-        wp.launch(
+        self._launch(
             _tonemap_texture_kernel if is_texture else _tonemap_array_kernel,
-            dim=(self.height, self.width),
-            inputs=[
+            (self.height, self.width),
+            [
                 hdr_input,
                 self._ldr_output,
                 int(self.width),
@@ -451,7 +463,6 @@ class Tonemapper:
                 self.saturation,
                 self.vignette,
             ],
-            device="cuda",
         )
 
     def process_debug(
