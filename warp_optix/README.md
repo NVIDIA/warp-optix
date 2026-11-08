@@ -60,7 +60,7 @@ that stream, not after the current stream; order producers on other streams with
 `wo.Accel` without either uses the device of its inputs; `wo.launch` defaults to the pipeline's
 device. Methods of device-bound objects (`accel.refit()`, `params.assign()`) take only `stream=`.
 
-Resources (`wo.Accel`, `wo.Pipeline`, `wo.LaunchParams`) follow Warp's lifetime model
+Resources (`wo.Accel`, `wo.Pipeline`) follow Warp's lifetime model
 (`wp.Mesh`, `wp.array`): they release themselves when the last reference is dropped, or explicitly
 with `.close()` or `with`:
 
@@ -150,7 +150,7 @@ max_registers, device)` compiles all programs into one module and builds the sha
   For example, `exception_flags=wo.ExceptionFlags.STACK_OVERFLOW | wo.ExceptionFlags.TRACE_DEPTH`
   enables those debugging checks. Include `USER` when using `optix_throw_exception`.
 
-`wo.launch(pipeline, dim, inputs=None, device=None, stream=None, *, params=None, record_cmd=False)` mirrors `wp.launch`:
+`wo.launch(pipeline, dim, inputs=(), device=None, stream=None, *, record_cmd=False)` mirrors `wp.launch`:
 it packs the launch parameters on the host, copies them to the device on `stream`, and then launches
 OptiX on the same stream. Neither step synchronizes the host. `wo.Accel` objects in `inputs` are passed as their `id`
 and kept alive for the launch. OptiX does not record its work into CUDA graphs, so `wo.launch`,
@@ -173,7 +173,9 @@ for step in range(steps):
 
 A `wo.Launch` checks and packs its parameters once and keeps its own parameter block; `launch()`
 copies the parameters to the device only after they change, so an unchanged replay costs little more
-than the OptiX launch itself.
+than the OptiX launch itself. Replays on different streams are ordered on the GPU; use separate
+`wo.Launch` objects for independent concurrent launches. Arrays and acceleration structures set as
+parameters stay referenced until replaced or until the `wo.Launch` is dropped.
 
 For a shared schema independent of raygen, pass `params_type=MyParams`, where
 `MyParams` is a `@wp.struct`. Each program declares any subset of the schema's
@@ -181,23 +183,6 @@ fields by name and identical type. This lets a miss or hit program use fields
 that raygen does not declare. Launch with `inputs=[my_params_instance]`.
 The schema is the parameter block itself; to use a single `params: MyParams`
 argument in every shader, keep the default inferred schema instead.
-
-Advanced callers can own parameter storage explicitly:
-
-```python
-params = wo.LaunchParams(pipeline)
-params.assign(my_params_instance, stream=stream)
-wo.launch(pipeline, dim=(height, width), stream=stream, params=params)
-```
-
-For inferred schemas, `assign()` takes the argument sequence instead.
-`LaunchParams` belongs to its pipeline (and its device) and must be assigned before use.
-Supply either `inputs` or `params`, never both. Updates and launches on shared
-parameters are ordered on the GPU, including across streams. Separate
-`LaunchParams` objects allow independent concurrent launches. Referenced arrays remain retained
-until replaced or until the `LaunchParams` is released (`close()`/`with`); callers must still order
-their own writes to those arrays. Directly modifying
-`params.data` bypasses the API's ordering and validation.
 
 An optional `@wo.kernel(kind=wo.ProgramKind.RAYGEN, module="unique")`
 decorator replaces `@wp.kernel` when a shader should declare its intended stage.
@@ -706,7 +691,7 @@ when direct registration is unavailable.
 - `warp_optix/context.py` — implicit per-device contexts (`get_context`), device/stream resolution, and native-object release.
 - `warp_optix/config.py` — global settings (`validation`, `log_level`).
 - `warp_optix/accel.py` — build inputs, `Accel`, and `Instance`/`make_instance`.
-- `warp_optix/pipeline.py` — `Pipeline`, `HitGroup`, `LaunchParams`, and `launch`.
+- `warp_optix/pipeline.py` — `Pipeline`, `HitGroup`, `Launch`, and `launch`.
 - `warp_optix/program.py` — rewrites Warp kernels into OptiX programs (`ProgramKind`, `kernel`).
 - `warp_optix/rays.py` — `accel_query_ray`, `accel_query_ray_anyhit`, and `AccelQueryRay`.
 - `warp_optix/enums.py` — flag and primitive-type enums, usable on the host and in kernels.

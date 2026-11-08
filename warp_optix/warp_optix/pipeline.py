@@ -351,16 +351,16 @@ class _ParamsStorage:
     does not form a reference cycle and ``del pipeline`` releases it at once.
     """
 
-    __slots__ = ("data", "dirty", "host", "initialized", "inputs", "stream")
+    __slots__ = ("allocated", "data", "dirty", "host", "inputs", "stream")
 
     def __init__(self, params_type, device: wp.Device):
         self.data = wp.empty(1, dtype=params_type, device=device)
         self.host = params_type()
         self.inputs: dict = {}
-        self.initialized = False
         self.dirty = False
-        # The allocation above is ordered on the current stream; the first use on another stream waits for it.
-        self.stream: wp.Stream = wp.get_stream(device)
+        # The allocation is ordered on the current stream: the first use waits for it, not for later work there.
+        self.allocated: wp.Event | None = wp.get_stream(device).record_event()
+        self.stream: wp.Stream | None = None
 
     def pack(self, pipeline: Pipeline, context, values) -> None:
         """Pack ``values`` (the raygen arguments, or one ``params_type`` instance) into the host copy."""
@@ -381,7 +381,7 @@ class _ParamsStorage:
             self.inputs = {}
             for name, value in zip(names, values):
                 self.set(context, name, value)
-        self.initialized = self.dirty = True
+        self.dirty = True
 
     def set(self, context, name: str, value) -> None:
         """Set one parameter; an ``Accel`` is passed as its id and retained."""
@@ -399,7 +399,11 @@ class _ParamsStorage:
 
     def use(self, stream: wp.Stream) -> None:
         """Order a use on ``stream`` after the previous use, and upload the host copy if it changed."""
-        if self.stream.cuda_stream != stream.cuda_stream:
+        if self.stream is None:
+            stream.wait_event(self.allocated)
+            self.allocated = None
+            self.stream = stream
+        elif self.stream.cuda_stream != stream.cuda_stream:
             stream.wait_stream(self.stream)
             self.stream = stream
         if self.dirty:
@@ -415,76 +419,15 @@ class _ParamsStorage:
             self.dirty = False
 
 
-class LaunchParams:
-    """Launch-parameter storage for one pipeline, written with :meth:`assign`.
-
-    Pass it as ``launch(pipeline, dim, params=...)`` to launch with preset
-    parameters. The device comes from the pipeline. Uses on different streams
-    are ordered on the GPU; use separate objects for independent concurrent
-    launches. Writing ``data`` directly bypasses that ordering.
-
-    Release is automatic when the last reference is dropped, or explicit with
-    :meth:`close` or ``with``; memory is freed in stream order, like ``wp.array``.
-    """
-
-    def __init__(self, pipeline: Pipeline):
-        if not isinstance(pipeline, Pipeline):
-            raise TypeError("LaunchParams needs a warp_optix.Pipeline")
-        pipeline._check_open()
-        if wp.get_stream(pipeline.device).is_capturing:
-            raise RuntimeError(CAPTURE_ERROR)
-        self.pipeline = pipeline
-        self._storage: _ParamsStorage | None = _ParamsStorage(pipeline.params_type, pipeline.device)
-
-    @property
-    def data(self) -> wp.array:
-        """The device parameter block (one ``params_type`` element)."""
-        return self._open_storage().data
-
-    @property
-    def closed(self) -> bool:
-        return self._storage is None
-
-    def assign(self, values, stream: wp.Stream | None = None) -> None:
-        """Write a params-struct instance, or the raygen arguments as a sequence.
-
-        Waits on prior uses of this object on other streams on the GPU, never on
-        the host. Arrays and acceleration structures in ``values`` stay referenced
-        until replaced or until this object is released.
-        """
-        storage = self._open_storage()
-        pipeline = self.pipeline
-        pipeline._check_open()
-        context, stream = resolve(pipeline.device, stream)
-        storage.pack(pipeline, context, values)
-        storage.use(stream)
-
-    def close(self) -> None:
-        """Make the parameters unusable and release their memory and referenced inputs."""
-        self._storage = None
-
-    def __enter__(self) -> LaunchParams:
-        self._open_storage()
-        return self
-
-    def __exit__(self, *exc) -> None:
-        self.close()
-
-    def __repr__(self):
-        return f"LaunchParams({'closed, ' if self.closed else ''}device={self.pipeline.device.alias!r})"
-
-    def _open_storage(self) -> _ParamsStorage:
-        if self._storage is None:
-            raise RuntimeError("The launch parameters are closed")
-        return self._storage
-
-
 class Launch:
     """A recorded launch that replays quickly, like ``wp.launch(..., record_cmd=True)``.
 
     Created by ``launch(..., record_cmd=True)``. The parameters are checked and
     packed once and kept in this object's own parameter block; :meth:`launch`
-    copies them to the device only after they change, then launches. Set them
+    copies them to the device only after they change, then launches. Replays on
+    different streams are ordered on the GPU; use separate ``Launch`` objects for
+    independent concurrent launches. Like ``wp.array``, the parameter block is
+    freed in stream order when the last reference is dropped. Set them
     with :meth:`set_param_at_index`, :meth:`set_param_by_name`, or
     :meth:`set_params`; names and indices are the launch-parameter fields (the
     raygen arguments, or the fields of ``params_type``).
@@ -525,21 +468,19 @@ class Launch:
 def launch(
     pipeline: Pipeline,
     dim: int | Sequence[int],
-    inputs: Sequence | None = None,
+    inputs: Sequence = (),
     device: wp.DeviceLike = None,
     stream: wp.Stream | None = None,
     *,
-    params: LaunchParams | None = None,
     record_cmd: bool = False,
 ) -> Launch | None:
     """Launch an OptiX pipeline, mirroring ``wp.launch``.
 
-    Pass the raygen arguments as ``inputs`` (or ``inputs=[struct]`` with an
-    explicit ``params_type``), or preset :class:`LaunchParams` as ``params``.
-    ``wo.Accel`` objects in ``inputs`` are passed as their ``id``. As with
-    ``wp.launch``, keep resources alive while submitted work may use them.
-    ``device`` defaults to the pipeline's device; a different device is
-    rejected. Automatic parameter storage is separate for each CUDA stream.
+    Pass the raygen arguments as ``inputs``, or ``inputs=[struct]`` with an
+    explicit ``params_type``. ``wo.Accel`` objects in ``inputs`` are passed as
+    their ``id``. As with ``wp.launch``, keep resources alive while submitted
+    work may use them. ``device`` defaults to the pipeline's device; a different
+    device is rejected. Parameter storage is separate for each CUDA stream.
     With ``record_cmd=True``, nothing is launched; a :class:`Launch` is returned
     for fast replays. Calls from multiple host threads require external synchronization.
     """
@@ -548,26 +489,17 @@ def launch(
     pipeline._check_open()
     if device is not None and wp.get_device(device) != pipeline.device:
         raise ValueError("Device and pipeline must be the same CUDA device")
-    if (inputs is None) == (params is None):
-        raise ValueError("Provide exactly one of inputs or params")
     context = pipeline._context
     if record_cmd:
-        if params is not None:
-            raise ValueError("record_cmd takes inputs, not params")
         return Launch(pipeline, dim, inputs, context)
     size = [*reversed(_launch_dim(dim)), 1, 1][:3]
-    if params is not None:
-        if not isinstance(params, LaunchParams) or params.pipeline is not pipeline:
-            raise ValueError("params must be LaunchParams of this pipeline")
-        storage = params._open_storage()
-        if not storage.initialized:
-            raise ValueError("Assign launch parameters before launching with them")
-    else:
-        stream = _stream(context, stream)
-        storage = pipeline._buffers.get(stream.cuda_stream)
-        if storage is None:
-            storage = pipeline._buffers[stream.cuda_stream] = _ParamsStorage(pipeline.params_type, context.device)
-        storage.pack(pipeline, context, inputs)
+    stream = _stream(context, stream)
+    if stream.is_capturing:
+        raise RuntimeError(CAPTURE_ERROR)
+    storage = pipeline._buffers.get(stream.cuda_stream)
+    if storage is None:
+        storage = pipeline._buffers[stream.cuda_stream] = _ParamsStorage(pipeline.params_type, context.device)
+    storage.pack(pipeline, context, inputs)
     _launch(pipeline, context, storage, size, stream)
 
 

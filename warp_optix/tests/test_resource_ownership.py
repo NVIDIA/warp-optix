@@ -109,16 +109,16 @@ def test_use_after_close_raises_and_with_closes_on_exception():
     with pytest.raises(RuntimeError, match="closed"):
         wo.launch(pipeline, 1, [output])
     with pytest.raises(RuntimeError, match="closed"):
-        wo.LaunchParams(pipeline)
+        wo.launch(pipeline, 1, [output], record_cmd=True)
     with pytest.raises(RuntimeError, match="closed"):
         with pipeline:
             pass
 
     live = wo.Pipeline(write_value)
-    params = wo.LaunchParams(live)
+    recorded = wo.launch(live, 1, [output], record_cmd=True)
     live.close()
     with pytest.raises(RuntimeError, match="closed"):
-        params.assign([output])
+        recorded.launch()
 
     vertices, indices = geometry()
     with wo.Accel([wo.triangles(vertices, indices)], flags=wo.BuildFlags.ALLOW_UPDATE) as accel:

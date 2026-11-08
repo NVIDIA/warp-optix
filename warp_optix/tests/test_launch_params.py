@@ -66,7 +66,7 @@ def params(value, output):
     return result
 
 
-def test_schema_independent_of_raygen_and_automatic_explicit_equivalence():
+def test_schema_independent_of_raygen_and_recorded_equivalence():
     sbt = wo.SbtBuilder(["radiance"])
     sbt.set_miss("radiance", miss)
     pipeline = wo.Pipeline(trace, sbt=sbt, params_type=Params, payload_words=1)
@@ -74,43 +74,28 @@ def test_schema_independent_of_raygen_and_automatic_explicit_equivalence():
     first = wp.empty(64, dtype=wp.uint32, device=pipeline.device)
     second = wp.empty_like(first)
     wo.launch(pipeline, (64,), [params(37, first)])
-    launch_params = wo.LaunchParams(pipeline)
-    assert launch_params.pipeline is pipeline and launch_params.data.device == pipeline.device
-    launch_params.assign(params(37, second))
-    wo.launch(pipeline, (64,), params=launch_params)
+    wo.launch(pipeline, (64,), [params(37, second)], record_cmd=True).launch()
     np.testing.assert_array_equal(first.numpy(), np.full(64, 37))
     np.testing.assert_array_equal(first.numpy(), second.numpy())
 
 
-def test_automatic_storage_is_independent_between_streams():
+def test_launches_across_streams_use_their_own_parameters():
     pipeline = wo.Pipeline(write)
     device = pipeline.device
     streams = [wp.Stream(device), wp.Stream(device)]
-    outputs = []
-    for value in range(20):
-        stream = streams[value % 2]
-        output = wp.empty(4096, dtype=wp.uint32, device=device)
-        wo.launch(pipeline, (4096,), [value, output], stream=stream)
-        outputs.append(output)
-    assert len({b.data.ptr for b in pipeline._buffers.values()}) == 2
-    wp.synchronize_device(device)
-    for value, output in enumerate(outputs):
-        np.testing.assert_array_equal(output.numpy(), np.full(4096, value))
-
-
-def test_explicit_params_update_and_launch_across_streams():
-    pipeline = wo.Pipeline(write)
-    device = pipeline.device
-    launch_params = wo.LaunchParams(pipeline)
-    first, second = wp.Stream(device), wp.Stream(device)
+    recorded = wo.launch(pipeline, (4096,), [0, wp.empty(1, dtype=wp.uint32, device=device)], record_cmd=True)
     outputs = []
     for value in range(12):
-        output = wp.empty(4096, dtype=wp.uint32, device=device)
-        launch_params.assign([value, output], stream=first)
-        wo.launch(pipeline, (4096,), params=launch_params, stream=second)
-        outputs.append(output)
+        stream = streams[value % 2]
+        automatic, replayed = (wp.empty(4096, dtype=wp.uint32, device=device) for _ in range(2))
+        # Automatic storage is separate per stream; a recorded launch orders its updates across streams.
+        wo.launch(pipeline, (4096,), [value, automatic], stream=stream)
+        recorded.set_params([value, replayed])
+        recorded.launch(stream=stream)
+        outputs += [(value, automatic), (value, replayed)]
+    assert len({b.data.ptr for b in pipeline._buffers.values()}) == 2
     wp.synchronize_device(device)
-    for value, output in enumerate(outputs):
+    for value, output in outputs:
         np.testing.assert_array_equal(output.numpy(), np.full(4096, value))
 
 
@@ -125,101 +110,48 @@ def test_invalid_params_schemas_and_stage_placements():
         wo.Pipeline(write, params_type=int)
     pipeline = wo.Pipeline(write, params_type=Params)
     other = wo.Pipeline(write)
-    launch_params = wo.LaunchParams(pipeline)
-    with pytest.raises(TypeError, match="Pipeline"):
-        wo.LaunchParams(object())
     with pytest.raises(TypeError, match="Pipeline"):
         wo.launch(object(), (1,), [])
-    with pytest.raises(ValueError, match="Assign launch parameters"):
-        wo.launch(pipeline, (1,), params=launch_params)
-    with pytest.raises(ValueError, match="exactly one"):
-        wo.launch(pipeline, (1,), [], params=launch_params)
-    with pytest.raises(ValueError, match="exactly one"):
-        wo.launch(pipeline, (1,))
-    with pytest.raises(ValueError, match="LaunchParams of this pipeline"):
-        wo.launch(other, (1,), params=launch_params)
     with pytest.raises(ValueError, match="dim"):
         wo.launch(other, (0,), [1, wp.empty(1, dtype=wp.uint32, device="cuda")])
     with pytest.raises(ValueError, match="dim"):
         wo.launch(other, (1, 1, 1, 1), [1, wp.empty(1, dtype=wp.uint32, device="cuda")])
     with pytest.raises(TypeError, match="takes one instance"):
-        wo.launch(pipeline, (1,), [])
-    with pytest.raises(TypeError, match="instance"):
-        launch_params.assign([])
+        wo.launch(pipeline, (1,))
     with pytest.raises(ValueError, match="same CUDA device"):
-        launch_params.assign(params(1, wp.empty(1, dtype=wp.uint32, device="cpu")))
+        wo.launch(pipeline, (1,), [params(1, wp.empty(1, dtype=wp.uint32, device="cpu"))])
+    recorded = wo.launch(pipeline, (1,), [params(1, wp.empty(1, dtype=wp.uint32, device="cuda"))], record_cmd=True)
     pipeline.close()
     with pytest.raises(RuntimeError, match="closed"):
-        launch_params.assign(Params())
-    with pytest.raises(RuntimeError, match="closed"):
-        wo.launch(pipeline, (1,), params=launch_params)
+        recorded.launch()
 
 
-@wp.kernel(module="unique")
-def spin(iterations: int, sink: wp.array[float]):
-    x = float(0.0)
-    for _ in range(iterations):
-        x = wp.sin(x + 1.0)
-    sink[0] = x
-
-
-def test_dropping_launch_params_frees_storage_in_stream_order():
+def test_dropping_a_recorded_launch_frees_its_parameters_in_stream_order(gate):
     pipeline = wo.Pipeline(write, params_type=Params)
     device = pipeline.device
     stream = wp.Stream(device)
-    sink = wp.empty(1, dtype=float, device=device)
-    # Warm up every kernel first: loading a CUDA module synchronizes the device.
-    warm = wo.LaunchParams(pipeline)
-    warm.assign(params(1, wp.empty(1, dtype=wp.uint32, device=device)), stream=stream)
-    wo.launch(pipeline, (1,), params=warm, stream=stream)
-    wp.launch(spin, 1, inputs=[1, sink], stream=stream)
+    output = wp.empty(128, dtype=wp.uint32, device=device)
+    # Warm-up: loading a CUDA module synchronizes the device.
+    wo.launch(pipeline, (128,), [params(1, output)], stream=stream)
     wp.synchronize_device(device)
 
-    # Keep the stream busy (about one second) so the launch below is still pending.
-    wp.launch(spin, 1, inputs=[4_000_000, sink], stream=stream)
-    busy = stream.record_event()
-    output = wp.empty(128, dtype=wp.uint32, device=device)
-    launch_params = wo.LaunchParams(pipeline)
-    storage_ref = weakref.ref(launch_params.data)
-    launch_params.assign(params(53, output), stream=stream)
-    wo.launch(pipeline, (128,), params=launch_params, stream=stream)
-    assert not busy.is_complete, "busy kernel finished too early for this test"
-    # Like a wp.array, the storage goes away with its last reference (no garbage collection
+    gate.block(stream)
+    recorded = wo.launch(pipeline, (128,), [params(53, output)], record_cmd=True)
+    storage_ref = weakref.ref(recorded._storage.data)
+    recorded.launch(stream=stream)
+    # Like a wp.array, the parameters go away with their last reference (no garbage collection
     # needed); Warp frees the device memory in stream order, so the pending launch still reads it.
-    del launch_params
+    del recorded
     assert storage_ref() is None
+    gate.open()
     wp.synchronize_stream(stream)
     np.testing.assert_array_equal(output.numpy(), np.full(128, 53))
-
-
-def test_launch_params_close_and_with():
-    pipeline = wo.Pipeline(write, params_type=Params)
-    output = wp.zeros(16, dtype=wp.uint32, device=pipeline.device)
-    with wo.LaunchParams(pipeline) as launch_params:
-        storage_ref = weakref.ref(launch_params.data)
-        launch_params.assign(params(7, output))
-        wo.launch(pipeline, (16,), params=launch_params)
-    assert launch_params.closed and "closed" in repr(launch_params)
-    assert storage_ref() is None
-    np.testing.assert_array_equal(output.numpy(), np.full(16, 7))
-    launch_params.close()  # Idempotent.
-    for use in (
-        lambda: launch_params.data,
-        lambda: launch_params.assign(params(1, output)),
-        lambda: wo.launch(pipeline, (16,), params=launch_params),
-    ):
-        with pytest.raises(RuntimeError, match="closed"):
-            use()
-    with pytest.raises(RuntimeError, match="closed"):
-        with launch_params:
-            pass
 
 
 def test_launches_record_no_events(monkeypatch):
     pipeline = wo.Pipeline(write)
     device = pipeline.device
     output = wp.empty(64, dtype=wp.uint32, device=device)
-    explicit = wo.LaunchParams(pipeline)
     wo.launch(pipeline, (64,), [1, output])  # Warm-up.
     recorded = []
     original = wp.Stream.record_event
@@ -234,8 +166,6 @@ def test_launches_record_no_events(monkeypatch):
         recorded_launch.set_param_at_index(0, value)
         recorded_launch.launch()
         wo.launch(pipeline, (64,), [value, output])
-        explicit.assign([value, output])
-        wo.launch(pipeline, (64,), params=explicit)
     assert recorded == []
     np.testing.assert_array_equal(output.numpy(), np.full(64, 7))
 
@@ -249,16 +179,16 @@ def test_work_on_another_stream_does_not_wait_for_the_current_stream(gate):
     accel = wo.Accel(
         [wo.triangles(points, wp.array([0, 1, 2], dtype=wp.int32, device=device))], flags=wo.BuildFlags.ALLOW_UPDATE
     )
-    launch_params = wo.LaunchParams(pipeline)
+    recorded = wo.launch(pipeline, (1,), [1, output], record_cmd=True)
     # Warm-up: loading a CUDA module synchronizes the device.
     wo.launch(pipeline, (1,), [1, output], stream=side)
-    launch_params.assign([1, output], stream=side)
     wp.synchronize_device(device)
 
     # As with wp.launch(stream=...), OptiX work on a stream is not ordered after the current stream.
     held = gate.block(wp.get_stream(device))
     wo.launch(pipeline, (1,), [2, output], stream=side)
-    launch_params.assign([3, output], stream=side)
+    recorded.set_param_at_index(0, 3)
+    recorded.launch(stream=side)
     accel.refit(stream=side)
     wp.synchronize_stream(side)
     assert not held.is_complete

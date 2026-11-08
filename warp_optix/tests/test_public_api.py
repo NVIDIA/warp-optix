@@ -58,7 +58,6 @@ def test_public_surface():
         "Instance",
         "InstanceFlags",
         "Launch",
-        "LaunchParams",
         "Pipeline",
         "PrimitiveType",
         "ProgramKind",

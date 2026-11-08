@@ -6,8 +6,8 @@
 Like Warp's CUDA context, the OptiX device context is implicit: each CUDA
 device gets one, created on first use with the settings in
 :mod:`warp_optix.config` and destroyed at interpreter exit. Resources
-(:class:`~warp_optix.Accel`, :class:`~warp_optix.Pipeline`,
-:class:`~warp_optix.LaunchParams`) hold a reference to their context.
+(:class:`~warp_optix.Accel`, :class:`~warp_optix.Pipeline`) hold a reference
+to their context.
 
 Lifetime contract (the same as ``wp.Mesh`` and ``wp.array``):
 
