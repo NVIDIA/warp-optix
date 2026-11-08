@@ -128,12 +128,4 @@ struct ModuleCompileOptions {
 #endif
 };
 
-struct Pipeline {
-    OptixPipeline pipeline = 0;
-};
-
-struct ShaderBindingTable {
-    OptixShaderBindingTable sbt{};
-};
-
 } // namespace pyoptix
