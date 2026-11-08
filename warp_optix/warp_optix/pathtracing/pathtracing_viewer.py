@@ -267,24 +267,6 @@ class Renderer:
         self._device_camera_initialized = None
         self._device_camera_state = None
         self._volume = None
-        self._volume_min = (0.0, 0.0, 0.0)
-        self._volume_max = (0.0, 0.0, 0.0)
-        self._volume_density_scale = 1.0
-        self._volume_step_size = 0.01
-        self._volume_cool_colors = (
-            (0.0, 0.025, 0.18),
-            (0.0, 0.20, 0.95),
-            (0.0, 0.92, 0.82),
-        )
-        self._volume_warm_colors = (
-            (0.30, 0.008, 0.0),
-            (1.0, 0.075, 0.0),
-            (1.0, 0.62, 0.0),
-        )
-        self._volume_emission = 0.0
-        self._volume_anisotropy = 0.0
-        self._volume_transfer_table = None
-        self._volume_density_feature = False
         self._volume_params = None
 
         # CUDA surface objects
@@ -493,31 +475,39 @@ class Renderer:
         density_feature=False,
     ):
         """Set the NanoVDB volume composited by the path tracer."""
-        self._volume = volume
-        self._volume_min = tuple(float(v) for v in bounds_min)
-        self._volume_max = tuple(float(v) for v in bounds_max)
-        self._volume_density_scale = float(density_scale)
-        self._volume_step_size = float(step_size)
-        self._volume_cool_colors = tuple(tuple(float(v) for v in color) for color in cool_colors)
-        self._volume_warm_colors = tuple(tuple(float(v) for v in color) for color in warm_colors)
-        self._volume_emission = float(emission)
-        self._volume_anisotropy = float(anisotropy)
-        self._volume_density_feature = bool(density_feature)
         if transfer_table is None:
-            self._volume_transfer_table = None
+            table = None
         elif isinstance(transfer_table, wp.array):
             if transfer_table.ndim != 1 or transfer_table.dtype != wp.vec4 or len(transfer_table) < 2:
                 raise ValueError("transfer_table must be a 1D Warp vec4 array with at least two entries")
             if not transfer_table.device.is_cuda:
                 raise ValueError("transfer_table must be CUDA-resident")
-            self._volume_transfer_table = transfer_table
+            table = transfer_table
         else:
             table = np.asarray(transfer_table, dtype=np.float32)
             if table.ndim != 2 or table.shape[1] != 4 or len(table) < 2:
                 raise ValueError("transfer_table must have shape (N, 4) with N >= 2")
             if not np.all(np.isfinite(table)) or np.any(table < 0.0):
                 raise ValueError("transfer_table entries must be finite and nonnegative")
-            self._volume_transfer_table = wp.array(table, dtype=wp.vec4, device="cuda")
+            table = wp.array(table, dtype=wp.vec4, device="cuda")
+        # VolumeParams holds only the volume's id, so keep the volume itself alive.
+        self._volume = volume
+        self._volume_params = None
+        if volume is not None:
+            p = VolumeParams()
+            p.volume = wp.uint64(volume.id)
+            p.bounds_min = wp.vec3(*bounds_min)
+            p.bounds_max = wp.vec3(*bounds_max)
+            p.density_scale = float(density_scale)
+            p.step_size = float(step_size)
+            p.cool_dark, p.cool_mid, p.cool_light = (wp.vec3(*color) for color in cool_colors)
+            p.warm_dark, p.warm_mid, p.warm_light = (wp.vec3(*color) for color in warm_colors)
+            p.emission = float(emission)
+            p.anisotropy = float(anisotropy)
+            p.transfer_table = table
+            p.transfer_count = wp.uint32(0 if table is None else len(table))
+            p.density_feature = wp.uint32(bool(density_feature))
+            self._volume_params = p
         self.sample_index = 0
         self.frame_index = 0
         self._denoiser_reset_history = True
@@ -911,6 +901,11 @@ class Renderer:
             "env_accel_count": 0 if env_map is None else env_map.accel_count,
             "sky_lut_width": self._sky_lut_buffer.shape[1],
             "sky_lut_height": self._sky_lut_buffer.shape[0],
+            "sphere_light_count": self._scene.light_count,
+            "render_prim_count": self._scene.geometry_count,
+            "instance_count": self._scene.instance_count,
+            "material_count": self._scene.materials.count,
+            "texture_count": self._scene.texture_count,
         }
         # Most fields keep their value across frames, and assigning a struct field converts it.
         last = self._param_values
@@ -975,18 +970,6 @@ class Renderer:
             self._sky_lut_state = sky_lut_state
 
         scene = self._scene
-        counts = {
-            "sphere_light_count": scene.light_count,
-            "render_prim_count": scene.geometry_count,
-            "instance_count": scene.instance_count,
-            "material_count": scene.materials.count,
-            "texture_count": scene.texture_count,
-        }
-        for name, value in counts.items():
-            if last.get(name) != value:
-                setattr(p, name, value)
-                last[name] = value
-
         arrays = {
             "device_camera": self._device_camera_state,
             "env_map": None if env_map is None else env_map._env_map_buffer,
@@ -1086,27 +1069,7 @@ class Renderer:
 
             self._launch_optix()
 
-            if self._volume is not None:
-                p = VolumeParams()
-                p.volume = wp.uint64(self._volume.id)
-                p.bounds_min = wp.vec3(*self._volume_min)
-                p.bounds_max = wp.vec3(*self._volume_max)
-                p.density_scale = self._volume_density_scale
-                p.step_size = self._volume_step_size
-                p.cool_dark = wp.vec3(*self._volume_cool_colors[0])
-                p.cool_mid = wp.vec3(*self._volume_cool_colors[1])
-                p.cool_light = wp.vec3(*self._volume_cool_colors[2])
-                p.warm_dark = wp.vec3(*self._volume_warm_colors[0])
-                p.warm_mid = wp.vec3(*self._volume_warm_colors[1])
-                p.warm_light = wp.vec3(*self._volume_warm_colors[2])
-                p.emission = self._volume_emission
-                p.anisotropy = self._volume_anisotropy
-                p.transfer_table = self._volume_transfer_table
-                p.transfer_count = wp.uint32(
-                    0 if self._volume_transfer_table is None else len(self._volume_transfer_table)
-                )
-                p.density_feature = wp.uint32(self._volume_density_feature)
-                self._volume_params = p
+            if self._volume_params is not None:
                 wp.launch(
                     composite_volume,
                     dim=(self._render_height, self._render_width),

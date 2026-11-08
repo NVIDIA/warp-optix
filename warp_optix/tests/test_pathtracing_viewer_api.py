@@ -600,7 +600,6 @@ def test_volume_composite_launches_only_when_bound(monkeypatch):
     viewer._color_buffer = object()
     viewer._accum_buffer = object()
     viewer._launch_params = object()
-    viewer._volume_params = None
     viewer._render_stream = object()
     viewer._update_launch_params = lambda **kwargs: None
     viewer._launch_optix = lambda: None
@@ -610,7 +609,7 @@ def test_volume_composite_launches_only_when_bound(monkeypatch):
         lambda kernel, **kwargs: launches.append(kernel),
     )
 
-    viewer._volume = None
+    viewer._volume_params = None
     frame = viewer._launch_samples(
         1,
         False,
@@ -618,17 +617,7 @@ def test_volume_composite_launches_only_when_bound(monkeypatch):
     )
     assert launches == [] and frame is viewer._color_buffer
 
-    viewer._volume = SimpleNamespace(id=1)
-    viewer._volume_min = (0.0, 0.0, 0.0)
-    viewer._volume_max = (1.0, 1.0, 1.0)
-    viewer._volume_density_scale = 1.0
-    viewer._volume_step_size = 0.1
-    viewer._volume_cool_colors = ((0.0, 0.0, 0.0),) * 3
-    viewer._volume_warm_colors = ((0.0, 0.0, 0.0),) * 3
-    viewer._volume_emission = 0.0
-    viewer._volume_anisotropy = 0.0
-    viewer._volume_transfer_table = None
-    viewer._volume_density_feature = False
+    viewer._volume_params = object()
     viewer._launch_samples(
         1,
         False,

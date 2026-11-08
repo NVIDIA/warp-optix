@@ -300,8 +300,7 @@ def debug_visualize_kernel(
     ldr_output[y, x] = wp.vec4(out[0], out[1], out[2], 1.0)
 
 
-# Explicit overloads avoid relying on generic texture argument inference.
-# Concrete overloads, so launches skip resolving the generic hdr_input type every frame.
+# Concrete overloads avoid generic texture argument inference and resolving hdr_input every frame.
 _tonemap_array_kernel = wp.overload(tonemap_kernel, {"hdr_input": wp.array2d(dtype=wp.vec4)})
 _tonemap_texture_kernel = wp.overload(tonemap_kernel, {"hdr_input": wp.Texture2D})
 _meter_array_kernel = wp.overload(_meter_auto_exposure, {"hdr_input": wp.array2d(dtype=wp.vec4)})
