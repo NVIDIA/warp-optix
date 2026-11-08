@@ -219,6 +219,8 @@ void install_pyoptix_extensions(py::module_ upstream) {
     require_upstream_type<OptixDenoiserGuideLayer>(upstream.attr("DenoiserGuideLayer"));
     require_upstream_type<OptixDenoiserParams>(upstream.attr("DenoiserParams"));
     require_upstream_type<OptixDenoiserSizes>(upstream.attr("DenoiserSizes"));
+    require_upstream_type<pyoptix::Pipeline>(upstream.attr("Pipeline"));
+    require_upstream_type<pyoptix::ShaderBindingTable>(upstream.attr("ShaderBindingTable"));
 
     auto context = upstream.attr("DeviceContext");
     // Supplemental bindings only add missing API; never replace PyOptiX methods.
@@ -255,6 +257,17 @@ PYBIND11_MODULE(_ext, m) {
     m.def("optix_version", &optix_version, "OptiX SDK version used to compile this supplemental extension.");
     m.def("install_pyoptix_extensions", &install_pyoptix_extensions);
     m.def("sync_module_options", &sync_module_options);
+    // Raw handles for launch_raw(): the pipeline handle and the address of the SBT held by ``sbt``.
+    m.def("launch_handles", [](const pyoptix::Pipeline& pipeline, const pyoptix::ShaderBindingTable& sbt) {
+        ensure_optix_initialized();
+        return py::make_tuple(reinterpret_cast<uintptr_t>(pipeline.pipeline), reinterpret_cast<uintptr_t>(&sbt.sbt));
+    });
+    m.def("launch_raw", [](uintptr_t pipeline, uintptr_t stream, CUdeviceptr params, size_t params_size, uintptr_t sbt,
+                           uint32_t width, uint32_t height, uint32_t depth) {
+        PYOPTIX_CHECK(optixLaunch(reinterpret_cast<OptixPipeline>(pipeline), reinterpret_cast<CUstream>(stream), params,
+                                  params_size, reinterpret_cast<const OptixShaderBindingTable*>(sbt), width, height,
+                                  depth));
+    });
     m.def("coop_vec_property", [](const pyoptix::DeviceContext& context) {
         ensure_optix_initialized();
         uint32_t flags = 0;

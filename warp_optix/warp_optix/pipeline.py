@@ -275,6 +275,8 @@ class Pipeline:
         self._native = pipeline
         self._owned = tuple(owned)
         self._sbt = sbt_table
+        # Raw handles for native.launch_raw(); self._sbt owns the SBT they point into.
+        self._launch_handles = native.launch_handles(pipeline, sbt_table)
         self._records = records
         self._params_size = ctypes.sizeof(params.ctype)
         self._param_names = tuple(arg.label for arg in raygen.adj.args)
@@ -503,7 +505,7 @@ def launch(
         return Launch(pipeline, dim, inputs, context)
     size = [*reversed(_launch_dim(dim)), 1, 1][:3]
     stream = _stream(context, stream)
-    if stream.is_capturing:
+    if _warp_context.runtime.captures and stream.is_capturing:
         raise RuntimeError(CAPTURE_ERROR)
     storage = pipeline._buffers.get(stream.cuda_stream)
     if storage is None:
@@ -533,19 +535,22 @@ def _launch(pipeline: Pipeline, context, storage: _ParamsStorage, size, stream: 
     """Upload changed parameters and launch: the path every launch shares."""
     pipeline._check_open()
     stream = _stream(context, stream)
-    if stream.is_capturing:
+    runtime = _warp_context.runtime
+    # As in wp.Launch.launch(), query the stream only while a Warp graph capture is active.
+    if runtime.captures and stream.is_capturing:
         raise RuntimeError(CAPTURE_ERROR)
     if context._releases:
         context.collect()
     storage.use(stream)
-    args = (pipeline._native, stream.cuda_stream, storage.data.ptr, pipeline._params_size, pipeline._sbt, *size)
+    handle, sbt = pipeline._launch_handles
+    args = (handle, stream.cuda_stream, storage.data.ptr, pipeline._params_size, sbt, *size)
     device = context.device
     # OptiX launches into the current CUDA context; switch only when another one is current.
-    if _warp_context.runtime.core.wp_cuda_context_get_current() == device.context:
-        native.launch(*args)
+    if runtime.core.wp_cuda_context_get_current() == device.context:
+        native.launch_raw(*args)
     else:
         with wp.ScopedDevice(device):
-            native.launch(*args)
+            native.launch_raw(*args)
     # Remembered so close() can wait for these launches before destroying the native pipeline.
     pipeline._streams[stream.cuda_stream] = stream
 
