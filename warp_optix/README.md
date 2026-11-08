@@ -128,10 +128,12 @@ payload_words, attribute_words, max_trace_depth, max_traversable_depth, graph_fl
 max_registers, device)` compiles all programs into one module and builds the shader binding table:
 
 - `miss` lists one miss program per ray type; `None` is a record without a program.
-- `hit_groups` holds `wo.HitGroup(closest_hit=, any_hit=, intersection=, builtin=)` entries.
+- `hit_groups` holds `wo.HitGroup(closest_hit=, any_hit=, intersection=, builtin=, build_flags=)` entries.
   The hit record for geometry type `g` and ray type `r` is `hit_groups[g * ray_types + r]`;
   trace with `sbt_offset=r` and `sbt_stride=ray_types`, and give instances `sbt_offset=g *
-  ray_types`. `builtin=wo.PrimitiveType.*` selects OptiX's built-in curve intersector; a
+  ray_types`. `builtin=wo.PrimitiveType.*` selects OptiX's built-in curve intersector, which
+  OptiX specializes on build flags: `build_flags` (default `PREFER_FAST_TRACE`, like `wo.Accel`)
+  must match the curve structures' flags, so curves built with other flags need their own group. A
   group with an `intersection` program serves custom primitives. Primitive-type flags are derived
   from the groups.
 - `callables` are direct-callable programs, invoked with `wp.optix_direct_call(index)` in list

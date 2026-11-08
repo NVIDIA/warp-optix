@@ -36,6 +36,15 @@ from .color_utils import srgb_to_linear_u8
 from .materials import ALPHA_OPAQUE, MaterialManager
 
 logger = logging.getLogger(__name__)
+
+# Build flags of static and dynamic geometry. Curve hit groups must declare the same flags, since
+# OptiX specializes its built-in curve intersection on them.
+STATIC_BUILD_FLAGS = (
+    wo.BuildFlags.ALLOW_RANDOM_VERTEX_ACCESS | wo.BuildFlags.PREFER_FAST_TRACE | wo.BuildFlags.ALLOW_COMPACTION
+)
+DYNAMIC_BUILD_FLAGS = (
+    wo.BuildFlags.ALLOW_RANDOM_VERTEX_ACCESS | wo.BuildFlags.ALLOW_UPDATE | wo.BuildFlags.PREFER_FAST_BUILD
+)
 _MAX_TEXTURE_BUILD_WORKERS = 8
 NO_MATERIAL_OVERRIDE = np.uint32(np.iinfo(np.uint32).max)
 
@@ -438,10 +447,12 @@ class Curve:
     swept-surface radius per control point and uses the same interpolation basis.
     """
 
+    # Hit groups: static linear and cubic curves use SBT offsets 2 and 4, dynamic ones 6 and 8.
     _BASIS_SPECS = {
         "linear": ("round_linear", 2, 2, 1),
         "cubic_bezier": ("round_cubic_bezier", 4, 4, 2),
     }
+    _DYNAMIC_SBT_SHIFT = 4
 
     def __init__(
         self,
@@ -495,7 +506,7 @@ class Curve:
         self.basis = basis
         self.primitive_type = primitive_type
         self.control_point_count = control_point_count
-        self.sbt_offset = sbt_offset
+        self.sbt_offset = sbt_offset + (self._DYNAMIC_SBT_SHIFT if dynamic else 0)
         self.geometry_type = geometry_type
         self.vertices = np.ascontiguousarray(vertices, dtype=np.float32)
         self.radii = np.ascontiguousarray(radii, dtype=np.float32)
@@ -1573,11 +1584,7 @@ class Scene:
                     flags=geometry_flags,
                     validate=False,
                 )
-            build_flags = native.BUILD_FLAG_ALLOW_RANDOM_VERTEX_ACCESS | (
-                native.BUILD_FLAG_ALLOW_UPDATE | native.BUILD_FLAG_PREFER_FAST_BUILD
-                if geometry.dynamic
-                else native.BUILD_FLAG_PREFER_FAST_TRACE | native.BUILD_FLAG_ALLOW_COMPACTION
-            )
+            build_flags = DYNAMIC_BUILD_FLAGS if geometry.dynamic else STATIC_BUILD_FLAGS
             gas = wo.Accel([build_input], flags=build_flags, stream=streams[index % len(streams)])
             self._gas.append(gas)
             if not geometry.dynamic:
