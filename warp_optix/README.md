@@ -150,7 +150,7 @@ max_registers, device)` compiles all programs into one module and builds the sha
   For example, `exception_flags=wo.ExceptionFlags.STACK_OVERFLOW | wo.ExceptionFlags.TRACE_DEPTH`
   enables those debugging checks. Include `USER` when using `optix_throw_exception`.
 
-`wo.launch(pipeline, dim, inputs=None, device=None, stream=None, *, params=None)` mirrors `wp.launch`:
+`wo.launch(pipeline, dim, inputs=None, device=None, stream=None, *, params=None, record_cmd=False)` mirrors `wp.launch`:
 it packs the launch parameters on the host, copies them to the device on `stream`, and then launches
 OptiX on the same stream. Neither step synchronizes the host. `wo.Accel` objects in `inputs` are passed as their `id`
 and kept alive for the launch. OptiX does not record its work into CUDA graphs, so `wo.launch`,
@@ -161,6 +161,19 @@ unchanged: launch them with `inputs=[params]`.
 Automatic parameter storage is separate for each CUDA stream. Sequential launches
 on one stream reuse its buffer. Calls on shared resources from multiple host
 threads require external synchronization.
+
+For launches in a simulation loop, record the launch once, as with `wp.launch(..., record_cmd=True)`:
+
+```python
+launch = wo.launch(pipeline, dim=(height, width), inputs=[accel, image], record_cmd=True)
+for step in range(steps):
+    launch.set_param_by_name("accel", accels[step])  # or set_param_at_index, set_params, set_dim
+    launch.launch(stream=stream)
+```
+
+A `wo.Launch` checks and packs its parameters once and keeps its own parameter block; `launch()`
+copies the parameters to the device only after they change, so an unchanged replay costs little more
+than the OptiX launch itself.
 
 For a shared schema independent of raygen, pass `params_type=MyParams`, where
 `MyParams` is a `@wp.struct`. Each program declares any subset of the schema's
