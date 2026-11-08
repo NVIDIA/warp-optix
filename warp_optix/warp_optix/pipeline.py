@@ -393,6 +393,15 @@ class _ParamsStorage:
                 raise ValueError("Array and OptiX resource must use the same CUDA device")
         elif wp.types.is_struct(value):
             context.check_arrays((value,))
+            field = getattr(type(self.host._ctype), name)
+            if value._cls is self.host._cls.vars[name].type:
+                # Copy the bytes: assigning through the struct re-validates every nested field.
+                ctypes.memmove(
+                    ctypes.addressof(self.host._ctype) + field.offset, ctypes.addressof(value._ctype), field.size
+                )
+                self.inputs[name] = retained
+                self.dirty = True
+                return
         setattr(self.host, name, value)
         self.inputs[name] = retained
         self.dirty = True

@@ -127,9 +127,27 @@ class Context:
             self._releases = waiting
 
     def check_arrays(self, values) -> None:
-        for value in _arrays(values):
-            if value.device != self.device:
+        """Check that arrays in ``values`` (including nested sequences and struct fields) are on this device."""
+        for value in values:
+            if isinstance(value, wp.array):
+                if value.device != self.device:
+                    raise ValueError("Array and OptiX resource must use the same CUDA device")
+            elif isinstance(value, (tuple, list)):
+                self.check_arrays(value)
+            elif wp.types.is_struct(value):
+                self._check_struct(value)
+
+    def _check_struct(self, instance) -> None:
+        arrays, structs = _struct_fields(instance._cls)
+        device = self.device
+        for name in arrays:
+            value = getattr(instance, name)
+            if value is not None and value.device != device:
                 raise ValueError("Array and OptiX resource must use the same CUDA device")
+        for name in structs:
+            value = getattr(instance, name)
+            if value is not None:
+                self._check_struct(value)
 
     def _shutdown(self) -> None:
         with wp.ScopedDevice(self.device):
@@ -199,28 +217,6 @@ def native_objects(context: Context):
                 except Exception:
                     _log.exception("Failed to clean up an OptiX object")
             raise
-
-
-def _arrays(values):
-    for value in values:
-        if isinstance(value, wp.array):
-            yield value
-        elif isinstance(value, (tuple, list)):
-            yield from _arrays(value)
-        elif wp.types.is_struct(value):
-            yield from _struct_arrays(value)
-
-
-def _struct_arrays(instance):
-    arrays, structs = _struct_fields(instance._cls)
-    for name in arrays:
-        value = getattr(instance, name)
-        if value is not None:
-            yield value
-    for name in structs:
-        value = getattr(instance, name)
-        if value is not None:
-            yield from _struct_arrays(value)
 
 
 @functools.cache
