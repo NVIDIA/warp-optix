@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
+from warp._src import context as _warp_context
 
 from warp_optix import native
 from warp_optix.context import CAPTURE_ERROR, resolve
@@ -373,8 +374,9 @@ class Accel:
     others release it once the build has finished and allocate a temporary one
     per :meth:`rebuild`. ``compact=True`` synchronizes ``stream`` once to shrink a
     static structure; to compact many structures with a single synchronization,
-    build them with ``BuildFlags.ALLOW_COMPACTION`` and pass them to
-    :func:`compact`. Compacted structures cannot be refit or rebuilt.
+    build them with ``BuildFlags.ALLOW_COMPACTION`` (they keep their scratch buffer
+    until then) and pass them to :func:`compact`. Compacted structures cannot be
+    refit or rebuilt.
 
     Release is automatic when the last reference is dropped, or explicit with
     :meth:`close` or ``with``; memory is freed in stream order, like ``wp.array``.
@@ -424,21 +426,19 @@ class Accel:
                     item.prepare()
             native_inputs = [item.native for item in inputs]
             sizes = context.native.accelComputeMemoryUsage([options] * len(inputs), native_inputs)
-            scratch = wp.empty(
-                max(sizes.tempSizeInBytes, sizes.tempUpdateSizeInBytes), dtype=wp.uint8, device=context.device
-            )
+            scratch_size = (max(sizes.tempSizeInBytes, sizes.tempUpdateSizeInBytes) + 7) // 8 * 8
+            compacting = bool(flags & BuildFlags.ALLOW_COMPACTION)
+            # The compacted size is emitted into 8 bytes after the scratch space, saving an allocation.
+            scratch = wp.empty(scratch_size + 8 * compacting, dtype=wp.uint8, device=context.device)
             buffer = wp.empty(sizes.outputSizeInBytes, dtype=wp.uint8, device=context.device)
-            compacted_size = None
-            emitted = []
-            if flags & BuildFlags.ALLOW_COMPACTION:
-                compacted_size = wp.empty(1, dtype=wp.uint64, device=context.device)
-                emitted.append(native.AccelEmitDesc(compacted_size.ptr, native.PROPERTY_TYPE_COMPACTED_SIZE))
+            compacted_size = scratch.ptr + scratch_size if compacting else None
+            emitted = [native.AccelEmitDesc(compacted_size, native.PROPERTY_TYPE_COMPACTED_SIZE)] if compacting else []
             handle = context.native.accelBuild(
                 stream.cuda_stream,
                 [options] * len(inputs),
                 native_inputs,
                 scratch.ptr,
-                scratch.size,
+                scratch_size,
                 buffer.ptr,
                 buffer.size,
                 emitted,
@@ -448,8 +448,11 @@ class Accel:
         self._id = int(handle)
         self._buffer = buffer
         # Dropping a scratch buffer the build still reads is safe: Warp frees device memory in stream order.
-        self._scratch = scratch if flags & BuildFlags.ALLOW_UPDATE else None
+        # Structures awaiting compaction keep it until compact(), which synchronizes anyway: each free
+        # orders all blocking streams, so dropping it here would serialize builds spread over streams.
+        self._scratch = scratch if flags & (BuildFlags.ALLOW_UPDATE | BuildFlags.ALLOW_COMPACTION) else None
         self._compacted = False
+        self._scratch_size = scratch_size
         self._compacted_size = compacted_size
         self._inputs = inputs
         self._flags = flags
@@ -538,10 +541,11 @@ class Accel:
             if self._motion is not None:
                 options.motionOptions = self._motion
             native_inputs = [item.native for item in self._inputs]
-            scratch = self._scratch
+            scratch, scratch_size = self._scratch, self._scratch_size
             if scratch is None:
                 sizes = context.native.accelComputeMemoryUsage([options] * len(native_inputs), native_inputs)
                 scratch = wp.empty(sizes.tempSizeInBytes, dtype=wp.uint8, device=context.device)
+                scratch_size = scratch.size
             for item in self._inputs:
                 if item.prepare is not None:
                     item.prepare()
@@ -550,12 +554,12 @@ class Accel:
                 [options] * len(native_inputs),
                 native_inputs,
                 scratch.ptr,
-                scratch.size,
+                scratch_size,
                 self._buffer.ptr,
                 self._buffer.size,
                 []
                 if self._compacted_size is None
-                else [native.AccelEmitDesc(self._compacted_size.ptr, native.PROPERTY_TYPE_COMPACTED_SIZE)],
+                else [native.AccelEmitDesc(self._compacted_size, native.PROPERTY_TYPE_COMPACTED_SIZE)],
             )
         self._replace_id(handle)
 
@@ -592,13 +596,12 @@ def _compact(accels: list[Accel], context, stream: wp.Stream) -> None:
     if stream.is_capturing:
         raise RuntimeError(CAPTURE_ERROR)
     device = context.device
-    sizes = wp.empty(len(accels), dtype=wp.uint64, device=device)
-    for i, accel in enumerate(accels):
-        wp.copy(sizes, accel._compacted_size, dest_offset=i, count=1, stream=stream)
     host_sizes = wp.empty(len(accels), dtype=wp.uint64, device="cpu", pinned=True)
-    wp.copy(host_sizes, sizes, stream=stream)
+    core = _warp_context.runtime.core
+    for i, accel in enumerate(accels):
+        core.wp_memcpy_d2h(device.context, host_sizes.ptr + 8 * i, accel._compacted_size, 8, stream.cuda_stream)
     wp.synchronize_stream(stream)
-    with wp.ScopedDevice(device):
+    with wp.ScopedDevice(device), wp.ScopedStream(stream):
         for accel, size in zip(accels, host_sizes.numpy().tolist(), strict=True):
             if size < accel._buffer.size:
                 output = wp.empty(size, dtype=wp.uint8, device=device)

@@ -318,7 +318,6 @@ class Mesh:
         self.material_id = material_id
         self.material_ids = _normalize_primitive_material_ids(material_ids, len(self.indices), self.material_id)
         self.dynamic = bool(dynamic)
-        self._packed_normal_offset = 0
 
         # Tangents only need triangle accumulation when authored UVs exist.
         self.tangents = (
@@ -507,8 +506,6 @@ class Curve:
         self.d_vertices = None
         self.d_widths = None
         self.d_indices = None
-        self._packed_position_offset = 0
-        self._packed_radius_offset = 0
         self._packed_material_offset = 0
 
 
@@ -1508,30 +1505,32 @@ class Scene:
     def _upload_geometry(self):
         """Upload geometry with one copy per attribute; each geometry keeps views of the shared buffers.
 
-        The packed index buffer serves both the acceleration structures and the shaders.
+        The acceleration structures and the shaders read the same index, curve, and normal buffers, so
+        writes to a geometry's device arrays reach both. Shaders read triangle positions through OptiX.
         """
 
         def upload(parts, dtype):
+            if not parts:
+                return None, []
             data = wp.array(np.concatenate(parts), dtype=dtype, device=self.device)
             offsets = np.cumsum([0] + [len(part) for part in parts]).tolist()
             return data, [data[begin:end] for begin, end in itertools.pairwise(offsets)]
 
         meshes = self._meshes
-        self._packed_indices, indices = upload([g.indices.reshape(-1) for g in meshes], wp.uint32)
-        _, vertices = upload([g.vertices.reshape(-1) for g in meshes], wp.float32)
-        for geometry, geometry_indices, geometry_vertices in zip(meshes, indices, vertices, strict=True):
-            geometry.d_indices, geometry.d_vertices = geometry_indices, geometry_vertices
-            if geometry.primitive_type == "triangles":
-                geometry.d_normals = (
-                    wp.array(geometry.normals.reshape(-1), dtype=wp.float32, device=self.device)
-                    if geometry.dynamic
-                    else None
-                )
+        triangles = [g for g in meshes if g.primitive_type == "triangles"]
         curves = [g for g in meshes if g.primitive_type != "triangles"]
-        if curves:
-            _, widths = upload([curve.radii for curve in curves], wp.float32)
-            for curve, curve_widths in zip(curves, widths, strict=True):
-                curve.d_widths = curve_widths
+        self._packed_indices, indices = upload([g.indices.reshape(-1) for g in meshes], wp.uint32)
+        _, positions = upload([g.vertices.reshape(-1) for g in triangles], wp.float32)
+        self._packed_normals, normals = upload([g.normals.reshape(-1) for g in triangles], wp.float32)
+        self._packed_positions, control_points = upload([g.vertices.reshape(-1) for g in curves], wp.float32)
+        self._packed_radii, radii = upload([g.radii for g in curves], wp.float32)
+        for geometry, geometry_indices in zip(meshes, indices, strict=True):
+            geometry.d_indices = geometry_indices
+        for mesh, mesh_positions, mesh_normals in zip(triangles, positions, normals, strict=True):
+            mesh.d_vertices = mesh_positions
+            mesh.d_normals = mesh_normals if mesh.dynamic else None
+        for curve, curve_points, curve_radii in zip(curves, control_points, radii, strict=True):
+            curve.d_vertices, curve.d_widths = curve_points, curve_radii
 
     def _build_blas(self):
         """Build bottom-level acceleration structures for all geometry.
@@ -1544,7 +1543,12 @@ class Scene:
         """
         opaque = self._opaque_materials
         static = []
-        for geometry in self._meshes:
+        # Small builds leave the GPU mostly idle, so spread them over a few streams.
+        main = wp.get_stream(self.device)
+        streams = [wp.Stream(self.device) for _ in range(4)]
+        for stream in streams:
+            stream.wait_stream(main)
+        for index, geometry in enumerate(self._meshes):
             all_opaque = (
                 not geometry.dynamic
                 and len(opaque) > 0
@@ -1574,11 +1578,13 @@ class Scene:
                 if geometry.dynamic
                 else native.BUILD_FLAG_PREFER_FAST_TRACE | native.BUILD_FLAG_ALLOW_COMPACTION
             )
-            gas = wo.Accel([build_input], flags=build_flags, device=self.device)
+            gas = wo.Accel([build_input], flags=build_flags, stream=streams[index % len(streams)])
             self._gas.append(gas)
             if not geometry.dynamic:
                 static.append(gas)
-        wo.compact(static)
+        for stream in streams:
+            main.wait_stream(stream)
+        wo.compact(static, stream=main)
 
     def _update_dynamic_geometry_accel(
         self,
@@ -1615,13 +1621,6 @@ class Scene:
         if len(self._gas) != len(self._meshes):
             raise RuntimeError("build the scene before refitting dynamic meshes")
 
-        wp.copy(
-            self._packed_normals,
-            geometry.d_normals,
-            dest_offset=geometry._packed_normal_offset,
-            count=geometry.normals.size,
-            stream=stream,
-        )
         return self._update_dynamic_geometry_accel(geometry_index, stream, rebuild_gas, rebuild_tlas)
 
     def refit_mesh(self, geometry_index: int, stream=None, rebuild_tlas: bool = True):
@@ -1652,20 +1651,6 @@ class Scene:
         if len(self._gas) != len(self._meshes):
             raise RuntimeError("build the scene before refitting dynamic curves")
 
-        wp.copy(
-            self._packed_positions,
-            geometry.d_vertices,
-            dest_offset=geometry._packed_position_offset,
-            count=geometry.vertices.size,
-            stream=stream,
-        )
-        wp.copy(
-            self._packed_radii,
-            geometry.d_widths,
-            dest_offset=geometry._packed_radius_offset,
-            count=geometry.radii.size,
-            stream=stream,
-        )
         return self._update_dynamic_geometry_accel(geometry_index, stream, rebuild_gas, rebuild_tlas)
 
     def refit_curve(self, geometry_index: int, stream=None, rebuild_tlas: bool = True):
@@ -1749,83 +1734,51 @@ class Scene:
 
     def _build_scene_buffers(self):
         """Build GPU buffers for scene description."""
-        # Build RenderPrimitive array
-        rp_dtype = _create_render_primitive_dtype()
-        render_primitives = np.zeros(len(self._meshes), dtype=rp_dtype)
-        packed_positions = []
-        packed_radii = []
-        packed_normals = []
-        packed_tangents = []
-        packed_texcoords0 = []
-        packed_texcoords1 = []
-        packed_material_ids = []
+        meshes = self._meshes
+        triangles = [g for g in meshes if g.primitive_type == "triangles"]
 
-        index_offset = 0
-        position_offset = 0
-        radius_offset = 0
-        normal_offset = 0
-        tangent_offset = 0
-        tex0_offset = 0
-        tex1_offset = 0
-        material_offset = 0
+        def sizes(size):
+            return np.fromiter((size(g) for g in meshes), dtype=np.int64, count=len(meshes))
 
-        for i, geometry in enumerate(self._meshes):
-            rp = render_primitives[i]
-            flat_indices = geometry.indices.reshape(-1)
-            is_triangle_mesh = geometry.primitive_type == "triangles"
-            flat_positions = np.empty(0, dtype=np.float32) if is_triangle_mesh else geometry.vertices.reshape(-1)
-            flat_radii = np.empty(0, dtype=np.float32) if is_triangle_mesh else geometry.radii
-            flat_normals = geometry.normals.reshape(-1) if is_triangle_mesh else np.empty(0, dtype=np.float32)
-            flat_tangents = geometry.tangents.reshape(-1) if is_triangle_mesh else np.empty(0, dtype=np.float32)
-            flat_tex0 = geometry.texcoords.reshape(-1) if is_triangle_mesh else np.empty(0, dtype=np.float32)
-            flat_tex1 = geometry.texcoords1.reshape(-1) if is_triangle_mesh else np.empty(0, dtype=np.float32)
-            primitive_material_ids = geometry.material_ids
+        def starts(counts):
+            # Each geometry's offset into a buffer packing every geometry's values in order.
+            return (np.cumsum(counts) - counts).astype(np.uint32)
 
-            rp["indexOffset"] = np.uint32(index_offset)
-            rp["materialIdOffset"] = np.uint32(material_offset)
-            rp["vertexBuffer"]["positionOffset"] = np.uint32(position_offset)
-            rp["vertexBuffer"]["normalOffset"] = np.uint32(normal_offset)
-            rp["vertexBuffer"]["radiusOffset"] = np.uint32(radius_offset)
-            rp["vertexBuffer"]["tangentOffset"] = np.uint32(tangent_offset)
-            rp["vertexBuffer"]["texCoord0Offset"] = np.uint32(tex0_offset)
-            rp["vertexBuffer"]["texCoord1Offset"] = np.uint32(tex1_offset)
-            rp["vertexBuffer"]["prevPositionOffset"] = np.uint32(0)
-            rp["vertexBuffer"]["hasTexCoord1"] = np.uint32(is_triangle_mesh)
-            rp["vertexBuffer"]["hasPrevPosition"] = np.uint32(0)
-            rp["numIndices"] = np.uint32(geometry.indices.size)
-            geometry._packed_position_offset = position_offset
-            geometry._packed_normal_offset = normal_offset
-            geometry._packed_radius_offset = radius_offset
-            geometry._packed_material_offset = material_offset
-            rp["numVertices"] = np.uint32(geometry.vertices.shape[0])
+        def triangle_sizes(attribute):
+            return sizes(lambda g: getattr(g, attribute).size if g.primitive_type == "triangles" else 0)
 
-            packed_positions.append(flat_positions.astype(np.float32, copy=False))
-            packed_normals.append(flat_normals.astype(np.float32, copy=False))
-            packed_tangents.append(flat_tangents.astype(np.float32, copy=False))
-            packed_radii.append(flat_radii.astype(np.float32, copy=False))
-            packed_texcoords0.append(flat_tex0.astype(np.float32, copy=False))
-            packed_texcoords1.append(flat_tex1.astype(np.float32, copy=False))
-            packed_material_ids.append(primitive_material_ids)
+        def curve_sizes(attribute):
+            return sizes(lambda g: 0 if g.primitive_type == "triangles" else getattr(g, attribute).size)
 
-            index_offset += flat_indices.shape[0]
-            position_offset += flat_positions.shape[0]
-            normal_offset += flat_normals.shape[0]
-            tangent_offset += flat_tangents.shape[0]
-            tex0_offset += flat_tex0.shape[0]
-            tex1_offset += flat_tex1.shape[0]
-            material_offset += primitive_material_ids.shape[0]
-            radius_offset += flat_radii.shape[0]
+        render_primitives = np.zeros(len(meshes), dtype=_create_render_primitive_dtype())
+        vertex_buffer = render_primitives["vertexBuffer"]
+        index_counts = sizes(lambda g: g.indices.size)
+        material_offsets = starts(sizes(lambda g: len(g.material_ids)))
+        render_primitives["indexOffset"] = starts(index_counts)
+        render_primitives["materialIdOffset"] = material_offsets
+        render_primitives["numIndices"] = index_counts
+        render_primitives["numVertices"] = sizes(lambda g: g.vertices.shape[0])
+        vertex_buffer["positionOffset"] = starts(curve_sizes("vertices"))
+        vertex_buffer["radiusOffset"] = starts(curve_sizes("radii"))
+        vertex_buffer["normalOffset"] = starts(triangle_sizes("normals"))
+        vertex_buffer["tangentOffset"] = starts(triangle_sizes("tangents"))
+        vertex_buffer["texCoord0Offset"] = starts(triangle_sizes("texcoords"))
+        vertex_buffer["texCoord1Offset"] = starts(triangle_sizes("texcoords1"))
+        vertex_buffer["hasTexCoord1"] = [g.primitive_type == "triangles" for g in meshes]
+        for geometry, offset in zip(meshes, material_offsets.tolist(), strict=True):
+            geometry._packed_material_offset = offset
+        packed_tangents = [g.tangents.reshape(-1) for g in triangles]
+        packed_texcoords0 = [g.texcoords.reshape(-1) for g in triangles]
+        packed_texcoords1 = [g.texcoords1.reshape(-1) for g in triangles]
+        packed_material_ids = [g.material_ids for g in meshes]
 
         rp_bytes = render_primitives.view(np.uint8).reshape(-1)
         self._render_primitives = wp.array(rp_bytes, dtype=wp.uint8, device=self.device)
 
         def packed_float_buffer(parts):
-            values = np.concatenate(parts)
+            values = np.concatenate(parts) if parts else np.empty(0, dtype=np.float32)
             return wp.array(values, dtype=wp.float32, device=self.device) if values.size else None
 
-        self._packed_positions = packed_float_buffer(packed_positions)
-        self._packed_radii = packed_float_buffer(packed_radii)
-        self._packed_normals = packed_float_buffer(packed_normals)
         self._packed_tangents = packed_float_buffer(packed_tangents)
         self._packed_texcoords0 = packed_float_buffer(packed_texcoords0)
         self._packed_texcoords1 = packed_float_buffer(packed_texcoords1)

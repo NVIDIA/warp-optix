@@ -293,8 +293,9 @@ after changing topology. Point-only refits do not repeat this validation.
 exposes `.id` (the `wp.uint64` passed to kernels), `.device`, and `.flags`. Initial instance builds
 read child ids back once to verify that every child is a live structure on the same device.
 `compact=True` also synchronizes to shrink static structures; `wo.compact(accels, stream=)` compacts
-many structures built with `wo.BuildFlags.ALLOW_COMPACTION` with a single synchronization. Compaction
-changes `.id`, so compact children before building instance structures over them. `accel.refit(stream=)` refits a
+many structures built with `wo.BuildFlags.ALLOW_COMPACTION`, which keep their scratch buffer until then,
+with a single synchronization. Compaction changes `.id`, so compact children before building instance
+structures over them. `accel.refit(stream=)` refits a
 structure built with `wo.BuildFlags.ALLOW_UPDATE` to its inputs' current contents using the
 retained scratch buffer, so it neither allocates nor synchronizes on success; `accel.rebuild(stream=)`
 rebuilds in place to restore trace quality (structures without `ALLOW_UPDATE` allocate a temporary
