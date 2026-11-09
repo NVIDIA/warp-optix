@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -44,40 +45,6 @@ def _write_gltf(path, uri):
     path.write_text(json.dumps({"buffers": [{"uri": uri, "byteLength": 4}]}))
 
 
-def test_gltf_buffer_uri_resolves_inside_asset_directory(tmp_path):
-    (tmp_path / "data").mkdir()
-    (tmp_path / "data" / "mesh.bin").write_bytes(b"\x01\x02\x03\x04")
-    scene = tmp_path / "scene.gltf"
-    _write_gltf(scene, "data/../data/mesh.bin")
-
-    _, buffers = _load_gltf_json_and_buffers(scene)
-
-    assert buffers == [b"\x01\x02\x03\x04"]
-
-
-@pytest.mark.parametrize("uri", ["../secret.bin", "data/../../secret.bin", "ABSOLUTE"])
-def test_gltf_buffer_uri_cannot_escape_asset_directory(tmp_path, uri):
-    secret = tmp_path / "secret.bin"
-    secret.write_bytes(b"secret")
-    asset_dir = tmp_path / "asset"
-    asset_dir.mkdir()
-    scene = asset_dir / "scene.gltf"
-    _write_gltf(scene, str(secret) if uri == "ABSOLUTE" else uri)
-
-    with pytest.raises(ValueError, match="outside the asset directory"):
-        _load_gltf_json_and_buffers(scene)
-
-
-def test_gltf_image_uri_cannot_escape_asset_directory(tmp_path):
-    pytest.importorskip("imageio")
-    (tmp_path / "secret.png").write_bytes(b"not an image")
-    asset_dir = tmp_path / "asset"
-    asset_dir.mkdir()
-
-    with pytest.raises(ValueError, match="outside the asset directory"):
-        _load_gltf_images(asset_dir / "scene.gltf", {"images": [{"uri": "../secret.png"}]}, [])
-
-
 def _link_directory(link, target):
     if os.name == "nt":
         # Junctions do not require Windows developer mode or symlink privileges.
@@ -98,35 +65,31 @@ def _link_directory(link, target):
         link.symlink_to(target, target_is_directory=True)
 
 
-@pytest.mark.parametrize("resource_kind", ["buffer", "image"])
-def test_gltf_resource_link_cannot_escape_asset_directory(tmp_path, resource_kind):
-    if resource_kind == "image":
-        pytest.importorskip("imageio")
-    asset_dir = tmp_path / "asset"
-    asset_dir.mkdir()
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (outside / "secret.bin").write_bytes(b"secret")
-    _link_directory(asset_dir / "linked", outside)
-    scene = asset_dir / "scene.gltf"
-    uri = "linked/secret.bin"
-
-    with pytest.raises(ValueError, match="outside the asset directory"):
-        if resource_kind == "buffer":
-            _write_gltf(scene, uri)
-            _load_gltf_json_and_buffers(scene)
-        else:
-            _load_gltf_images(scene, {"images": [{"uri": uri}]}, [])
-
-
-def test_gltf_resource_links_inside_asset_directory_are_allowed(tmp_path):
+def test_gltf_resources_resolve_inside_asset_directory(tmp_path):
     data = tmp_path / "data"
     data.mkdir()
     (data / "mesh.bin").write_bytes(b"mesh")
     _link_directory(tmp_path / "linked", data)
     scene = tmp_path / "scene.gltf"
-    _write_gltf(scene, "linked/mesh.bin")
+    for uri in ("data/../data/mesh.bin", "linked/mesh.bin"):
+        _write_gltf(scene, uri)
+        _, buffers = _load_gltf_json_and_buffers(scene)
+        assert buffers == [b"mesh"]
 
-    _, buffers = _load_gltf_json_and_buffers(scene)
 
-    assert buffers == [b"mesh"]
+def test_gltf_resources_cannot_escape_asset_directory(tmp_path):
+    secret = tmp_path / "secret.bin"
+    secret.write_bytes(b"secret")
+    asset_dir = tmp_path / "asset"
+    asset_dir.mkdir()
+    _link_directory(asset_dir / "linked", tmp_path)
+    scene = asset_dir / "scene.gltf"
+    for uri in ("../secret.bin", "data/../../secret.bin", str(secret), "linked/secret.bin"):
+        _write_gltf(scene, uri)
+        with pytest.raises(ValueError, match="outside the asset directory"):
+            _load_gltf_json_and_buffers(scene)
+    if importlib.util.find_spec("imageio") is None:
+        return  # Image loading needs the pathtracing extra.
+    for uri in ("../secret.bin", "linked/secret.bin"):
+        with pytest.raises(ValueError, match="outside the asset directory"):
+            _load_gltf_images(scene, {"images": [{"uri": uri}]}, [])
