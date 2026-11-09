@@ -24,7 +24,7 @@ import ast
 import enum
 import inspect
 import types
-from typing import TypeGuard
+from typing import TypeGuard, cast
 
 import warp as wp
 
@@ -125,7 +125,9 @@ def as_program(kernel: wp.Kernel, kind: ProgramKind, params, module: str) -> wp.
     )
 
     options = dict(kernel.options) | {"entry_point_abi": "external_constant_params", "enable_backward": False}
-    transformer = _ProgramTransformer(names, kind)
+    tid_ndim = []
+    # Warp applies code transformers by calling their visit(tree).
+    transformer = types.SimpleNamespace(visit=lambda tree: _program_tree(tree, names, kind, tid_ndim))
     result = wp.Kernel(
         program,
         key=f"{kind.value}{_identifier(kernel.key)}",
@@ -139,7 +141,7 @@ def as_program(kernel: wp.Kernel, kind: ProgramKind, params, module: str) -> wp.
     # original location for ordinary kernels and their generic overloads.
     result.adj.filename = source_adj.filename
     result.adj.fun_lineno = source_adj.fun_lineno
-    result._wo_tid_ndim = transformer.tid_ndim
+    result._wo_tid_ndim = tid_ndim[-1]
     return result
 
 
@@ -147,13 +149,17 @@ def _identifier(key: str) -> str:
     return "".join(c if c.isalnum() or c == "_" else "_" for c in key)
 
 
-def _is_tid_call(node: ast.AST) -> TypeGuard[ast.Call]:
-    if not isinstance(node, ast.Call) or node.args or node.keywords:
-        return False
-    target = node.func
-    return (isinstance(target, ast.Attribute) and target.attr == "tid") or (
-        isinstance(target, ast.Name) and target.id == "tid"
-    )
+def _tid_module(node: ast.AST) -> str | None:
+    """Return ``m`` if ``node`` is a ``m.tid()`` call; Warp builtins are attributes of the warp module."""
+    if (
+        isinstance(node, ast.Call)
+        and not node.args
+        and not node.keywords
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "tid"
+    ):
+        return ast.unparse(node.func.value)
+    return None
 
 
 def _statement(source: str, location: ast.AST) -> ast.stmt:
@@ -164,60 +170,56 @@ def _statement(source: str, location: ast.AST) -> ast.stmt:
     return statement
 
 
-class _ProgramTransformer(ast.NodeTransformer):
-    """Unpack the params struct into the kernel's argument names and map ``wp.tid()``."""
+def _program_tree(tree: ast.Module, names: list[str], kind: ProgramKind, tid_ndim: list[int]) -> ast.Module:
+    """Unpack the params struct into the kernel's argument names and map ``wp.tid()``.
 
-    def __init__(self, names: list[str], kind: ProgramKind):
-        self.names = names
-        self.kind = kind
-        self.tid_ndim = 0
-
-    def visit_FunctionDef(self, node: ast.FunctionDef):
-        self.tid_ndim = _rewrite_tid(node, self.kind)
-        node.body = [_statement(f"{name} = {PARAMS_ARG}.{name}", node) for name in self.names] + node.body
-        return node
-
-
-def _rewrite_tid(fn: ast.FunctionDef, kind: ProgramKind) -> int:
-    """Replace ``a, b = wp.tid()`` with reads of the OptiX launch index.
-
-    Warp's ``dim=(d0, d1, d2)`` maps to an OptiX launch of ``(d2, d1, d0)`` so
-    that the fastest-varying Warp index is OptiX's ``x``. This matches
-    ``wp.tid()`` only when the launch has as many dimensions as indices are unpacked.
+    ``a, b = wp.tid()`` becomes reads of the OptiX launch index. Warp's ``dim=(d0, d1, d2)``
+    maps to an OptiX launch of ``(d2, d1, d0)``, so the fastest-varying Warp index is OptiX's
+    ``x``; this matches ``wp.tid()`` when the launch has as many dimensions as indices are
+    unpacked. The number of unpacked indices is appended to ``tid_ndim``.
     """
-    tid_ndim = 0
+    fn = cast(ast.FunctionDef, tree.body[0])
+    rewritten = set()
+    ndims = set()
+    # ast.walk queues a node's children before yielding it, so replacing statement lists is safe.
+    for node in ast.walk(fn):
+        for field in ("body", "orelse", "finalbody"):
+            statements = getattr(node, field, None)
+            if isinstance(statements, list) and any(_is_tid_assignment(stmt) for stmt in statements):
+                expanded = []
+                for stmt in statements:
+                    if _is_tid_assignment(stmt):
+                        rewritten.add(stmt.value)
+                        expanded += _launch_index(stmt, kind, ndims)
+                    else:
+                        expanded.append(stmt)
+                setattr(node, field, expanded)
+    if len(ndims) > 1:
+        raise TypeError("every wp.tid() call in a raygen program must unpack the same number of indices")
+    if any(_tid_module(node) is not None and node not in rewritten for node in ast.walk(fn)):
+        raise TypeError("wp.tid() must appear as the right-hand side of an assignment")
+    fn.body = [_statement(f"{name} = {PARAMS_ARG}.{name}", fn) for name in names] + fn.body
+    tid_ndim.append(ndims.pop() if ndims else 0)
+    return tree
 
-    class Rewriter(ast.NodeTransformer):
-        def visit_Assign(self, node: ast.Assign):
-            nonlocal tid_ndim
-            if not _is_tid_call(node.value):
-                return self.generic_visit(node)
-            if kind is not ProgramKind.RAYGEN:
-                raise TypeError("wp.tid() is only available in raygen programs")
-            if len(node.targets) != 1:
-                raise TypeError("wp.tid() must be assigned to a single target")
-            target = node.targets[0]
-            names = target.elts if isinstance(target, ast.Tuple) else [target]
-            ids = [name.id for name in names if isinstance(name, ast.Name)]
-            if len(names) > 3 or len(ids) != len(names):
-                raise TypeError("OptiX launches support at most three wp.tid() dimensions")
-            if not isinstance(node.value.func, ast.Attribute):
-                raise TypeError("Call wp.tid() through the warp module in OptiX programs")
-            # The module that provides tid() in the kernel's scope also provides the OptiX builtins.
-            warp_module = ast.unparse(node.value.func.value)
-            ndim = len(ids)
-            if tid_ndim and tid_ndim != ndim:
-                raise TypeError("every wp.tid() call in a raygen program must unpack the same number of indices")
-            tid_ndim = ndim
-            index = _statement(f"{_INDEX_VAR} = {warp_module}.optix_get_launch_index()", node)
-            return [index] + [
-                _statement(f"{name} = int({_INDEX_VAR}[{ndim - 1 - i}])", node) for i, name in enumerate(ids)
-            ]
 
-        def visit_Call(self, node: ast.Call):
-            if _is_tid_call(node):
-                raise TypeError("wp.tid() must appear as the right-hand side of an assignment")
-            return self.generic_visit(node)
+def _is_tid_assignment(stmt: ast.stmt) -> TypeGuard[ast.Assign]:
+    return isinstance(stmt, ast.Assign) and _tid_module(stmt.value) is not None
 
-    Rewriter().visit(fn)
-    return tid_ndim
+
+def _launch_index(node: ast.Assign, kind: ProgramKind, ndims: set) -> list[ast.stmt]:
+    """Statements reading the OptiX launch index into the targets of ``... = wp.tid()``."""
+    if kind is not ProgramKind.RAYGEN:
+        raise TypeError("wp.tid() is only available in raygen programs")
+    if len(node.targets) != 1:
+        raise TypeError("wp.tid() must be assigned to a single target")
+    target = node.targets[0]
+    names = target.elts if isinstance(target, ast.Tuple) else [target]
+    ids = [name.id for name in names if isinstance(name, ast.Name)]
+    if len(names) > 3 or len(ids) != len(names):
+        raise TypeError("OptiX launches support at most three wp.tid() dimensions")
+    # The module that provides tid() in the kernel's scope also provides the OptiX builtins.
+    warp_module = _tid_module(node.value)
+    ndims.add(len(ids))
+    index = _statement(f"{_INDEX_VAR} = {warp_module}.optix_get_launch_index()", node)
+    return [index] + [_statement(f"{name} = int({_INDEX_VAR}[{len(ids) - 1 - i}])", node) for i, name in enumerate(ids)]

@@ -14,7 +14,6 @@ import warp as wp
 
 import warp_optix as wo
 from warp_optix import pipeline as pipeline_module
-from warp_optix import program as program_module
 
 pytestmark = [pytest.mark.gpu, pytest.mark.skipif(not wp.is_cuda_available(), reason="CUDA unavailable")]
 
@@ -141,6 +140,41 @@ def test_explicit_parameter_replacements_release_previous_arrays():
     assert replacement_ref() is None
     recorded.launch()
     np.testing.assert_array_equal(output.numpy(), np.full(8, 3))
+
+
+@wp.kernel(module="unique")
+def tid_in_expression(output: wp.array[int]):
+    output[0] = wp.tid() + 1
+
+
+@wp.kernel(module="unique")
+def tid_four_dimensions(output: wp.array[int]):
+    a, b, c, d = wp.tid()
+    output[0] = a + b + c + d
+
+
+@wp.kernel(module="unique")
+def tid_dimensions_differ(output: wp.array[int]):
+    i = wp.tid()
+    j, k = wp.tid()
+    output[0] = i + j + k
+
+
+@wp.kernel(module="unique")
+def tid_two_targets(output: wp.array[int]):
+    i = j = wp.tid()
+    output[0] = i + j
+
+
+def test_invalid_tid_uses_are_rejected_before_compiling():
+    for kernel, message in (
+        (tid_in_expression, "right-hand side"),
+        (tid_four_dimensions, "at most three"),
+        (tid_dimensions_differ, "same number of indices"),
+        (tid_two_targets, "single target"),
+    ):
+        with pytest.raises(TypeError, match=message):
+            wo.Pipeline(kernel)
 
 
 def test_invalid_params_schemas_and_stage_placements():
@@ -278,7 +312,11 @@ def generic_array_miss(value: wp.array[Any]):
 
 def test_generic_programs_take_launch_parameter_types():
     output = wp.zeros(4, dtype=wp.uint32, device="cuda")
-    wo.launch(wo.Pipeline(trace, miss=[generic_miss], params_type=Params, payload_words=1), (4,), [params(3, output)])
+    wo.launch(
+        wo.Pipeline(trace, sbt=wo.SbtLayout(miss=generic_miss), params_type=Params, payload_words=1),
+        (4,),
+        [params(3, output)],
+    )
     np.testing.assert_array_equal(output.numpy(), np.full(4, 6))
 
     values = wp.zeros((2, 3), dtype=wp.float64, device="cuda")
@@ -288,7 +326,7 @@ def test_generic_programs_take_launch_parameter_types():
     np.testing.assert_array_equal(values.numpy(), [[0.0, 2.0, 4.0], [20.0, 22.0, 24.0]])
 
     with pytest.raises(TypeError, match="type mismatch"):
-        wo.Pipeline(trace, miss=[generic_array_miss], params_type=Params)
+        wo.Pipeline(trace, sbt=wo.SbtLayout(miss=generic_array_miss), params_type=Params)
 
 
 @wp.kernel(module="unique")
@@ -322,9 +360,7 @@ def test_programs_preserve_explicit_source_and_transformers():
         source=source,
         code_transformers=[AddOne()],
     )
-    # Inspecting write.func again would silently compile its original body instead.
-    program = program_module.as_program(overridden, wo.ProgramKind.RAYGEN, Params, "wo_test_source_program")
-    assert program.adj.source == overridden.adj.source
+    # 9 = 7 + 2: the program compiles the explicit source with the kernel's own transformer, not write.func.
     output = wp.empty(4, dtype=wp.uint32, device="cuda")
     with wo.Pipeline(overridden) as pipeline:
         wo.launch(pipeline, (4,), [7, output])
