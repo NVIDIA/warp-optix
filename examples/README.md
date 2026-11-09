@@ -15,7 +15,7 @@ uv sync --extra pathtracing --extra ui --extra usd
 | `example_curves.py` | Built-in round-linear curves with varying width | `uv run python examples/example_curves.py` |
 | `example_mixed_geometry.py` | Triangles, curves, and custom primitives under GPU-written instances | `uv run python examples/example_mixed_geometry.py` |
 | `example_motion_blur.py` | Vertex motion blur with a two-key motion GAS | `uv run python examples/example_motion_blur.py` |
-| `example_raytracing.py` | Cornell box ray tracer with shadows and one bounce | `uv run python examples/example_raytracing.py` |
+| `example_raytracing.py` | Cornell box ray tracer with an optional live viewer | `uv run python examples/example_raytracing.py --live` |
 | `example_pathtracing.py` | Path-traced procedural chess set | `uv run python examples/example_pathtracing.py --scene chess` |
 | | Hair ball made of cubic Bézier curves | `uv run python examples/example_pathtracing.py --scene hairball` |
 | | Arrows built with `ArrowBatch` | `uv run python examples/example_pathtracing.py --scene arrowball` |
