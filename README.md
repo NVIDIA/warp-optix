@@ -74,10 +74,10 @@ the OptiX context is implicit (one per device, configured through `wo.config`).
 reference is dropped, or explicitly with `close()`/`with`. As with `wp.Mesh` and
 `wp.array`, device memory is freed in stream order; a pipeline's native OptiX objects
 are destroyed once its submitted launches have finished. Instances are written
-with `wo.make_instance()` and refit with `accel.refit()`. Initial instance builds
-validate child ids with a host readback; compaction also synchronizes (once per
-`wo.compact` batch). Refits and
-launches remain asynchronous on the selected Warp stream.
+with `wo.make_instance()`, listed with their child structures in
+`wo.instances(records, children)`, and refit with `accel.refit()`. Builds, refits,
+and launches are asynchronous on the selected Warp stream; only compaction
+synchronizes (once per `wo.compact` batch).
 
 SBT records are built automatically. For named ray types and explicit hit-group
 layouts, pass a `wo.SbtBuilder` to `wo.Pipeline(..., sbt=builder)`.
