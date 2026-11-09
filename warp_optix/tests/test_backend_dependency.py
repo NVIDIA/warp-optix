@@ -91,7 +91,7 @@ def test_unsupported_wrapper_abi_rejected_before_installing_methods():
     incompatible.__dict__.update(optix.__dict__)
     incompatible.DeviceContext = type("DifferentContext", (), {})
     original = optix.DeviceContext.coopVecMatrixConvert
-    with pytest.raises(ImportError, match="ABI-compatible pyoptix 9.1.0"):
+    with pytest.raises(ImportError, match="ABI-compatible pyoptix 9.1.1"):
         _ext.install_pyoptix_extensions(incompatible)
     assert optix.DeviceContext.coopVecMatrixConvert is original
 
@@ -108,7 +108,7 @@ importlib.metadata.version = lambda name: '9.2.0' if name == 'pyoptix' else orig
 try:
     import warp_optix
 except ImportError as error:
-    assert 'requires pyoptix==9.1.0' in str(error), error
+    assert 'requires pyoptix==9.1.1' in str(error), error
 else:
     raise AssertionError('Unsupported dependency was accepted')
 """,

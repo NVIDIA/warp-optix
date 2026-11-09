@@ -71,6 +71,10 @@ def test_module_options_reach_every_program(compiled):
     wo.launch(pipeline, 4, [output])
     np.testing.assert_allclose(output.numpy(), np.sin(np.arange(4) + 0.5), rtol=1e-5)
 
+    # Reusing a program/module name after an override must recover its original compile options.
+    wo.Pipeline(sine, miss=[miss])
+    assert "sin.approx" not in compiled[-1][1]
+
 
 def test_conflicting_kernel_module_options_are_rejected(compiled):
     with pytest.raises(ValueError, match="'fast_math' is False for kernel 'sine' but True for kernel 'fast_miss'"):
@@ -149,3 +153,9 @@ def test_closed_pipelines_leave_no_warp_modules_or_structs():
     gc.collect()
     assert len(modules) == count
     assert output.numpy()[0] == 7.0
+
+    # A failure after registering the raygen program must detach its module as well.
+    with pytest.raises(TypeError, match="type differs from launch parameters"):
+        wo.Pipeline(sine, miss=[call_first])
+    assert not sine.module.dependents
+    assert len(modules) == count

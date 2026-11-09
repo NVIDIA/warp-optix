@@ -28,7 +28,7 @@ upstream license and additional notices in licenses/pybind11-LICENSE.txt
 otk-pyoptix / PyOptiX
 --------------------
 https://github.com/NVIDIA/otk-pyoptix
-Runtime dependency: pyoptix==9.1.0. License: BSD-3-Clause.
+Runtime dependency: pyoptix==9.1.1. License: BSD-3-Clause.
 Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 warp-optix depends on the separately installed PyOptiX package for standard
 bindings. src/extension.cpp contains supplemental bindings derived from
