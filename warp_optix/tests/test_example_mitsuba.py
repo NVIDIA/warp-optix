@@ -53,6 +53,26 @@ def test_download_failure_does_not_poison_scene_cache(tmp_path, monkeypatch):
     assert list((tmp_path / "scenes").iterdir()) == []
 
 
+def test_interrupted_extraction_does_not_publish_cached_xml(tmp_path, monkeypatch):
+    monkeypatch.setenv("WARP_OPTIX_CACHE", str(tmp_path))
+
+    def download(url, archive):
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("dining-room/scene_v3.xml", "<scene/>")
+
+    def interrupted_extraction(archive, directory):
+        scene = Path(directory) / "dining-room"
+        scene.mkdir(parents=True)
+        (scene / "scene_v3.xml").write_text("<scene/>")
+        raise OSError("disk full before meshes were extracted")
+
+    monkeypatch.setattr(mitsuba.urllib.request, "urlretrieve", download)
+    monkeypatch.setattr(zipfile.ZipFile, "extractall", interrupted_extraction)
+    with pytest.raises(OSError, match="disk full"):
+        mitsuba.fetch("dining-room")
+    assert not (tmp_path / "scenes" / "dining-room").exists()
+
+
 def test_obj_resolves_relative_indices_at_each_face_and_missing_attributes(tmp_path):
     obj = tmp_path / "mesh.obj"
     obj.write_text(
