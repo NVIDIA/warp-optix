@@ -49,16 +49,26 @@ def kernel(func=None, *, kind: ProgramKind, **options):
     """Declare a Warp kernel as an OptiX program of ``kind``, like ``@wp.kernel``.
 
     Use as ``@wo.kernel(kind=wo.ProgramKind.MISS)``; ``options`` are forwarded to
-    ``wp.kernel``. The result is an ordinary Warp kernel. Pipeline construction
-    checks that it occupies a slot of the declared kind.
+    ``wp.kernel``, with ``module="unique"`` unless another module is given, so
+    that OptiX builtins do not break ``wp.launch`` of other kernels in the same
+    Python module. The result is an ordinary Warp kernel. Pipeline construction
+    checks that it occupies a slot of the declared kind. An existing kernel keeps
+    its module, which therefore must not be its Python module's default one.
     """
     if not isinstance(kind, ProgramKind):
         raise TypeError("kind must be a ProgramKind")
 
     def decorate(func):
-        if isinstance(func, wp.Kernel) and options:
-            raise TypeError("Set Warp kernel options on @wp.kernel when decorating an existing kernel")
-        result = func if isinstance(func, wp.Kernel) else wp.kernel(func, **options)
+        if isinstance(func, wp.Kernel):
+            if options:
+                raise TypeError("Set Warp kernel options on @wp.kernel when decorating an existing kernel")
+            if func.module.name == func.func.__module__:
+                # Its OptiX builtins would break wp.launch of every other kernel in that module.
+                raise TypeError(
+                    f"{func.key} is in its Python module's default Warp module; use @wo.kernel without "
+                    "@wp.kernel, or @wp.kernel(module='unique')"
+                )
+        result = func if isinstance(func, wp.Kernel) else wp.kernel(func, **({"module": "unique"} | options))
         result._optix_kind = kind
         return result
 

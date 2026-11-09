@@ -199,7 +199,7 @@ def test_mixed_geometry_selects_hit_records_by_geometry_primitive_and_ray_type()
 
     records = wp.empty(2, dtype=wo.Instance, device=device)
     wp.launch(write_mixed_instances, dim=2, inputs=[triangle_gas.id, sphere_gas.id, records], device=device)
-    ias = wo.Accel([wo.instances(records)], device=device)
+    ias = wo.Accel([wo.instances(records, [triangle_gas, sphere_gas])], device=device)
 
     triangle = [wo.HitGroup(closest_hit=primary_hit), wo.HitGroup(closest_hit=shadow_hit)]
     sphere = [

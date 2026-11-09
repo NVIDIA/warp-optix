@@ -21,9 +21,8 @@ from warp_optix.addon import register_with_warp
 
 register_with_warp()
 
-__version__ = "0.2.0"
-
 from warp_optix import config as config
+from warp_optix._version import __version__ as __version__
 from warp_optix.accel import Accel as Accel
 from warp_optix.accel import BuildInput as BuildInput
 from warp_optix.accel import Instance as Instance

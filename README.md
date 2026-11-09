@@ -74,10 +74,10 @@ the OptiX context is implicit (one per device, configured through `wo.config`).
 reference is dropped, or explicitly with `close()`/`with`. As with `wp.Mesh` and
 `wp.array`, device memory is freed in stream order; a pipeline's native OptiX objects
 are destroyed once its submitted launches have finished. Instances are written
-with `wo.make_instance()` and refit with `accel.refit()`. Initial instance builds
-validate child ids with a host readback; compaction also synchronizes (once per
-`wo.compact` batch). Refits and
-launches remain asynchronous on the selected Warp stream.
+with `wo.make_instance()`, listed with their child structures in
+`wo.instances(records, children)`, and refit with `accel.refit()`. Builds, refits,
+and launches are asynchronous on the selected Warp stream; only compaction
+synchronizes (once per `wo.compact` batch).
 
 SBT records are built automatically. For named ray types and explicit hit-group
 layouts, pass a `wo.SbtBuilder` to `wo.Pipeline(..., sbt=builder)`.
@@ -107,7 +107,7 @@ attaching bindings. Both extensions must use a compatible pybind11
 major version and C++ ABI. If the import reports an ABI mismatch, rebuild both
 packages with pybind11 3.x. See [dependency maintenance](docs/pyoptix-dependency.md).
 
-The distribution version is 0.2.0; the PyOptiX version is 9.1.1 (OptiX SDK 9.1.0).
+The PyOptiX version is 9.1.1 (OptiX SDK 9.1.0).
 
 ## Tests and dependency maintenance
 
