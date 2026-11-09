@@ -107,7 +107,7 @@ attaching bindings. Both extensions must use a compatible pybind11
 major version and C++ ABI. If the import reports an ABI mismatch, rebuild both
 packages with pybind11 3.x. See [dependency maintenance](docs/pyoptix-dependency.md).
 
-The distribution version is 0.2.0; the PyOptiX version is 9.1.1 (OptiX SDK 9.1.0).
+The PyOptiX version is 9.1.1 (OptiX SDK 9.1.0).
 
 ## Tests and dependency maintenance
 
