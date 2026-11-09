@@ -208,12 +208,14 @@ def triangles(
     build_input = native.BuildInputTriangleArray()
     build_input.vertexFormat = native.VERTEX_FORMAT_FLOAT3
     build_input.vertexStrideInBytes = 12
-    build_input.numVertices = num_vertices
-    build_input.vertexBuffers = [key.ptr for key in keys]
+    # OptiX requires null buffers for empty geometry, which builds a structure nothing intersects.
+    empty = indices.size == 0
+    build_input.numVertices = 0 if empty else num_vertices
+    build_input.vertexBuffers = [] if empty else [key.ptr for key in keys]
     build_input.indexFormat = native.INDICES_FORMAT_UNSIGNED_INT3
     build_input.indexStrideInBytes = 12
     build_input.numIndexTriplets = indices.size * wp.types.type_size_in_bytes(indices.dtype) // 12
-    build_input.indexBuffer = indices.ptr
+    build_input.indexBuffer = 0 if empty else indices.ptr
     build_input.flags = [int(flags)]
     build_input.numSbtRecords = 1
     return BuildInput(build_input, (*keys, indices))
@@ -258,9 +260,10 @@ def aabbs(
             raise ValueError("lowers and uppers must be CUDA arrays on the same device")
         bounds = wp.empty((lowers.size, 6), dtype=wp.float32, device=lowers.device)
         sources = (lowers, uppers)
-        prepare = wp.launch(
-            _pack_bounds, lowers.size, inputs=[lowers, uppers, bounds], device=bounds.device, record_cmd=True
-        ).launch
+        if lowers.size:
+            prepare = wp.launch(
+                _pack_bounds, lowers.size, inputs=[lowers, uppers, bounds], device=bounds.device, record_cmd=True
+            ).launch
 
     elif lowers is not None or uppers is not None:
         raise ValueError("pass either lowers and uppers, or bounds, not both")
@@ -274,7 +277,7 @@ def aabbs(
             raise ValueError("sbt_indices must contain one uint32 value per AABB")
         _validate_indices(sbt_indices, len(flags), bounds.device)
     descriptor = native.BuildInputCustomPrimitiveArray(
-        aabbBuffers=[bounds.ptr],
+        aabbBuffers=[bounds.ptr] if bounds.size else [],
         numPrimitives=bounds.size // 6,
         strideInBytes=24,
         flags=flags,
@@ -285,6 +288,21 @@ def aabbs(
     )
     arrays = (bounds, *sources) if sbt_indices is None else (bounds, *sources, sbt_indices)
     return BuildInput(descriptor, arrays, prepare=prepare)
+
+
+# Control points per curve segment, minus one.
+_CURVE_DEGREES = {
+    PrimitiveType.ROUND_LINEAR: 1,
+    PrimitiveType.ROUND_QUADRATIC_BSPLINE: 2,
+    PrimitiveType.ROUND_QUADRATIC_BSPLINE_ROCAPS: 2,
+    PrimitiveType.FLAT_QUADRATIC_BSPLINE: 2,
+    PrimitiveType.ROUND_CUBIC_BSPLINE: 3,
+    PrimitiveType.ROUND_CUBIC_BSPLINE_ROCAPS: 3,
+    PrimitiveType.ROUND_CATMULLROM: 3,
+    PrimitiveType.ROUND_CATMULLROM_ROCAPS: 3,
+    PrimitiveType.ROUND_CUBIC_BEZIER: 3,
+    PrimitiveType.ROUND_CUBIC_BEZIER_ROCAPS: 3,
+}
 
 
 def curves(
@@ -303,17 +321,9 @@ def curves(
     point_keys = [points] if isinstance(points, wp.array) else list(points)
     width_keys = [widths] * len(point_keys) if isinstance(widths, wp.array) else list(widths)
     num_vertices = _vertex_count(point_keys)
-    degree = 3
-    for name, value in (
-        ("ROUND_LINEAR", 1),
-        ("ROUND_QUADRATIC_BSPLINE", 2),
-        ("ROUND_QUADRATIC_BSPLINE_ROCAPS", 2),
-        ("FLAT_QUADRATIC_BSPLINE", 2),
-    ):
-        primitive = getattr(PrimitiveType, name, None)
-        if primitive is not None and int(curve_type) == int(primitive):
-            degree = value
-            break
+    degree = _CURVE_DEGREES.get(int(curve_type))
+    if degree is None:
+        raise ValueError(f"curve_type must be a curve PrimitiveType, got {curve_type!r}")
     _validate_indices(indices, num_vertices - degree, point_keys[0].device)
     if len(width_keys) != len(point_keys) or any(
         key.dtype != wp.float32
@@ -323,18 +333,22 @@ def curves(
         for key in width_keys
     ):
         raise ValueError("widths must provide one float32 value per point on the points device")
+    if indices.size:
+        buffers = {
+            "vertexBuffers": [key.ptr for key in point_keys],
+            "numVertices": num_vertices,
+            "vertexStrideInBytes": 12,
+            "widthBuffers": [key.ptr for key in width_keys],
+            "widthStrideInBytes": 4,
+            "normalBuffers": [0] * len(point_keys),
+            "indexBuffer": indices.ptr,
+            "indexStrideInBytes": 4,
+        }
+    else:
+        # OptiX requires null buffers and zero strides for empty geometry.
+        buffers = {}
     descriptor = native.BuildInputCurveArray(
-        curveType=native.PrimitiveType(int(curve_type)),
-        numPrimitives=indices.size,
-        vertexBuffers=[key.ptr for key in point_keys],
-        numVertices=num_vertices,
-        vertexStrideInBytes=12,
-        widthBuffers=[key.ptr for key in width_keys],
-        widthStrideInBytes=4,
-        normalBuffers=[0] * len(point_keys),
-        indexBuffer=indices.ptr,
-        indexStrideInBytes=4,
-        flag=int(flags),
+        curveType=native.PrimitiveType(int(curve_type)), numPrimitives=indices.size, flag=int(flags), **buffers
     )
     return BuildInput(descriptor, (*point_keys, *width_keys, indices))
 
@@ -344,7 +358,7 @@ def instances(records: wp.array) -> BuildInput:
     if records.dtype is not Instance or not records.device.is_cuda or not records.is_contiguous:
         raise ValueError("records must be a contiguous CUDA array of Instance")
     return BuildInput(
-        native.BuildInputInstanceArray(instances=records.ptr, numInstances=records.size),
+        native.BuildInputInstanceArray(instances=records.ptr if records.size else 0, numInstances=records.size),
         (records,),
         instance_records=records,
     )
@@ -389,6 +403,8 @@ class Accel:
         if device is None and stream is None and inputs:
             device = inputs[0].device
         context, stream = resolve(device, stream)
+        if not inputs:
+            raise ValueError("Accel needs at least one build input")
         context.check_arrays([item.arrays for item in inputs])
         flags = int(flags) | (BuildFlags.ALLOW_COMPACTION if compact else 0)
         if compact and flags & BuildFlags.ALLOW_UPDATE:
@@ -403,7 +419,7 @@ class Accel:
         options = build_options(native.BUILD_OPERATION_BUILD)
         native_inputs = [item.native for item in inputs]
         with wp.ScopedDevice(context.device), wp.ScopedStream(stream, sync_enter=False):
-            dependencies = []
+            children = {}
             for item in inputs:
                 if item.instance_records is not None:
                     # Validate GPU-written child ids once. Refits keep this topology.
@@ -414,8 +430,7 @@ class Accel:
                         child = context._accels.get(int(child_id))
                         if child is None:
                             raise ValueError("Instance children must be live acceleration structures on this device")
-                        # Keep the child's memory, not just the object, so closing the child cannot free it.
-                        dependencies.append((child, child._buffer))
+                        children[int(child_id)] = child._memory
                 if item.prepare is not None:
                     item.prepare(stream)
             sizes = context.native.accelComputeMemoryUsage(options, native_inputs)
@@ -455,7 +470,8 @@ class Accel:
         self._flags = flags
         self._rebuild_options = options
         self._refit_options = build_options(native.BUILD_OPERATION_UPDATE) if flags & BuildFlags.ALLOW_UPDATE else None
-        self._dependencies = tuple(dependencies)
+        # Retain every level of instance memory even when child objects are closed.
+        self._memory = (buffer, *children.values())
         self._closed = False
         context._accels[self._id] = self
 
@@ -498,7 +514,7 @@ class Accel:
         if self._context._accels.get(self._id) is self:
             del self._context._accels[self._id]
         self._buffer = self._scratch = None
-        self._inputs = self._dependencies = ()
+        self._inputs = self._memory = ()
 
     def __enter__(self) -> Accel:
         self._check_open()

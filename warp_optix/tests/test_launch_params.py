@@ -93,7 +93,7 @@ def test_launches_across_streams_use_their_own_parameters():
         recorded.set_params([value, replayed])
         recorded.launch(stream=stream)
         outputs += [(value, automatic), (value, replayed)]
-    assert len({b.data.ptr for b in pipeline._buffers.values()}) == 2
+    assert set(pipeline._buffers) <= {stream.cuda_stream for stream in streams}
     wp.synchronize_device(device)
     for value, output in outputs:
         np.testing.assert_array_equal(output.numpy(), np.full(4096, value))
@@ -135,12 +135,13 @@ def test_dropping_a_recorded_launch_frees_its_parameters_in_stream_order(gate):
     wo.launch(pipeline, (128,), [params(1, output)], stream=stream)
     wp.synchronize_device(device)
 
-    gate.block(stream)
+    pending = gate.block(stream)
     recorded = wo.launch(pipeline, (128,), [params(53, output)], record_cmd=True)
     storage_ref = weakref.ref(recorded._storage.data)
     recorded.launch(stream=stream)
     # Like a wp.array, the parameters go away with their last reference (no garbage collection
     # needed); Warp frees the device memory in stream order, so the pending launch still reads it.
+    assert not pending.is_complete, "The gate expired before launch parameter release"
     del recorded
     assert storage_ref() is None
     gate.open()
@@ -263,3 +264,37 @@ def test_recorded_launch_replays_with_updated_parameters():
     explicit.set_param_by_name("value", 5)
     explicit.launch()
     np.testing.assert_array_equal(output.numpy(), np.full(8, 5))
+
+
+@wp.kernel(module="unique")
+def write_index_2d(output: wp.array2d[int]):
+    i, j = wp.tid()
+    output[i, j] = i * 100 + j
+
+
+@wp.kernel(module="unique")
+def no_arguments():
+    pass
+
+
+def test_launch_matches_wp_launch_conventions():
+    pipeline = wo.Pipeline(write_index_2d)
+    expected = wp.empty((2, 3), dtype=int, device="cuda")
+    wp.launch(write_index_2d, (2, 3), inputs=[expected])
+    # outputs are appended to inputs, and numpy integers are accepted in dim.
+    output = wp.empty((2, 3), dtype=int, device="cuda")
+    wo.launch(pipeline, (np.int64(2), np.int32(3)), outputs=[output])
+    np.testing.assert_array_equal(output.numpy(), expected.numpy())
+
+    # wp.tid() indices must match the launch dimensions, where OptiX and wp.launch could disagree.
+    with pytest.raises(ValueError, match="unpacks 2 wp.tid"):
+        wo.launch(pipeline, 6, [output])
+    with pytest.raises(ValueError, match="positive integers"):
+        wo.launch(pipeline, (2, 3.0), [output])
+    recorded = wo.launch(pipeline, (np.int64(2), np.int32(3)), outputs=[output], record_cmd=True)
+    recorded.launch()
+    with pytest.raises(ValueError, match="unpacks 2 wp.tid"):
+        recorded.set_dim(6)
+
+    # A raygen that ignores wp.tid() accepts any dimensions, and one without arguments needs no inputs.
+    wo.launch(wo.Pipeline(no_arguments), (2, 2))

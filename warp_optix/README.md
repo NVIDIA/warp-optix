@@ -75,7 +75,8 @@ with `.close()` or `with`:
   the `wo.Accel` alive while work that reads the id may still be submitted. A `wo.Accel` passed in
   launch inputs is referenced by the pipeline's parameter storage until the next launch on that
   stream replaces it.
-- An instance structure keeps the memory of its child structures alive, even if a child is closed.
+- An instance structure keeps the memory of its child structures alive, at every level of nesting,
+  even if a child is closed or dropped.
 - Failed pipeline construction destroys only the native objects it created.
 
 ## Programs and pipelines
@@ -127,7 +128,8 @@ may be omitted but not skipped by keyword, because Warp's external-builtin API h
 arguments; `wp.optix_traverse()` takes the same arguments with an optional payload. Flags, masks,
 SBT indices, and register indices accept any integer type, so `wo.RayFlags` members need no cast.
 
-`wo.Pipeline(raygen, *, miss, hit_groups, ray_types, sbt, callables, exception, exception_flags,
+`wo.Pipeline(raygen, *, miss, hit_groups, ray_types, sbt, callables, continuation_callables,
+exception, exception_flags,
 payload_words, attribute_words, max_trace_depth, max_traversable_depth, graph_flags, motion_blur,
 max_registers, device)` compiles all programs into one module and builds the shader binding table:
 
@@ -139,8 +141,10 @@ max_registers, device)` compiles all programs into one module and builds the sha
   group with an `intersection` program serves custom primitives. Primitive-type flags are derived
   from the groups.
 - `callables` are direct-callable programs, invoked with `wp.optix_direct_call(index)` in list
-  order. Callables use a no-argument, void interface: they read launch parameters and write
-  referenced Warp arrays.
+  order. `continuation_callables` are invoked with `wp.optix_continuation_call(index)`; they
+  follow the direct callables in the same SBT section, so `continuation_callables[k]` has index
+  `len(callables) + k`. Callables use a no-argument, void interface: they read launch parameters
+  and write referenced Warp arrays.
 - `exception` enables user exceptions. Raise one with `wp.optix_throw_exception(code, ...)` (up
   to eight optional details) and read it with `wp.optix_get_exception_code()` and
   `wp.optix_get_exception_detail(i)`.
@@ -150,7 +154,9 @@ max_registers, device)` compiles all programs into one module and builds the sha
   For example, `exception_flags=wo.ExceptionFlags.STACK_OVERFLOW | wo.ExceptionFlags.TRACE_DEPTH`
   enables those debugging checks. Include `USER` when using `optix_throw_exception`.
 
-`wo.launch(pipeline, dim, inputs=(), device=None, stream=None, *, record_cmd=False)` mirrors `wp.launch`:
+`wo.launch(pipeline, dim, inputs=None, outputs=None, *, device=None, stream=None, record_cmd=False)`
+mirrors `wp.launch`: `inputs` and `outputs` are concatenated into the raygen arguments, and a raygen
+that calls `wp.tid()` must unpack as many indices as `dim` has entries.
 it packs the launch parameters on the host, copies them to the device on `stream`, and then launches
 OptiX on the same stream. Neither step synchronizes the host. `wo.Accel` objects in `inputs` are passed as their `id`
 and kept alive for the launch. OptiX does not record its work into CUDA graphs, so `wo.launch`,
@@ -284,7 +290,8 @@ retain their Warp **device** arrays:
 | `wo.instances(records)` | `wp.array(dtype=wo.Instance)` |
 
 Geometry defaults to `GeometryFlags.DISABLE_ANYHIT`; pass `flags=wo.GeometryFlags.NONE` when an
-any-hit program must run.
+any-hit program must run. Any build input may be empty (no primitives or records); the structure
+then has nothing to intersect, which suits dynamic geometry that has no elements yet.
 
 `triangles()` and `curves()` read indices back once to validate their bounds.
 Keep those indices unchanged when reusing a build input; create a new input
