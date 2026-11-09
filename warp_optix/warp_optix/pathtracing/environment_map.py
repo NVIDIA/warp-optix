@@ -42,9 +42,23 @@ except ImportError:
     _HAS_IMAGEIO = False
 
 
-def _luminance(r: float, g: float, b: float) -> float:
-    """CIE luminance."""
-    return r * 0.2126 + g * 0.7152 + b * 0.0722
+@wp.kernel(module="unique", enable_backward=False)
+def _pair_alias_table(
+    partition: wp.array[wp.uint32], small_count: int, q: wp.array[wp.float32], alias: wp.array[wp.uint32]
+):
+    size = partition.shape[0]
+    s = int(0)
+    large = small_count
+    while s < large and large < size:
+        small_index = partition[s]
+        high_index = partition[large]
+        # Associate the lower-energy texel with its higher-energy alias and move
+        # to the next high-energy texel once this one falls below average.
+        alias[small_index] = high_index
+        q[high_index] = q[high_index] - (1.0 - q[small_index])
+        if q[high_index] < 1.0:
+            large += 1
+        s += 1
 
 
 def _build_alias_table(importance: np.ndarray, total_importance: float) -> tuple[np.ndarray, np.ndarray]:
@@ -72,55 +86,24 @@ def _build_alias_table(importance: np.ndarray, total_importance: float) -> tuple
 
     # For each texel, compute the ratio q between the emitted radiance and the average
     # q = importance[i] / average_importance = importance[i] * size / sum
-    f_size = float(size)
-    inverse_average = f_size / total_importance
-
-    # Initialize accel structure
-    q = np.zeros(size, dtype=np.float32)
+    q = (np.asarray(importance, dtype=np.float64) * (float(size) / total_importance)).astype(np.float32)
     alias = np.arange(size, dtype=np.uint32)
 
-    for i in range(size):
-        q[i] = float(importance[i]) * inverse_average
+    # Texels with q < 1 (below average) are stored from the beginning, texels
+    # with q >= 1 (above average) from the end, in reverse order.
+    below = q < 1.0
+    small = np.flatnonzero(below).astype(np.uint32)
+    partition = np.concatenate([small, np.flatnonzero(~below)[::-1].astype(np.uint32)])
 
-    # Partition texels according to their emitted radiance ratio wrt average.
-    # Texels with q < 1 (below average) are stored from the beginning,
-    # texels with q >= 1 (above average) are stored from the end.
-    partition_table = np.zeros(size, dtype=np.uint32)
-    s = 0
-    large = size
-
-    for i in range(size):
-        if q[i] < 1.0:
-            partition_table[s] = i
-            s += 1
-        else:
-            large -= 1
-            partition_table[large] = i
-
-    # Associate lower-energy texels to higher-energy ones
-    s_idx = 0
-    while s_idx < large < size:
-        # Index of the smaller energy texel
-        small_energy_index = partition_table[s_idx]
-        # Index of the higher energy texel
-        high_energy_index = partition_table[large]
-
-        # Associate the texel to its higher-energy alias
-        alias[small_energy_index] = high_energy_index
-
-        # Compute the difference between the lower-energy texel and the average
-        difference_with_average = 1.0 - q[small_energy_index]
-
-        # Subtract from the high-energy texel
-        q[high_energy_index] -= difference_with_average
-
-        # If the high-energy texel now falls below average, move to next one
-        if q[high_energy_index] < 1.0:
-            large += 1
-
-        s_idx += 1
-
-    return alias, q
+    q_device = wp.array(q, dtype=wp.float32, device="cpu")
+    alias_device = wp.array(alias, dtype=wp.uint32, device="cpu")
+    wp.launch(
+        _pair_alias_table,
+        dim=1,
+        inputs=[wp.array(partition, dtype=wp.uint32, device="cpu"), len(small), q_device, alias_device],
+        device="cpu",
+    )
+    return alias_device.numpy(), q_device.numpy()
 
 
 class EnvironmentMap:
@@ -318,54 +301,23 @@ class EnvironmentMap:
         h, w = pixels_rgba.shape[0], pixels_rgba.shape[1]
         size = w * h
 
-        # Create importance sampling data
-        importance_data = np.zeros(size, dtype=np.float64)
-        cos_theta0 = 1.0
-        step_phi = 2.0 * np.pi / w
-        step_theta = np.pi / h
-        total_luminance = 0.0
+        # Each texel's importance is its solid angle times max(R,G,B): the energy it emits.
+        # The average CIE luminance drives tonemapping.
+        rgb = pixels_rgba[..., :3].astype(np.float64)
+        cos_theta = np.cos(np.arange(h + 1) * (np.pi / h))
+        area = (cos_theta[:-1] - cos_theta[1:]) * (2.0 * np.pi / w)
+        max_component = rgb.max(axis=-1)
+        importance_data = (area[:, None] * np.maximum(max_component, 0.0)).reshape(-1)
+        self.average = float((rgb @ np.array([0.2126, 0.7152, 0.0722])).sum()) / size
 
-        # For each texel of the environment map, we compute the related solid angle
-        # subtended by the texel, and store the weighted luminance in importance_data,
-        # representing the amount of energy emitted through each texel.
-        # Also compute the average CIE luminance to drive the tonemapping
-        for y in range(h):
-            theta1 = (y + 1) * step_theta
-            cos_theta1 = np.cos(theta1)
-            area = (cos_theta0 - cos_theta1) * step_phi  # solid angle
-            cos_theta0 = cos_theta1
-
-            for x in range(w):
-                idx = y * w + x
-                r = float(pixels_rgba[y, x, 0])
-                g = float(pixels_rgba[y, x, 1])
-                b = float(pixels_rgba[y, x, 2])
-
-                cie_luminance = _luminance(r, g, b)
-                # importance_data = area * max(R,G,B)
-                max_comp = max(r, g, b)
-                importance_data[idx] = area * max(max_comp, 0.0)
-                total_luminance += cie_luminance
-
-        self.average = total_luminance / size
-
-        # Build alias table
         self.integral = float(np.sum(importance_data))
         if self.integral == 0.0:
             self.integral = 1.0
 
         alias, q = _build_alias_table(importance_data, self.integral)
 
-        # Store PDF in alpha channel of pixels
-        # PDF = max(R,G,B) / integral
-        inv_env_integral = 1.0 / self.integral
-        for y in range(h):
-            for x in range(w):
-                r = float(pixels_rgba[y, x, 0])
-                g = float(pixels_rgba[y, x, 1])
-                b = float(pixels_rgba[y, x, 2])
-                max_comp = max(r, g, b)
-                pixels_rgba[y, x, 3] = max_comp * inv_env_integral
+        # PDF = max(R,G,B) / integral, stored in the alpha channel.
+        pixels_rgba[..., 3] = max_component * (1.0 / self.integral)
 
         self.pixels = np.ascontiguousarray(pixels_rgba, dtype=np.float32)
 

@@ -70,12 +70,13 @@ wo.launch(pipeline, dim=(480, 640), inputs=[accel.id, image])
 
 The raygen kernel's arguments are the launch parameters. Like Warp's CUDA context,
 the OptiX context is implicit (one per device, configured through `wo.config`).
-`wo.Accel`, `wo.Pipeline`, and `wo.LaunchParams` release themselves when the last
+`wo.Accel` and `wo.Pipeline` release themselves when the last
 reference is dropped, or explicitly with `close()`/`with`. As with `wp.Mesh` and
 `wp.array`, device memory is freed in stream order; a pipeline's native OptiX objects
 are destroyed once its submitted launches have finished. Instances are written
 with `wo.make_instance()` and refit with `accel.refit()`. Initial instance builds
-validate child ids with a host readback; compaction also synchronizes. Refits and
+validate child ids with a host readback; compaction also synchronizes (once per
+`wo.compact` batch). Refits and
 launches remain asynchronous on the selected Warp stream.
 
 SBT records are built automatically. Hit groups, miss, and callable records can

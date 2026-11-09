@@ -28,6 +28,13 @@ def _entry_name(entry):
     return "(none)" if entry is None else getattr(entry, "program", entry).key
 
 
+def _ray_type_index(ray_types: tuple[str, ...], name: str) -> int:
+    try:
+        return ray_types.index(name)
+    except ValueError:
+        raise KeyError(f"Unknown ray type {name!r}; expected one of {ray_types}") from None
+
+
 @dataclass(frozen=True)
 class HitGroupHandle:
     """A group in one builder's layout; resolve its offset with ``SbtLayout.get_sbt_offset()``.
@@ -60,10 +67,7 @@ class SbtLayout:
         return len(self.ray_types)
 
     def ray_type_index(self, name: str) -> int:
-        try:
-            return self.ray_types.index(name)
-        except ValueError:
-            raise KeyError(f"Unknown ray type {name!r}; expected one of {self.ray_types}") from None
+        return _ray_type_index(self.ray_types, name)
 
     def get_sbt_offset(self, handle: HitGroupHandle) -> int:
         if not isinstance(handle, HitGroupHandle) or not any(handle is h for h in self.hit_groups):
@@ -78,7 +82,7 @@ class SbtLayout:
         for handle, kernels in zip(self.hit_groups, self._hit_kernels):
             for index, (ray, kernel) in enumerate(zip(self.ray_types, kernels)):
                 programs = [
-                    f"{label}={entry.key if isinstance(entry, wp.Kernel) else entry}"
+                    f"{label}={getattr(entry, 'key', entry)}"
                     for label, entry in (
                         ("CH", kernel.closest_hit),
                         ("AH", kernel.any_hit),
@@ -143,10 +147,7 @@ class SbtBuilder:
         return len(self.ray_types)
 
     def ray_type_index(self, name: str) -> int:
-        try:
-            return self.ray_types.index(name)
-        except ValueError:
-            raise KeyError(f"Unknown ray type {name!r}; expected one of {self.ray_types}") from None
+        return _ray_type_index(self.ray_types, name)
 
     def set_miss(self, ray_type: str, kernel: wp.Kernel | Record | None) -> None:
         self.ray_type_index(ray_type)
@@ -176,8 +177,6 @@ class SbtBuilder:
             label = f"Hit group {name!r}, ray type {ray!r}"
             if not isinstance(kernel, HitGroup):
                 raise TypeError(f"{label}: expected a warp_optix.HitGroup")
-            if kernel.intersection is not None and kernel.builtin is not None:
-                raise ValueError(f"{label}: custom and built-in intersection programs cannot be combined")
             try:
                 for entry in (kernel.closest_hit, kernel.any_hit, kernel.intersection):
                     _validate_entry(entry)

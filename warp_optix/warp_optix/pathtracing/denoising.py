@@ -68,7 +68,6 @@ class OptixDenoiser:
     ):
         if width < 1 or height < 1:
             raise ValueError("Denoiser input dimensions must be positive")
-        self._optix = native
         context, self.stream = resolve(device, stream)
         self.width, self.height = int(width), int(height)
         scale = 2 if upscale else 1
@@ -84,6 +83,9 @@ class OptixDenoiser:
             raise ValueError("output_size must match the denoised size, allowing one cropped pixel for 2x upscaling")
         self._denoiser = None
         self._history_valid = False
+        self._bindings = [None, None]
+        self._parity = 0
+        self._stream_handle = int(self.stream.cuda_stream)
         model_name = "DENOISER_MODEL_KIND_TEMPORAL_UPSCALE2X" if upscale else "DENOISER_MODEL_KIND_TEMPORAL_AOV"
         if not hasattr(native, model_name) or not hasattr(native.DenoiserParams(), "temporalModeUsePreviousLayers"):
             raise RuntimeError("OptiX temporal denoising requires updated PyOptiX denoiser bindings")
@@ -96,15 +98,12 @@ class OptixDenoiser:
                 self._denoiser = context.native.denoiserCreate(getattr(native, model_name), options)
                 sizes = self._denoiser.computeMemoryResources(self.width, self.height)
                 self._state = wp.empty(sizes.stateSizeInBytes, dtype=wp.uint8, device=device)
-                self._scratch = wp.empty(
-                    max(
-                        sizes.withoutOverlapScratchSizeInBytes,
-                        sizes.computeAverageColorSizeInBytes,
-                    ),
-                    dtype=wp.uint8,
-                    device=device,
-                )
+                self._scratch_size = max(sizes.withoutOverlapScratchSizeInBytes, sizes.computeAverageColorSizeInBytes)
+                # 2x upscaling from 1080p needs over 2 GiB of scratch, more elements than a uint8 array can hold.
+                self._scratch = wp.empty((self._scratch_size + 7) // 8, dtype=wp.uint64, device=device)
                 self._average_color = wp.empty(3, dtype=wp.float32, device=device)
+                self._params = native.DenoiserParams()
+                self._params.hdrAverageColor = self._average_color.ptr
                 self._flow = wp.empty((self.height, self.width), dtype=wp.vec2, device=device)
                 shape = (self.output_height, self.output_width)
                 self._output = wp.zeros(shape, dtype=wp.vec4, device=device)
@@ -125,14 +124,14 @@ class OptixDenoiser:
                     self._state.ptr,
                     self._state.size,
                     self._scratch.ptr,
-                    self._scratch.size,
+                    self._scratch_size,
                 )
             except Exception:
                 self.close()
                 raise
 
     def _image(self, array, pixel_format, *, pixel_stride=None, width=None, height=None):
-        image = self._optix.Image2D()
+        image = native.Image2D()
         image.data = array.ptr
         image.width = self.width if width is None else width
         image.height = self.height if height is None else height
@@ -141,10 +140,7 @@ class OptixDenoiser:
         image.format = pixel_format
         return image
 
-    def apply(self, inputs: DenoiserInputs, *, reset=False):
-        """Queue denoising and return the owned float4 Warp output array."""
-        if self._denoiser is None:
-            raise RuntimeError("OptiX denoiser is closed")
+    def _bind(self, inputs: DenoiserInputs):
         for name, dtype in (
             ("color", wp.vec4),
             ("normal", wp.vec4),
@@ -156,91 +152,116 @@ class OptixDenoiser:
                 raise ValueError(f"{name} must be a {dtype.__name__} array of shape {(self.height, self.width)}")
             if array.device != self.stream.device or not array.is_contiguous:
                 raise ValueError(f"{name} must be contiguous on {self.stream.device}")
-        optix = self._optix
-        stream = int(self.stream.cuda_stream)
-        with wp.ScopedStream(self.stream):
-            if reset or not self._history_valid:
+        guides = native.DenoiserGuideLayer()
+        guides.albedo = self._image(inputs.albedo, native.PIXEL_FORMAT_FLOAT3)
+        guides.normal = self._image(inputs.normal, native.PIXEL_FORMAT_FLOAT3)
+        guides.flow = self._image(self._flow, native.PIXEL_FORMAT_FLOAT2)
+        for field, buffer in (
+            ("previousOutputInternalGuideLayer", self._previous_guide),
+            ("outputInternalGuideLayer", self._output_guide),
+        ):
+            setattr(
+                guides,
+                field,
+                self._image(
+                    buffer,
+                    native.PIXEL_FORMAT_INTERNAL_GUIDE_LAYER,
+                    pixel_stride=self._guide_pixel_size,
+                    width=self.output_width,
+                    height=self.output_height,
+                ),
+            )
+        layer = native.DenoiserLayer()
+        layer.input = self._image(inputs.color, native.PIXEL_FORMAT_FLOAT4)
+        layer.output = self._image(
+            self._output,
+            native.PIXEL_FORMAT_FLOAT4,
+            width=self.output_width,
+            height=self.output_height,
+        )
+        layer.previousOutput = self._image(
+            self._previous_output,
+            native.PIXEL_FORMAT_FLOAT4,
+            width=self.output_width,
+            height=self.output_height,
+        )
+        flow = wp.launch(
+            _prepare_flow,
+            dim=(self.height, self.width),
+            inputs=[inputs.motion, self._flow],
+            device=self.stream.device,
+            record_cmd=True,
+        )
+        crop = None
+        if self._cropped_output is not None:
+            crop = wp.launch(
+                _crop_output,
+                dim=self._cropped_output.shape,
+                inputs=[self._output, self._cropped_output],
+                device=self.stream.device,
+                record_cmd=True,
+            )
+        key = (inputs.color, inputs.normal, inputs.albedo, inputs.motion)
+        return key, guides, layer, flow, crop
+
+    def apply(self, inputs: DenoiserInputs, *, reset=False):
+        """Queue denoising and return the owned float4 Warp output array."""
+        if self._denoiser is None:
+            raise RuntimeError("OptiX denoiser is closed")
+        # Recorded launches and native OptiX calls may change the current CUDA context.
+        # Preserve the caller's context without adding stream synchronization on every frame.
+        with wp.ScopedDevice(self.stream.device):
+            return self._apply(inputs, reset=reset)
+
+    def _apply(self, inputs: DenoiserInputs, *, reset):
+        # Output and history buffers swap every call, so each parity keeps its own native bindings.
+        binding = self._bindings[self._parity]
+        if (
+            binding is None
+            or binding[0][0] is not inputs.color
+            or binding[0][1] is not inputs.normal
+            or binding[0][2] is not inputs.albedo
+            or binding[0][3] is not inputs.motion
+        ):
+            binding = self._bindings[self._parity] = self._bind(inputs)
+        _, guides, layer, flow, crop = binding
+        stream = self._stream_handle
+        if reset or not self._history_valid:
+            with wp.ScopedStream(self.stream):
                 self._previous_guide.zero_()
                 self._previous_output.zero_()
-                self._history_valid = False
-            wp.launch(
-                _prepare_flow,
-                dim=(self.height, self.width),
-                inputs=[inputs.motion, self._flow],
-                stream=self.stream,
-            )
-            guides = optix.DenoiserGuideLayer()
-            guides.albedo = self._image(inputs.albedo, optix.PIXEL_FORMAT_FLOAT3)
-            guides.normal = self._image(inputs.normal, optix.PIXEL_FORMAT_FLOAT3)
-            guides.flow = self._image(self._flow, optix.PIXEL_FORMAT_FLOAT2)
-            for field, buffer in (
-                ("previousOutputInternalGuideLayer", self._previous_guide),
-                ("outputInternalGuideLayer", self._output_guide),
-            ):
-                setattr(
-                    guides,
-                    field,
-                    self._image(
-                        buffer,
-                        optix.PIXEL_FORMAT_INTERNAL_GUIDE_LAYER,
-                        pixel_stride=self._guide_pixel_size,
-                        width=self.output_width,
-                        height=self.output_height,
-                    ),
-                )
-            layer = optix.DenoiserLayer()
-            layer.input = self._image(inputs.color, optix.PIXEL_FORMAT_FLOAT4)
-            layer.output = self._image(
-                self._output,
-                optix.PIXEL_FORMAT_FLOAT4,
-                width=self.output_width,
-                height=self.output_height,
-            )
-            layer.previousOutput = self._image(
-                self._previous_output,
-                optix.PIXEL_FORMAT_FLOAT4,
-                width=self.output_width,
-                height=self.output_height,
-            )
-            params = optix.DenoiserParams()
-            params.hdrAverageColor = self._average_color.ptr
-            params.temporalModeUsePreviousLayers = int(self._history_valid)
-            self._denoiser.computeAverageColor(
-                stream,
-                layer.input,
-                self._average_color.ptr,
-                self._scratch.ptr,
-                self._scratch.size,
-            )
-            self._denoiser.invoke(
-                stream,
-                params,
-                self._state.ptr,
-                self._state.size,
-                guides,
-                layer,
-                1,
-                0,
-                0,
-                self._scratch.ptr,
-                self._scratch.size,
-            )
-            result = self._output
-            self._output, self._previous_output = self._previous_output, self._output
-            self._output_guide, self._previous_guide = (
-                self._previous_guide,
-                self._output_guide,
-            )
-            self._history_valid = True
-            if self._cropped_output is not None:
-                wp.launch(
-                    _crop_output,
-                    dim=self._cropped_output.shape,
-                    inputs=[result, self._cropped_output],
-                    stream=self.stream,
-                )
-                result = self._cropped_output
-            return result
+            self._history_valid = False
+        flow.launch(self.stream)
+        self._params.temporalModeUsePreviousLayers = int(self._history_valid)
+        self._denoiser.computeAverageColor(
+            stream,
+            layer.input,
+            self._average_color.ptr,
+            self._scratch.ptr,
+            self._scratch_size,
+        )
+        self._denoiser.invoke(
+            stream,
+            self._params,
+            self._state.ptr,
+            self._state.size,
+            guides,
+            layer,
+            1,
+            0,
+            0,
+            self._scratch.ptr,
+            self._scratch_size,
+        )
+        result = self._output
+        self._output, self._previous_output = self._previous_output, self._output
+        self._output_guide, self._previous_guide = self._previous_guide, self._output_guide
+        self._parity ^= 1
+        self._history_valid = True
+        if crop is not None:
+            crop.launch(self.stream)
+            result = self._cropped_output
+        return result
 
     def close(self):
         """Finish queued work and destroy the native denoiser."""
@@ -249,6 +270,7 @@ class OptixDenoiser:
             self._denoiser.destroy()
             self._denoiser = None
             self._history_valid = False
+            self._bindings = [None, None]
             for name in (
                 "_state",
                 "_scratch",
