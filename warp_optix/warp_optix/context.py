@@ -6,8 +6,8 @@
 Like Warp's CUDA context, the OptiX device context is implicit: each CUDA
 device gets one, created on first use with the settings in
 :mod:`warp_optix.config` and destroyed at interpreter exit. Resources
-(:class:`~warp_optix.Accel`, :class:`~warp_optix.Pipeline`,
-:class:`~warp_optix.LaunchParams`) hold a reference to their context.
+(:class:`~warp_optix.Accel`, :class:`~warp_optix.Pipeline`) hold a reference
+to their context.
 
 Lifetime contract (the same as ``wp.Mesh`` and ``wp.array``):
 
@@ -31,6 +31,7 @@ Lifetime contract (the same as ``wp.Mesh`` and ``wp.array``):
 from __future__ import annotations
 
 import atexit
+import functools
 import logging
 import threading
 import weakref
@@ -128,9 +129,27 @@ class Context:
         self._releases[:0] = waiting
 
     def check_arrays(self, values) -> None:
-        for value in _arrays(values):
-            if value.device != self.device:
+        """Check that arrays in ``values`` (including nested sequences and struct fields) are on this device."""
+        for value in values:
+            if isinstance(value, wp.array):
+                if value.device != self.device:
+                    raise ValueError("Array and OptiX resource must use the same CUDA device")
+            elif isinstance(value, (tuple, list)):
+                self.check_arrays(value)
+            elif wp.types.is_struct(value):
+                self._check_struct(value)
+
+    def _check_struct(self, instance) -> None:
+        arrays, structs = _struct_fields(instance._cls)
+        device = self.device
+        for name in arrays:
+            value = getattr(instance, name)
+            if value is not None and value.device != device:
                 raise ValueError("Array and OptiX resource must use the same CUDA device")
+        for name in structs:
+            value = getattr(instance, name)
+            if value is not None:
+                self._check_struct(value)
 
     def _shutdown(self) -> None:
         with wp.ScopedDevice(self.device):
@@ -203,14 +222,12 @@ def native_objects(context: Context):
             raise
 
 
-def _arrays(values):
-    for value in values:
-        if isinstance(value, wp.array):
-            yield value
-        elif isinstance(value, (tuple, list)):
-            yield from _arrays(value)
-        elif hasattr(value, "_cls") and hasattr(value._cls, "vars"):
-            yield from _arrays([getattr(value, name) for name in value._cls.vars])
+@functools.cache
+def _struct_fields(cls) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Names of the array fields and the struct fields of a Warp struct type."""
+    arrays = tuple(name for name, var in cls.vars.items() if wp.types.is_array(var.type))
+    structs = tuple(name for name, var in cls.vars.items() if isinstance(var.type, type(cls)))
+    return arrays, structs
 
 
 def _run(callback) -> None:

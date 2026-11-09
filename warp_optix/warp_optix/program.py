@@ -22,13 +22,11 @@ from __future__ import annotations
 
 import ast
 import enum
-import itertools
 
 import warp as wp
 
 PARAMS_ARG = "_wo_params"
 _INDEX_VAR = "_wo_launch_index"
-_PARAMS_IDS = itertools.count()
 
 
 class ProgramKind(enum.Enum):
@@ -72,7 +70,7 @@ def kernel_signature(kernel: wp.Kernel) -> dict[str, type]:
 def params_struct(kernel: wp.Kernel):
     """Return a Warp struct whose fields are ``kernel``'s arguments, in order."""
     signature = kernel_signature(kernel)
-    name = f"{_identifier(kernel.key)}_params_{next(_PARAMS_IDS)}"
+    name = f"{_identifier(kernel.key)}_params"
     cls = type(name, (), {"__annotations__": signature, "__module__": __name__, "__qualname__": name})
     return wp.struct(cls)
 

@@ -51,7 +51,7 @@ def test_public_surface():
         "HitKind",
         "Instance",
         "InstanceFlags",
-        "LaunchParams",
+        "Launch",
         "Pipeline",
         "PrimitiveType",
         "ProgramKind",

@@ -93,16 +93,16 @@ def test_use_after_close_raises_and_with_closes_on_exception():
     with pytest.raises(RuntimeError, match="closed"):
         wo.launch(pipeline, 1, [output])
     with pytest.raises(RuntimeError, match="closed"):
-        wo.LaunchParams(pipeline)
+        wo.launch(pipeline, 1, [output], record_cmd=True)
     with pytest.raises(RuntimeError, match="closed"):
         with pipeline:
             pass
 
     live = wo.Pipeline(write_value)
-    params = wo.LaunchParams(live)
+    recorded = wo.launch(live, 1, [output], record_cmd=True)
     live.close()
     with pytest.raises(RuntimeError, match="closed"):
-        params.assign([output])
+        recorded.launch()
 
     vertices, indices = geometry()
     with wo.Accel([wo.triangles(vertices, indices)], flags=wo.BuildFlags.ALLOW_UPDATE) as accel:
@@ -303,21 +303,28 @@ def test_pipeline_forgets_streams_whose_launches_finished(gate, explicit_params)
     pipeline = wo.Pipeline(write_value)
     output = wp.empty(1, dtype=float, device="cuda")
     if explicit_params:
-        params = wo.LaunchParams(pipeline)
-        params.assign([output])
-        arguments = {"params": params}
+        recorded = wo.launch(pipeline, 1, [output], record_cmd=True)
+        arguments = {}
     else:
         arguments = {"inputs": [output]}
     for _ in range(8):
-        wo.launch(pipeline, 1, **arguments, stream=wp.Stream("cuda"))
+        if explicit_params:
+            recorded.launch(stream=wp.Stream("cuda"))
+        else:
+            wo.launch(pipeline, 1, **arguments, stream=wp.Stream("cuda"))
         wp.synchronize()
     assert len(pipeline._streams) == 1
     assert len(pipeline._buffers) == (0 if explicit_params else 1)
 
     busy_stream = wp.Stream("cuda")
     pending = gate.block(busy_stream)
-    wo.launch(pipeline, 1, **arguments, stream=busy_stream)
-    wo.launch(pipeline, 1, **arguments, stream=wp.Stream("cuda"))
+    if explicit_params:
+        recorded.launch(stream=busy_stream)
+        # An independent recorded launch can use a new stream while this one is busy.
+        wo.launch(pipeline, 1, [output], record_cmd=True).launch(stream=wp.Stream("cuda"))
+    else:
+        wo.launch(pipeline, 1, **arguments, stream=busy_stream)
+        wo.launch(pipeline, 1, **arguments, stream=wp.Stream("cuda"))
     assert not pending.is_complete, "The gate expired before checking busy-stream retention"
     assert busy_stream.cuda_stream in pipeline._streams
     gate.open()
