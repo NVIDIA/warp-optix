@@ -164,13 +164,14 @@ def _rewrite_tid(fn: ast.FunctionDef, kind: ProgramKind) -> int:
                 raise TypeError("wp.tid() must be assigned to a single target")
             target = node.targets[0]
             names = target.elts if isinstance(target, ast.Tuple) else [target]
-            if len(names) > 3 or not all(isinstance(name, ast.Name) for name in names):
+            ids = [name.id for name in names if isinstance(name, ast.Name)]
+            if len(names) > 3 or len(ids) != len(names):
                 raise TypeError("OptiX launches support at most three wp.tid() dimensions")
-            ndim = len(names)
+            ndim = len(ids)
             if tid_ndim and tid_ndim != ndim:
                 raise TypeError("every wp.tid() call in a raygen program must unpack the same number of indices")
             tid_ndim = ndim
-            return [ast.parse(f"{name.id} = int({_INDEX_VAR}[{ndim - 1 - i}])").body[0] for i, name in enumerate(names)]
+            return [ast.parse(f"{name} = int({_INDEX_VAR}[{ndim - 1 - i}])").body[0] for i, name in enumerate(ids)]
 
         def visit_Call(self, node: ast.Call):
             if _is_tid_call(node):
