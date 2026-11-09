@@ -634,14 +634,13 @@ def test_tlas_refit_keeps_but_scene_rebuild_resets_temporal_history():
         def rebuild_tlas(self):
             self.refit_count += 1
 
-        def build(self, optix):
-            self.optix = optix
+        def build(self):
+            self.built = True
 
     scene = _Scene()
     api = PathTracer.__new__(PathTracer)
     api._viewer = SimpleNamespace(
         _scene=scene,
-        _optix=object(),
         _denoiser_reset_history=False,
         _prev_instance_transforms_valid=True,
         sample_index=17,
@@ -654,7 +653,7 @@ def test_tlas_refit_keeps_but_scene_rebuild_resets_temporal_history():
     assert (api._viewer.sample_index, api._viewer.frame_index) == (17, 9)
 
     api.build_scene()
-    assert scene.optix is api._viewer._optix
+    assert scene.built
     assert api._viewer.sample_index == 0
     assert api._viewer.frame_index == 0
     assert api._viewer._denoiser_reset_history is True

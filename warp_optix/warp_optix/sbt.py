@@ -24,6 +24,13 @@ def _entry_name(entry):
     return "(none)" if entry is None else entry.key
 
 
+def _ray_type_index(ray_types: tuple[str, ...], name: str) -> int:
+    try:
+        return ray_types.index(name)
+    except ValueError:
+        raise KeyError(f"Unknown ray type {name!r}; expected one of {ray_types}") from None
+
+
 @dataclass(frozen=True)
 class HitGroupHandle:
     """A group in one builder's layout; resolve its offset with ``SbtLayout.get_sbt_offset()``.
@@ -56,10 +63,7 @@ class SbtLayout:
         return len(self.ray_types)
 
     def ray_type_index(self, name: str) -> int:
-        try:
-            return self.ray_types.index(name)
-        except ValueError:
-            raise KeyError(f"Unknown ray type {name!r}; expected one of {self.ray_types}") from None
+        return _ray_type_index(self.ray_types, name)
 
     def get_sbt_offset(self, handle: HitGroupHandle) -> int:
         if not isinstance(handle, HitGroupHandle) or not any(handle is h for h in self.hit_groups):
@@ -139,10 +143,7 @@ class SbtBuilder:
         return len(self.ray_types)
 
     def ray_type_index(self, name: str) -> int:
-        try:
-            return self.ray_types.index(name)
-        except ValueError:
-            raise KeyError(f"Unknown ray type {name!r}; expected one of {self.ray_types}") from None
+        return _ray_type_index(self.ray_types, name)
 
     def set_miss(self, ray_type: str, kernel: wp.Kernel | None) -> None:
         self.ray_type_index(ray_type)
