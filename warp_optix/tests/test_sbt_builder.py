@@ -198,7 +198,7 @@ def test_gpu_named_ray_and_instance_dispatch(rays, use_snapshot):
     offsets = wp.array([layout.get_sbt_offset(glass), layout.get_sbt_offset(metal)], dtype=wp.uint32, device=device)
     records = wp.empty(2, dtype=wo.Instance, device=device)
     wp.launch(write_instances, dim=2, inputs=[gas.id, offsets, records], device=device)
-    ias = wo.Accel([wo.instances(records)], device=device)
+    ias = wo.Accel([wo.instances(records, [gas])], device=device)
     # Builder edits must not change the existing pipeline's layout or programs.
     builder.set_miss("radiance", shadow_miss)
     output = wp.zeros(6, dtype=wp.uint32, device=device)

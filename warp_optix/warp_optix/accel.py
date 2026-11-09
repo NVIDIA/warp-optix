@@ -5,10 +5,11 @@
 
 :class:`Accel` mirrors ``wp.Mesh``/``wp.Bvh``: construct it from build inputs,
 pass ``accel.id`` to kernels, and update it with :meth:`Accel.refit` or
-:meth:`Accel.rebuild`. Build inputs retain their device arrays. Initial
-instance builds validate child ids with a host readback; compaction also
-synchronizes (once per :func:`compact` batch). Refits remain asynchronous. See :mod:`warp_optix.context` for
-the lifetime contract.
+:meth:`Accel.rebuild`. Build inputs retain their device arrays. Instance
+structures keep the children listed in :func:`instances` alive and never read
+their GPU-written records back (unless ``config.verify_instances``). Only
+compaction synchronizes (once per :func:`compact` batch). See
+:mod:`warp_optix.context` for the lifetime contract.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import numpy as np
 import warp as wp
 from warp._src import context as _warp_context
 
-from warp_optix import native
+from warp_optix import config, native
 from warp_optix.context import CAPTURE_ERROR, resolve
 from warp_optix.enums import BuildFlags, GeometryFlags, PrimitiveType
 
@@ -149,6 +150,7 @@ class BuildInput:
     native: object
     arrays: tuple
     instance_records: wp.array | None = None
+    instance_children: tuple[Accel, ...] | None = None
     prepare: Callable[[wp.Stream], None] | None = None
 
     @property
@@ -371,14 +373,27 @@ def curves(
     return BuildInput(descriptor, (*point_keys, *width_keys, indices))
 
 
-def instances(records: wp.array) -> BuildInput:
-    """Instance input retaining its records; child ids must stay unchanged on refits."""
+def instances(records: wp.array, children: Sequence[Accel]) -> BuildInput:
+    """Instance input over ``records`` that reference structures in ``children``.
+
+    The instance structure keeps ``children`` alive, so they may be closed or
+    dropped while it is in use; builds never read the GPU-written records back
+    (set ``config.verify_instances`` to check them). Child ids must stay unchanged
+    on refits and rebuilds.
+    """
     if records.dtype is not Instance or not records.device.is_cuda or not records.is_contiguous:
         raise ValueError("records must be a contiguous CUDA array of Instance")
+    children = tuple(children)
+    for child in children:
+        if not isinstance(child, Accel):
+            raise TypeError("children must be warp_optix.Accel objects")
+        if child.device != records.device:
+            raise ValueError("children must be on the device of the records")
     return BuildInput(
         native.BuildInputInstanceArray(instances=records.ptr if records.size else 0, numInstances=records.size),
         (records,),
         instance_records=records,
+        instance_children=children,
     )
 
 
@@ -442,16 +457,15 @@ class Accel:
         with wp.ScopedDevice(context.device), wp.ScopedStream(stream, sync_enter=False):
             children = {}
             for item in inputs:
-                if item.instance_records is not None:
-                    # Validate GPU-written child ids once. Refits keep this topology.
-                    wp.synchronize_stream(stream)
-                    for child_id in np.unique(item.instance_records.numpy()["traversable"]):
-                        if child_id == 0:
-                            continue
-                        child = context._accels.get(int(child_id))
-                        if child is None:
-                            raise ValueError("Instance children must be live acceleration structures on this device")
-                        children[int(child_id)] = child._memory
+                if item.instance_children is not None:
+                    for child in item.instance_children:
+                        child._check_open()
+                        children[child._id] = child._memory
+                    if config.verify_instances:
+                        wp.synchronize_stream(stream)
+                        child_ids = np.unique(item.instance_records.numpy()["traversable"]).tolist()
+                        if any(child_id and child_id not in children for child_id in child_ids):
+                            raise ValueError("Instance records reference a structure missing from children")
                 if item.prepare is not None:
                     item.prepare(stream)
             sizes = context.native.accelComputeMemoryUsage(options, native_inputs)
@@ -491,7 +505,6 @@ class Accel:
         # Retain every level of instance memory even when child objects are closed.
         self._memory = (buffer, *children.values())
         self._closed = False
-        context._accels[self._id] = self
         if compact:
             _compact([self], context, stream)
 
@@ -531,8 +544,6 @@ class Accel:
         if self._closed:
             return
         self._closed = True
-        if self._context._accels.get(self._id) is self:
-            del self._context._accels[self._id]
         self._buffer = self._scratch = self._compacted_size = None
         self._inputs = self._memory = ()
 
@@ -590,17 +601,7 @@ class Accel:
                     else [native.AccelEmitDesc(self._compacted_size, native.PROPERTY_TYPE_COMPACTED_SIZE)],
                 )
             )
-        self._replace_id(handle)
-
-    def _replace_id(self, handle: int) -> None:
-        handle = int(handle)
-        if handle == self._id:
-            return
-        context = self._context
-        if context._accels.get(self._id) is self:
-            del context._accels[self._id]
-        self._id = handle
-        context._accels[handle] = self
+        self._id = int(handle)
 
 
 def compact(accels: Sequence[Accel], stream: wp.Stream | None = None) -> None:
@@ -637,7 +638,7 @@ def _compact(accels: list[Accel], context, stream: wp.Stream) -> None:
         for accel, size in zip(accels, host_sizes.numpy().tolist(), strict=True):
             if size < accel._buffer.size:
                 output = wp.empty(size, dtype=wp.uint8, device=device)
-                accel._replace_id(context.native.accelCompact(stream.cuda_stream, accel._id, output.ptr, size))
+                accel._id = int(context.native.accelCompact(stream.cuda_stream, accel._id, output.ptr, size))
                 accel._buffer = output
                 accel._memory = (output, *accel._memory[1:])
             accel._compacted = True
