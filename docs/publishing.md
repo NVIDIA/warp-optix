@@ -65,7 +65,9 @@ Version 0.2.0 was published manually. Do not rebuild or replace its existing whe
 Use an unused version for the next release, for example 0.2.1 or 0.2.1a1.
 
 1. In a release preparation branch, update `[project].version` in `pyproject.toml`
-   and run `uv lock`. Review and merge those changes into `main`.
+   and run `uv lock`. Review and merge those changes into `main`. `pyproject.toml`
+   is the only place the version is set; `warp_optix.__version__` reads it from
+   the installed distribution metadata.
 2. Confirm the version is unused on PyPI, then update your local `main`:
 
    ```powershell

@@ -1719,7 +1719,7 @@ class Scene:
         )
         if self._ias is None:
             self._ias = wo.Accel(
-                [wo.instances(self._instance_records)],
+                [wo.instances(self._instance_records, self._gas)],
                 flags=wo.BuildFlags.ALLOW_UPDATE,
                 device=self.device,
                 stream=stream,

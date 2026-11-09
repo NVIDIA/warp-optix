@@ -17,6 +17,7 @@ def test_import_boundary_in_fresh_process(tmp_path):
             "-c",
             """
 import sys
+from importlib.metadata import version
 
 import warp_optix as wo
 import warp as wp
@@ -25,7 +26,7 @@ assert 'warp_nn' not in sys.modules
 assert 'pyglet' not in sys.modules
 assert 'imgui_bundle' not in sys.modules
 assert wp._src.context.runtime is None
-assert wo.__version__ == '0.2.0'
+assert wo.__version__ == version('warp-optix')
 from warp_optix import native
 assert native.version() == (9, 1, 0)
 assert native.DeviceContext is optix.DeviceContext
