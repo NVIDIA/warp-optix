@@ -246,8 +246,8 @@ pipeline.update_sbt_data()  # re-upload every record's data; no rebuild
 Records in one section (miss, hit group, callables) may use different struct types; the
 section's stride fits the largest. The device does not check the type, so load the type that
 was stored. Arrays referenced by record data stay alive with the pipeline, and must be on its
-device. `update_sbt_data(stream=None)` copies like `wp.copy` from host memory, ordered with
-launches on that stream.
+device. `update_sbt_data(stream=None)` is ordered with launches on that stream, like writing a
+`wp.array`, and does not wait on the host.
 
 ### Explicit SBT layouts
 

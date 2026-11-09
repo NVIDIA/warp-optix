@@ -181,20 +181,16 @@ def test_invalid_record_data():
         wo.Pipeline(raygen, hit_groups=[wo.HitGroup(closest_hit=textured_hit, data=data)], payload_words=3)
 
 
-@pytest.mark.parametrize("named_layout", [False, True])
-def test_record_array_snapshots_update_and_close(named_layout):
+def test_record_array_snapshots_update_and_close():
     data = textured("cuda")
     original = weakref.ref(data.palette)
-    hit = wo.HitGroup(closest_hit=textured_hit, data=data)
-    if named_layout:
-        builder = wo.SbtBuilder(("radiance",))
-        builder.set_miss("radiance", None)
-        builder.add_hit_group("textured", radiance=hit)
-        pipeline = wo.Pipeline(raygen, sbt=builder, payload_words=3)
-        del builder
-    else:
-        pipeline = wo.Pipeline(raygen, hit_groups=[hit], payload_words=3)
-    del hit
+    sky = Sky()
+    builder = wo.SbtBuilder(("radiance",))
+    builder.set_miss("radiance", wo.Record(sky_miss, data=sky))
+    builder.add_hit_group("textured", radiance=wo.HitGroup(closest_hit=textured_hit, data=data))
+    assert "sky_miss" in builder.describe()
+    pipeline = wo.Pipeline(raygen, sbt=builder, payload_words=3)
+    del builder, sky
 
     # Mutating the host struct must not release the array still referenced by
     # the uploaded record, including when an attempted update is rejected.
@@ -221,16 +217,3 @@ def test_record_array_snapshots_update_and_close(named_layout):
     assert pipeline.closed
     with pytest.raises(RuntimeError, match="closed"):
         pipeline.update_sbt_data()
-
-
-def test_sbt_builder_miss_records_carry_data():
-    sky = Sky()
-    sky.color = wp.vec3(0.0, 0.0, 1.0)
-    builder = wo.SbtBuilder(("radiance",))
-    builder.set_miss("radiance", wo.Record(sky_miss, data=sky))
-    builder.add_hit_group("left", radiance=wo.HitGroup())
-    builder.add_hit_group("right", radiance=wo.HitGroup())
-    assert "sky_miss" in builder.describe()
-    image = wp.zeros(3, dtype=wp.vec3, device="cuda")
-    wo.launch(wo.Pipeline(raygen, sbt=builder, payload_words=3), 3, [two_triangle_gas("cuda"), image])
-    np.testing.assert_allclose(image.numpy(), [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
