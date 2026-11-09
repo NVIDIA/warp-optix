@@ -166,8 +166,6 @@ class SbtBuilder(_RayTypes):
             label = f"Hit group {name!r}, ray type {ray!r}"
             if not isinstance(kernel, HitGroup):
                 raise TypeError(f"{label}: expected a warp_optix.HitGroup")
-            if kernel.intersection is not None and kernel.builtin is not None:
-                raise ValueError(f"{label}: custom and built-in intersection programs cannot be combined")
             try:
                 for entry in (kernel.closest_hit, kernel.any_hit, kernel.intersection):
                     _validate_entry(entry)

@@ -28,29 +28,25 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(FetchContent)
 include(CheckOptixVersion)
 
-# Use the dependency pin as the SDK version for fetching and validation.
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/pyproject.toml" _project_metadata)
-string(REGEX MATCH "\"pyoptix==([0-9]+\\.[0-9]+\\.[0-9]+)\""
-       _pyoptix_requirement "${_project_metadata}")
-if(NOT _pyoptix_requirement)
-  message(FATAL_ERROR "warp-optix requires an exact pyoptix SDK version pin in pyproject.toml")
-endif()
-set(WARP_OPTIX_OPTIX_VERSION "${CMAKE_MATCH_1}")
-
 # The headers are fetched as an archive of an immutable commit and verified
 # against a SHA512 hash, so a moved tag or tampered download fails the build
 # instead of compiling unverified code. The header digest also covers local
 # copies supplied through FETCHCONTENT_SOURCE_DIR_OPTIX_HEADERS. Update all
-# values together with the pyoptix pin (the commit is what the optix-dev tag
-# v<version> points to).
-set(_optix_headers_version "9.1.0")
+# values together when the pyoptix pin moves to a new OptiX SDK (the commit is
+# what the optix-dev tag v<version> points to). PyOptiX releases are numbered
+# after the SDK they wrap, so pyoptix 9.1.x wraps OptiX 9.1.0.
+set(WARP_OPTIX_OPTIX_VERSION "9.1.0")
 set(_optix_headers_commit "f1f6dd803f3159992d248178f6e09421c6eb8b6d")
 set(_optix_headers_sha512 "54f98235206d0156552f8004438c072e0796c16d75a2cb9abc0367ce5d00b281d2ec34173316bf8c34e81e302bc0042f1dcbe3d17ac7a0ee980a14493991d7a1")
 set(_optix_headers_digest "119d657b3401b5ce5b1e81115c0f181b75d83a9a57811fa0a1ebc9edb4f68a58")
-if(NOT WARP_OPTIX_OPTIX_VERSION VERSION_EQUAL _optix_headers_version)
+
+string(REGEX MATCH "^[0-9]+\\.[0-9]+" _optix_major_minor "${WARP_OPTIX_OPTIX_VERSION}")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/pyproject.toml" _project_metadata)
+string(REGEX MATCH "\"pyoptix==([0-9]+\\.[0-9]+)\\.[0-9]+\"" _pyoptix_requirement "${_project_metadata}")
+if(NOT _pyoptix_requirement OR NOT CMAKE_MATCH_1 STREQUAL _optix_major_minor)
   message(FATAL_ERROR
-    "pyoptix==${WARP_OPTIX_OPTIX_VERSION} requires updating the pinned OptiX "
-    "headers commit and hash in CMakeLists.txt (currently ${_optix_headers_version})")
+    "The pyoptix pin in pyproject.toml must wrap OptiX ${WARP_OPTIX_OPTIX_VERSION}; "
+    "update the pinned OptiX headers commit and hashes in CMakeLists.txt together with it")
 endif()
 
 message(STATUS "Fetching OptiX headers from NVIDIA/optix-dev@${_optix_headers_commit}...")
@@ -71,10 +67,22 @@ target_include_directories(OptiX::OptiX INTERFACE ${optix_headers_SOURCE_DIR}/in
 
 message(STATUS "Using OptiX headers from: ${optix_headers_SOURCE_DIR}/include")
 
-# Find CUDA Toolkit (required for CUDA runtime)
-if(NOT TARGET CUDA::cuda_driver)
-  find_package(CUDAToolkit 10.0 REQUIRED)
-endif()
+# The OptiX function table includes cuda.h for driver API types. The extension
+# resolves the one driver function it calls at runtime, so it links no CUDA
+# library and needs no CUDA Toolkit: the header comes from the
+# nvidia-cuda-runtime-cu12 build requirement, or from CUDA_PATH when set.
+execute_process(
+    COMMAND "${Python_EXECUTABLE}" -c
+            "import nvidia.cuda_runtime, pathlib; print(pathlib.Path(nvidia.cuda_runtime.__path__[0], 'include').as_posix())"
+    OUTPUT_VARIABLE _cuda_runtime_wheel_include
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+# Isolated build environments are temporary, so search again on every configure.
+unset(WARP_OPTIX_CUDA_INCLUDE_DIR CACHE)
+find_path(WARP_OPTIX_CUDA_INCLUDE_DIR cuda.h
+          HINTS "${_cuda_runtime_wheel_include}" "$ENV{CUDA_PATH}/include"
+          REQUIRED)
+message(STATUS "Using cuda.h from: ${WARP_OPTIX_CUDA_INCLUDE_DIR}")
 
 #------------------------------------------------------------------------------
 # Main build
@@ -86,11 +94,11 @@ set_target_properties(_ext PROPERTIES
     VISIBILITY_INLINES_HIDDEN ON
 )
 
+target_include_directories(_ext SYSTEM PRIVATE "${WARP_OPTIX_CUDA_INCLUDE_DIR}")
 target_link_libraries(_ext PRIVATE
     OptiX::OptiX
-    CUDA::cuda_driver
-    CUDA::cudart
     pybind11::headers
+    ${CMAKE_DL_LIBS}
 )
 
 

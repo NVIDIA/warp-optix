@@ -22,13 +22,11 @@ from __future__ import annotations
 
 import ast
 import enum
-import itertools
 
 import warp as wp
 
 PARAMS_ARG = "_wo_params"
 _INDEX_VAR = "_wo_launch_index"
-_PARAMS_IDS = itertools.count()
 
 
 class ProgramKind(enum.Enum):
@@ -72,7 +70,7 @@ def kernel_signature(kernel: wp.Kernel) -> dict[str, type]:
 def params_struct(kernel: wp.Kernel):
     """Return a Warp struct whose fields are ``kernel``'s arguments, in order."""
     signature = kernel_signature(kernel)
-    name = f"{_identifier(kernel.key)}_params_{next(_PARAMS_IDS)}"
+    name = f"{_identifier(kernel.key)}_params"
     cls = type(name, (), {"__annotations__": signature, "__module__": __name__, "__qualname__": name})
     return wp.struct(cls)
 
@@ -99,9 +97,9 @@ def as_program(kernel: wp.Kernel, kind: ProgramKind, params, module: str) -> wp.
     fn = tree.body[0]
     if not isinstance(fn, ast.FunctionDef):
         raise TypeError(f"kernel '{kernel.key}' source is not a function definition")
-    uses_tid = _rewrite_tid(fn, kind)
+    tid_ndim = _rewrite_tid(fn, kind)
     bindings = [ast.parse(f"{name} = {PARAMS_ARG}.{name}").body[0] for name in kernel_signature(kernel)]
-    index = [ast.parse(f"{_INDEX_VAR} = wp.optix_get_launch_index()").body[0]] if uses_tid else []
+    index = [ast.parse(f"{_INDEX_VAR} = wp.optix_get_launch_index()").body[0]] if tid_ndim else []
     fn.body = bindings + index + fn.body
     fn.decorator_list = []
     fn.args = ast.arguments(posonlyargs=[], args=[ast.arg(PARAMS_ARG)], kwonlyargs=[], kw_defaults=[], defaults=[])
@@ -122,13 +120,15 @@ def as_program(kernel: wp.Kernel, kind: ProgramKind, params, module: str) -> wp.
     program.__qualname__ = fn.name
 
     options = dict(kernel.options) | {"entry_point_abi": "external_constant_params", "enable_backward": False}
-    return wp.Kernel(
+    result = wp.Kernel(
         program,
         key=f"{kind.value}{_identifier(kernel.key)}",
         module=wp.get_module(module),
         options=options,
         source=source,
     )
+    result._wo_tid_ndim = tid_ndim
+    return result
 
 
 def _identifier(key: str) -> str:
@@ -144,17 +144,18 @@ def _is_tid_call(node: ast.AST) -> bool:
     )
 
 
-def _rewrite_tid(fn: ast.FunctionDef, kind: ProgramKind) -> bool:
-    """Replace ``a, b = wp.tid()`` with reads of the OptiX launch index.
+def _rewrite_tid(fn: ast.FunctionDef, kind: ProgramKind) -> int:
+    """Replace ``a, b = wp.tid()`` with reads of the OptiX launch index; return the index count (0 if unused).
 
     Warp's ``dim=(d0, d1, d2)`` maps to an OptiX launch of ``(d2, d1, d0)`` so
-    that the fastest-varying Warp index is OptiX's ``x``.
+    that the fastest-varying Warp index is OptiX's ``x``. This matches
+    ``wp.tid()`` only when the launch has as many dimensions as indices are unpacked.
     """
-    uses_tid = False
+    tid_ndim = 0
 
     class Rewriter(ast.NodeTransformer):
         def visit_Assign(self, node: ast.Assign):
-            nonlocal uses_tid
+            nonlocal tid_ndim
             if not _is_tid_call(node.value):
                 return self.generic_visit(node)
             if kind is not ProgramKind.RAYGEN:
@@ -165,8 +166,10 @@ def _rewrite_tid(fn: ast.FunctionDef, kind: ProgramKind) -> bool:
             names = target.elts if isinstance(target, ast.Tuple) else [target]
             if len(names) > 3 or not all(isinstance(name, ast.Name) for name in names):
                 raise TypeError("OptiX launches support at most three wp.tid() dimensions")
-            uses_tid = True
             ndim = len(names)
+            if tid_ndim and tid_ndim != ndim:
+                raise TypeError("every wp.tid() call in a raygen program must unpack the same number of indices")
+            tid_ndim = ndim
             return [ast.parse(f"{name.id} = int({_INDEX_VAR}[{ndim - 1 - i}])").body[0] for i, name in enumerate(names)]
 
         def visit_Call(self, node: ast.Call):
@@ -175,4 +178,4 @@ def _rewrite_tid(fn: ast.FunctionDef, kind: ProgramKind) -> bool:
             return self.generic_visit(node)
 
     Rewriter().visit(fn)
-    return uses_tid
+    return tid_ndim

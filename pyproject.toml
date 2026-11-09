@@ -2,6 +2,8 @@
 requires = [
     "scikit-build-core>=0.12",
     "pybind11>=3.0,<4",
+    # Supplies cuda.h for the build only. The extension links no CUDA library.
+    "nvidia-cuda-runtime-cu12==12.9.79",
 ]
 build-backend = "scikit_build_core.build"
 
@@ -27,9 +29,10 @@ classifiers = [
     "Topic :: Multimedia :: Graphics :: 3D Rendering",
     "Topic :: Scientific/Engineering :: Visualization",
     "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
 ]
 
-dependencies = ["pyoptix==9.1.0", "warp-lang>=1.17", "numpy>=1.20"]
+dependencies = ["pyoptix==9.1.1", "warp-lang>=1.17", "numpy>=1.20"]
 
 [project.optional-dependencies]
 training = ["warp-nn>=0.3.1"]
@@ -67,6 +70,28 @@ sdist.exclude = [
     ".claude", ".agents", ".codex", ".aws", ".venv", "env", "build", "dist",
     "third_party", "*.bmp", "**/*.egg-info", "**/.pytest_cache",
 ]
+
+# Wheels are built by .github/workflows/gpu-platform.yml.
+[tool.cibuildwheel]
+# Keep in sync with requires-python.
+build = ["cp312-*"]
+# The NVIDIA driver and PyOptiX do not support musl.
+skip = ["*-musllinux_*"]
+build-verbosity = 1
+
+[tool.cibuildwheel.linux]
+archs = ["x86_64"]
+# PyOptiX publishes manylinux_2_28 wheels.
+manylinux-x86_64-image = "manylinux_2_28"
+# The extension loads the NVIDIA driver at runtime and links no CUDA library.
+# Never bundle the driver of the build machine should a link to it be added.
+repair-wheel-command = "auditwheel repair --exclude libcuda.so.1 -w {dest_dir} {wheel}"
+
+[tool.cibuildwheel.windows]
+archs = ["AMD64"]
+# Bundle nothing: the NVIDIA driver and the Visual C++ Redistributable come
+# from the user's machine.
+repair-wheel-command = ""
 
 [tool.pytest.ini_options]
 testpaths = ["warp_optix/tests"]
