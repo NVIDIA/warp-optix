@@ -18,7 +18,6 @@
 from __future__ import annotations
 
 import logging
-import sys
 from collections.abc import Iterable
 
 import numpy as np
@@ -90,10 +89,6 @@ class PathTracer:
         )
         self._built = False
         self._running = True
-        self._init_error: str | None = None
-
-    def _build_init_error_message(self) -> str:
-        return f"PathTracer initialization failed (python executable: {sys.executable})"
 
     @property
     def viewer(self) -> Renderer:
@@ -280,20 +275,18 @@ class PathTracer:
         self._viewer._tonemapper.saturation = max(0.0, float(value))
 
     def _require_scene(self):
-        """Ensure an initialized scene is available or raise a clear error."""
         if self._viewer._scene is None:
-            ok = self.initialize()
-            if (not ok) or self._viewer._scene is None:
-                raise RuntimeError(self._init_error or self._build_init_error_message())
+            self.initialize()
+            if self._viewer._scene is None:
+                raise RuntimeError("The path tracer is closed")
         return self._viewer._scene
 
     def initialize(self) -> bool:
-        if self._built:
-            return True
-        self._built = bool(self._viewer.build())
+        """Build the renderer once; failures raise."""
         if not self._built:
-            self._init_error = self._build_init_error_message()
-        return self._built
+            self._viewer.build()
+            self._built = True
+        return True
 
     def is_running(self) -> bool:
         return self._running
