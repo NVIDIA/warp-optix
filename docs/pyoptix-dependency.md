@@ -52,7 +52,7 @@ When updating PyOptiX:
 5. Inspect wheels: `warp_optix/_ext` is expected; `warp_optix/_bindings`,
    `optix/_optix`, and a top-level replacement `optix` package are not.
 
-Runnable samples live in `examples_warp/`; dependency and supplemental-binding regressions live
+Runnable samples live in `examples/`; dependency and supplemental-binding regressions live
 in `warp_optix/tests`. Licenses for extracted binding code are retained.
 OptiX SDK 9.1.0 headers are fetched for compilation and installed unmodified
 under `warp_optix/include`, together with the upstream SDK license, in every

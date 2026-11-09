@@ -193,12 +193,6 @@ default Warp module is rejected for the same reason. Pipeline construction
 rejects a declared stage that disagrees with its slot. Undecorated Warp kernels
 continue to get their stage from their pipeline slot.
 
-Compare `examples_warp/example_warp_optix_kernels.py` with
-`examples_warp/example_warp_optix_explicit_params.py`: both compute the same
-output; the latter uses a shared schema, stage declarations, named SBT layout,
-and separate buffers on separate streams.
-
-
 ### SBT layouts
 
 `wo.SbtLayout(ray_types=("radiance",), miss=None, hit_groups={"default": wo.HitGroup()})` is the
@@ -238,8 +232,8 @@ Records are group-major and ray-type-minor in mapping order. Pass `get_sbt_offse
 Warp kernel that writes instances with `wo.make_instance()` (or use it as the GAS's offset), and
 trace with `sbt_offset=ray_type_index(name)`, `sbt_stride=trace_stride`, and
 `miss_index=ray_type_index(name)`. Offsets and strides count records, not bytes.
-`pipeline.sbt_layout` returns the layout. See `examples_warp/example_warp_optix_mixed_geometry.py`
-for a complete example.
+`pipeline.sbt_layout` returns the layout. See `examples/example_mixed_geometry.py` for a complete
+example.
 
 ### Per-record SBT data
 
@@ -278,6 +272,7 @@ section's stride fits the largest. The device does not check the type, so load t
 was stored. Arrays referenced by record data stay alive with the pipeline, and must be on its
 device. `update_sbt_data(stream=None)` is ordered with launches on that stream, like writing a
 `wp.array`, and does not wait on the host.
+
 
 `wo.ProgramKind` names the program kinds and their OptiX entry-name prefixes. Flags are typed
 enums usable both on the host and inside kernels (Warp supports `IntEnum`/`IntFlag` in kernels):
@@ -568,6 +563,15 @@ HDR textures can be enabled explicitly with
 `log_mesh` adapter currently maps vertex colors and PBR values but does not
 ingest its optional texture argument.
 
+The USD loader composes references, payloads, and instance proxies, triangulates
+polygon meshes, and imports UVs, normals, material subsets, DDS textures, and UDIM
+sets. It does not tessellate subdivision surfaces or import curves, point
+instancers, camera animation, or lights other than DomeLight.
+
+Triangle backfaces are culled for camera, bounce, and shadow rays by default.
+Pass `backface_culling=False` to `PathTracer` or `ViewerBackend`, or call
+`set_backface_culling(False)`, for two-sided traversal.
+
 `PathTracer` submits ray-tracing launches directly on its rendering stream.
 OptiX launch capture is unsupported; `enable_cuda_graphs` logs a diagnostic
 and uses asynchronous launches. USD transform/TLAS device updates remain
@@ -651,7 +655,7 @@ gl_viewer.set_draw_overlay(draw_contacts)
 
 Call `set_depth_buffer(api.linear_depth_output)` after a path-tracer resize and
 `close()` while the OpenGL context is current. See
-`examples_warp/example_warp_optix_pathtraced_contact_lines.py` for 100k
+`examples/example_pathtracing.py --scene contact_lines` for 100k
 contacts with a changing count and fully shuffled ordering.
 
 The high-level curve API also accepts native cubic Bézier segments. Their
@@ -664,7 +668,10 @@ api.create_instance(curve)
 ```
 
 Omitting indices requires `3*N + 1` control points and creates starts
-`0, 3, 6, ...`; explicit starts can pack disjoint strands in one geometry.
+`0, 3, 6, ...`; explicit starts can pack disjoint strands in one geometry. The
+default `basis="linear"` makes each consecutive point pair a segment.
+`material_ids` optionally assigns one material per segment; `create_mesh`
+accepts the per-triangle equivalent.
 
 USD loads also retain a path-addressable transform hierarchy instead of
 baking composed transforms into vertices:
@@ -743,8 +750,7 @@ when direct registration is unavailable.
 - `warp_optix/gl/` — optional OpenGL interop viewer and line overlay.
 - `warp_optix/pathtracing/` — the path tracer.
 
-See `examples_warp/` for complete programs: `example_warp_optix_kernels.py` (minimal pipeline),
-`example_warp_optix_curves.py` (built-in curves), `example_warp_optix_mixed_geometry.py`
-(triangles, curves, and custom primitives under GPU-written instances),
-`example_warp_optix_motion_blur.py` (vertex motion keys), and
-`example_warp_optix_tiny_raytracer.py` (interactive viewer).
+See [`examples/`](../examples/README.md) for complete programs: `example_minimal.py` (minimal pipeline),
+`example_curves.py` (built-in curves), `example_mixed_geometry.py` (triangles, curves, and
+custom primitives under GPU-written instances), `example_motion_blur.py` (vertex motion keys),
+and `example_raytracing.py` (Cornell box with an interactive viewer).

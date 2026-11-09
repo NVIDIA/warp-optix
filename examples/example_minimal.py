@@ -13,11 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Minimal OptiX pipeline built from ordinary Warp kernels.
+"""Example Minimal
 
-The raygen kernel's arguments become the launch parameters. The miss kernel
-binds the raygen argument ``scale`` by name. Tracing against a null traversable
-always invokes the miss program, so no acceleration structure is needed.
+Smallest complete OptiX pipeline: the raygen and miss programs are ordinary
+Warp kernels, and the raygen arguments are the launch parameters. Tracing
+against a null traversable always invokes the miss program.
+
+Runs:
+- `python examples/example_minimal.py`
 """
 
 import numpy as np

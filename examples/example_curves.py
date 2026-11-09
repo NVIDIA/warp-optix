@@ -1,7 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Render a varying-width native OptiX round-linear curve with Warp shaders."""
+"""Example Curves
+
+Renders a varying-width curve with OptiX's built-in round-linear curve
+intersector and writes a BMP image.
+
+Runs:
+- `python examples/example_curves.py`
+"""
 
 from __future__ import annotations
 
@@ -94,16 +101,12 @@ def curve_closest_hit(curve_vertices: wp.array[wp.vec3], curve_indices: wp.array
 
 def _save_bmp(path: Path, pixels: np.ndarray) -> None:
     height, width = pixels.shape
-    bgr = np.stack(((pixels >> 16) & 0xFF, (pixels >> 8) & 0xFF, pixels & 0xFF), axis=-1).astype(np.uint8)
-    row_stride = (width * 3 + 3) & ~3
-    pixel_data_size = row_stride * height
-    padding = b"\x00" * (row_stride - width * 3)
-    with path.open("wb") as output:
-        output.write(struct.pack("<2sIHHI", b"BM", 54 + pixel_data_size, 0, 0, 54))
-        output.write(struct.pack("<IiiHHIIiiII", 40, width, height, 1, 24, 0, pixel_data_size, 0, 0, 0, 0))
-        for row in bgr:
-            output.write(row.tobytes())
-            output.write(padding)
+    rows = np.stack((pixels >> 16, pixels >> 8, pixels), axis=-1).astype(np.uint8).reshape(height, width * 3)
+    rows = np.pad(rows, ((0, 0), (0, -width * 3 % 4)))  # BMP rows are 4-byte aligned
+    header = struct.pack(
+        "<2sIHHIIiiHHIIiiII", b"BM", 54 + rows.size, 0, 0, 54, 40, width, height, 1, 24, 0, rows.size, 0, 0, 0, 0
+    )
+    path.write_bytes(header + rows.tobytes())
 
 
 def main() -> None:

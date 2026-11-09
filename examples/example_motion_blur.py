@@ -1,7 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Render vertex motion blur by tracing several shutter times per pixel."""
+"""Example Motion Blur
+
+Builds a two-key vertex motion acceleration structure and traces several
+shutter times per pixel. The top triangle moves; the bottom one is a static
+reference. Writes a BMP image.
+
+Runs:
+- `python examples/example_motion_blur.py`
+"""
 
 from __future__ import annotations
 
@@ -93,16 +101,12 @@ def closest_hit():
 
 def _save_bmp(path: Path, pixels: np.ndarray) -> None:
     height, width = pixels.shape
-    bgr = np.stack(((pixels >> 16) & 0xFF, (pixels >> 8) & 0xFF, pixels & 0xFF), axis=-1).astype(np.uint8)
-    row_stride = (width * 3 + 3) & ~3
-    pixel_data_size = row_stride * height
-    padding = b"\x00" * (row_stride - width * 3)
-    with path.open("wb") as output:
-        output.write(struct.pack("<2sIHHI", b"BM", 54 + pixel_data_size, 0, 0, 54))
-        output.write(struct.pack("<IiiHHIIiiII", 40, width, height, 1, 24, 0, pixel_data_size, 0, 0, 0, 0))
-        for row in bgr:
-            output.write(row.tobytes())
-            output.write(padding)
+    rows = np.stack((pixels >> 16, pixels >> 8, pixels), axis=-1).astype(np.uint8).reshape(height, width * 3)
+    rows = np.pad(rows, ((0, 0), (0, -width * 3 % 4)))  # BMP rows are 4-byte aligned
+    header = struct.pack(
+        "<2sIHHIIiiHHIIiiII", b"BM", 54 + rows.size, 0, 0, 54, 40, width, height, 1, 24, 0, rows.size, 0, 0, 0, 0
+    )
+    path.write_bytes(header + rows.tobytes())
 
 
 def main() -> None:
@@ -117,7 +121,7 @@ def main() -> None:
         parser.error("--samples must be at least 1")
 
     with wp.ScopedDevice(args.device):
-        # Two motion keys: the top triangle slides from left to right over the shutter interval.
+        # The top triangle slides from left to right between the two motion keys.
         moving = np.array([[-0.38, 0.12, 0.0], [0.38, 0.12, 0.0], [0.0, 0.92, 0.0]], dtype=np.float32)
         static = np.array([[-0.38, -1.0, 0.0], [0.38, -1.0, 0.0], [0.0, -0.20, 0.0]], dtype=np.float32)
         keys = [wp.array(np.concatenate((moving + [dx, 0.0, 0.0], static)), dtype=wp.vec3) for dx in (-1.15, 1.15)]
@@ -137,7 +141,6 @@ def main() -> None:
         pixels = image.numpy()
         _save_bmp(args.output, pixels)
         print(f"Wrote {args.output} (checksum {int(np.bitwise_xor.reduce(pixels, axis=None)):#010x})")
-        print("Top: moving triangle. Bottom: static reference.")
 
 
 if __name__ == "__main__":

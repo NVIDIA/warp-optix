@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Original procedural chess geometry and textures; no external assets required.
+"""Procedural chess set with wood textures, generated with NumPy.
 
 Coordinates are in board-square units, with Y up. Components are closed solids;
 UV seams and sharp edges intentionally duplicate vertices.
@@ -423,8 +423,11 @@ def _clip_closed_mesh(data, normal, offset):
     return _arrays(positions, triangles, normals, texcoords)
 
 
-def build_chess_scene(api):
-    """Populate an initialized, empty PathTracer with a complete chess set."""
+def build_chess_scene(api, pieces="wood"):
+    """Populate an initialized, empty PathTracer with a complete chess set.
+
+    ``pieces="glass"`` makes the light pieces clear glass and the dark pieces polished gold.
+    """
     textures = [
         wood_texture((0.89, 0.75, 0.52), (0.64, 0.43, 0.22)),
         wood_texture((0.43, 0.26, 0.14), (0.18, 0.075, 0.025)),
@@ -433,7 +436,28 @@ def build_chess_scene(api):
     ]
     api.scene.set_gltf_textures(textures, srgb_texture_indices=set(range(4)))
 
+    glass_and_gold = None
+    if pieces == "glass":
+        glass_and_gold = (
+            api.scene.materials.add_gltf_material(
+                base_color=(1, 1, 1, 1),
+                metallic=0.0,
+                roughness=0.0,
+                transmission=1.0,
+                ior=1.52,
+                thickness=1.0,
+                attenuation_color=(0.75, 0.9, 1.0),
+                attenuation_distance=6.0,
+                double_sided=True,
+            ),
+            api.scene.materials.add_metal((1.0, 0.77, 0.33), 0.06),
+        )
+    elif pieces != "wood":
+        raise ValueError(f"pieces must be 'wood' or 'glass', not {pieces!r}")
+
     def wood_material(i, offset=(0, 0)):
+        if glass_and_gold is not None and i >= 2:
+            return glass_and_gold[i - 2]
         return api.scene.materials.add_gltf_material(
             base_color=(1, 1, 1, 1),
             base_color_texture={"index": i, "transform": {"offset": offset}},
@@ -804,10 +828,8 @@ def build_chess_scene(api):
                 else [(i, 0 if side == 0 else 7) for i, k in enumerate(arrangement) if k == kind]
             )
             for col, row in squares:
-                # Each piece samples a different part of the same timber texture.
-                # Rotate the timber around the piece's up axis before computing
-                # cylindrical UVs, keeping all wooden components in the same cut.
-                # A 2D UV rotation would incorrectly mix radial and axial grain.
+                # Each piece takes its own cut of the timber, rotated about its up axis before the cylindrical
+                # UVs so all its wooden parts share that cut; rotating the UVs would mix radial and axial grain.
                 piece_material = wood_material(2 + side, piece_cuts.random(2).tolist())
                 grain_angle = grain_directions.uniform(-np.pi, np.pi)
                 c, s = np.cos(grain_angle), np.sin(grain_angle)
