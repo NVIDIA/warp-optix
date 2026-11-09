@@ -17,6 +17,9 @@ uv sync --extra pathtracing --extra ui --extra usd
 | `example_motion_blur.py` | Vertex motion blur with a two-key motion GAS | `uv run python examples/example_motion_blur.py` |
 | `example_raytracing.py` | Cornell box ray tracer with an optional live viewer | `uv run python examples/example_raytracing.py --live` |
 | `example_pathtracing.py` | Path-traced procedural chess set | `uv run python examples/example_pathtracing.py --scene chess` |
+| | The chess set with glass and gold pieces | `uv run python examples/example_pathtracing.py --scene glass_chess` |
+| | *Glass of Water* by aXel (CC0), downloaded on first use | `uv run python examples/example_pathtracing.py --scene glass_of_water` |
+| | *The Breakfast Room* by Wig42 (CC BY 3.0), downloaded on first use | `uv run python examples/example_pathtracing.py --scene breakfast_room` |
 | | Hair ball made of cubic Bézier curves | `uv run python examples/example_pathtracing.py --scene hairball` |
 | | Arrows built with `ArrowBatch` | `uv run python examples/example_pathtracing.py --scene arrowball` |
 | | 100k changing OpenGL lines over a path-traced frame | `uv run python examples/example_pathtracing.py --scene contact_lines` |
