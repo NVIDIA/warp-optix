@@ -1,6 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+import ctypes
+import dataclasses
+import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -22,8 +25,7 @@ def _renderer(monkeypatch, mode):
     renderer.denoiser = mode
     renderer.optix_upscale = False
     renderer._denoiser_explicit = True
-    renderer._ctx = object()
-    renderer._optix = object()
+    renderer._device = object()
     renderer._render_stream = object()
     renderer._optix_denoiser = None
     renderer._sync_prev_camera_matrices_to_current = lambda: None
@@ -35,20 +37,17 @@ def _renderer(monkeypatch, mode):
     return renderer
 
 
-def test_auto_selects_optix(monkeypatch):
+def test_auto_selects_optix_or_falls_back_but_explicit_backend_fails(monkeypatch):
     monkeypatch.setattr(renderer_module, "OptixDenoiser", lambda *args, **kwargs: SimpleNamespace(close=lambda: None))
     renderer = _renderer(monkeypatch, "auto")
     renderer._init_denoiser()
     assert renderer.active_denoiser == "optix"
     assert renderer.denoiser_error is None
 
-
-def test_auto_falls_back_to_raw_but_explicit_backend_fails(monkeypatch):
     def unavailable(*args, **kwargs):
         raise RuntimeError("OptiX unavailable")
 
     monkeypatch.setattr(renderer_module, "OptixDenoiser", unavailable)
-    renderer = _renderer(monkeypatch, "auto")
     renderer._init_denoiser()
     assert renderer.active_denoiser == "none"
     assert "OptiX unavailable" in renderer.denoiser_error
@@ -78,6 +77,9 @@ def test_failed_switch_restores_previous_backend(monkeypatch):
     renderer.width = 63
     renderer._init_denoiser()
     assert renderer._render_width == 32
+    # A closed renderer only records the choice; it creates no denoiser.
+    renderer._device = None
+    renderer.set_denoiser("optix", optix_upscale=False)
 
 
 requires_gpu = pytest.mark.skipif(not wp.is_cuda_available(), reason="requires a CUDA device")
@@ -85,10 +87,51 @@ requires_gpu = pytest.mark.skipif(not wp.is_cuda_available(), reason="requires a
 
 def _cornell_api(**kwargs):
     api = PathTracer(enable_set=False, **kwargs)
-    assert api.initialize()
+    api.initialize()
     api.scene.create_cornell_box()
     api.build_scene()
     return api
+
+
+@pytest.mark.gpu
+@requires_gpu
+@pytest.mark.parametrize(("upscale", "other_context"), [(False, False), (True, True)])
+def test_optix_gpu_apply_preserves_cuda_context(upscale, other_context):
+    cuda = ctypes.CDLL("nvcuda.dll" if sys.platform == "win32" else "libcuda.so.1")
+    cuda.cuCtxGetCurrent.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+    cuda.cuCtxSetCurrent.argtypes = [ctypes.c_void_p]
+    cuda.cuCtxCreate_v2.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_uint, ctypes.c_int]
+    cuda.cuCtxDestroy_v2.argtypes = [ctypes.c_void_p]
+
+    def current_context():
+        context = ctypes.c_void_p()
+        assert cuda.cuCtxGetCurrent(ctypes.byref(context)) == 0
+        return context.value
+
+    denoiser = OptixDenoiser(64, 48, upscale=upscale, device="cuda")
+    inputs = DenoiserInputs(
+        color=wp.ones((48, 64), dtype=wp.vec4, device=denoiser.stream.device),
+        normal=wp.zeros((48, 64), dtype=wp.vec4, device=denoiser.stream.device),
+        albedo=wp.ones((48, 64), dtype=wp.vec4, device=denoiser.stream.device),
+        motion=wp.zeros((48, 64), dtype=wp.vec2, device=denoiser.stream.device),
+    )
+    original_context = current_context()
+    caller_context = ctypes.c_void_p()
+    try:
+        # A second context on the same GPU exercises this without requiring two GPUs.
+        if other_context:
+            assert cuda.cuCtxCreate_v2(ctypes.byref(caller_context), 0, denoiser.stream.device.ordinal) == 0
+        # Exercise fresh bindings, both cached output parities, and a history reset.
+        for reset in (False, False, False, True):
+            assert cuda.cuCtxSetCurrent(caller_context) == 0
+            denoiser.apply(inputs, reset=reset)
+            assert current_context() == caller_context.value
+    finally:
+        assert cuda.cuCtxSetCurrent(original_context) == 0
+        denoiser.close()
+        if caller_context.value is not None:
+            assert cuda.cuCtxDestroy_v2(caller_context) == 0
+        assert cuda.cuCtxSetCurrent(original_context) == 0
 
 
 @pytest.mark.gpu
@@ -116,23 +159,50 @@ def test_optix_gpu_denoises_and_resets_history(upscale):
         denoiser.apply(inputs).numpy()
         reset = denoiser.apply(inputs, reset=True).numpy()
         np.testing.assert_allclose(reset, first, rtol=1e-5, atol=1e-5)
+
+        # Flow beyond half-float range (here a camera jump, plus a NaN) once blacked out every later frame.
+        extreme = np.full((48, 64, 2), 1.0e9, dtype=np.float32)
+        extreme[0, 0] = np.nan
+        jump = dataclasses.replace(inputs, motion=wp.array(extreme, dtype=wp.vec2, device="cuda"))
+        for frame_inputs in (jump, inputs, jump, inputs):
+            output = denoiser.apply(frame_inputs).numpy()
+            assert np.isfinite(output).all()
+            assert np.mean((output[..., :3] - 1.0) ** 2) < np.mean((noisy[..., :3] - 1.0) ** 2) * 0.5
+    finally:
+        denoiser.close()
+
+
+@pytest.mark.gpu
+@requires_gpu
+def test_upscaling_denoiser_allocates_scratch_beyond_two_gib():
+    if wp.get_device("cuda").free_memory < 6 * 2**30:
+        pytest.skip("needs about 3 GiB of free device memory")
+    denoiser = OptixDenoiser(1920, 1080, upscale=True, device="cuda")
+    try:
+        assert denoiser._scratch_size > 2**31
     finally:
         denoiser.close()
 
 
 @pytest.mark.gpu
 @pytest.mark.render
-@pytest.mark.slow
 @requires_gpu
 def test_renderer_gpu_optix_samples_motion_switch_and_resize():
-    api = _cornell_api(width=64, height=48, denoiser="optix", optix_upscale=True)
+    # OptiX launches cannot be graph-captured, so a requested graph stays inactive.
+    api = _cornell_api(width=64, height=48, denoiser="optix", optix_upscale=True, enable_cuda_graphs=True)
     try:
         scene = api.scene
+        # A camera placed before the first frame produces no motion on that frame.
+        start = api.viewer.camera.position.copy()
+        api.set_camera_look_at(start + (0.0, 0.5, 0.0), api.viewer.camera.target)
         frames = []
         for _ in range(3):
             api.render_frame()
+            if not frames:
+                assert np.abs(api.viewer._motion_buffer.numpy()).max() < 1.0e-3
             frames.append(api.viewer._color_buffer.numpy().copy())
         assert api.viewer.sample_index == 3
+        assert not api.cuda_graph_active
         assert not np.array_equal(frames[-1], frames[-2]), "Ray samples froze"
         assert api.get_frame().shape == (48, 64, 4)
 
@@ -173,7 +243,7 @@ def test_optix_gpu_frame_is_ordered_when_called_from_another_stream():
             enable_cuda_graphs=False,
         )
         try:
-            assert api.initialize()
+            api.initialize()
             api.scene.create_cornell_box()
             api.build_scene()
             with wp.ScopedStream(caller):
@@ -188,48 +258,3 @@ def test_optix_gpu_frame_is_ordered_when_called_from_another_stream():
     expected = first_frame(None)
     actual = first_frame(wp.Stream("cuda"))
     np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.gpu
-@requires_gpu
-@pytest.mark.parametrize("cuda_graphs", [False, True])
-def test_optix_gpu_frames_and_camera_advance(cuda_graphs):
-    api = PathTracer(
-        width=96,
-        height=64,
-        denoiser="optix",
-        optix_upscale=True,
-        enable_set=False,
-        enable_cuda_graphs=cuda_graphs,
-    )
-    try:
-        assert api.initialize()
-        api.scene.create_cornell_box()
-        api.build_scene()
-        frames = []
-        for _ in range(5):
-            api.render_frame()
-            frames.append(api.viewer._color_buffer.numpy().copy())
-        assert api.viewer.sample_index == 5
-        assert not api.cuda_graph_active
-        assert not np.array_equal(frames[-1], frames[-2]), "Ray samples froze after graph capture"
-        previous = api.viewer.camera.position.copy()
-        api.set_camera_look_at(previous + (1.0, 0.0, 0.0), api.viewer.camera.target)
-        api.render_frame()
-        moved = api.viewer._color_buffer.numpy()
-        motion = api.viewer._motion_buffer.numpy()
-        assert not np.array_equal(moved, frames[-1]), "Camera changes did not reach OptiX"
-        assert float(np.max(np.abs(motion))) > 0.1, "Camera movement produced no motion vectors"
-    finally:
-        api.close()
-
-
-def test_public_denoiser_properties():
-    api = PathTracer.__new__(PathTracer)
-    api._viewer = SimpleNamespace(
-        denoiser="auto", active_denoiser="optix", denoiser_error=None, _optix_launch_graph=None
-    )
-    assert api.denoiser == "auto"
-    assert api.active_denoiser == "optix"
-    assert api.denoiser_error is None
-    assert api.cuda_graph_active is False

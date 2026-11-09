@@ -277,4 +277,4 @@ when direct registration is unavailable.
 
 `warp_optix.gl` provides optional pyglet-based helpers for interactive examples:
 `GLInteropViewer` presents a CUDA-mapped `uint32` RGBA pixel buffer each frame without a host
-copy, and `GLLineOverlay` draws depth-tested lines over it (see below).
+copy, and `GLLineOverlay` draws depth-tested lines over it (see [Interactive viewer features](#interactive-viewer-features)).

@@ -36,9 +36,11 @@ uv run python examples/example_pathtracing.py --gltf scene.glb        # or --usd
 ```
 
 `glass_of_water` and `breakfast_room` are downloaded from Benedikt Bitterli's
-[rendering resources](https://benedikt-bitterli.me/resources/) into `~/.cache/warp-optix`:
+[rendering resources](https://benedikt-bitterli.me/resources/) into `~/.cache/warp-optix/scenes` (`WARP_OPTIX_CACHE` overrides the cache root):
 *Glass of Water* by aXel (CC0) and *The Breakfast Room* by Wig42
 ([CC BY 3.0](https://creativecommons.org/licenses/by/3.0/)).
+
+Image credits and rendering details are in [docs/images/README.md](../docs/images/README.md).
 
 Common options: `--width`, `--height`, `--denoiser {auto,optix,none}`, `--exposure`,
 `--max-frames N`, `--screenshot out.png`. Run with `--help` for per-scene options.

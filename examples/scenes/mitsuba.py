@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import os
+import tempfile
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
@@ -31,18 +32,41 @@ CREDITS = {
 
 def fetch(name: str) -> Path:
     """Return the scene XML of ``name``, downloading the scene if needed."""
+    if name not in CREDITS:
+        raise ValueError(f"Unknown bundled scene: {name!r}")
     root = Path(os.environ.get("WARP_OPTIX_CACHE", Path.home() / ".cache" / "warp-optix")) / "scenes"
     xml = root / name / name / "scene_v3.xml"
     if not xml.exists():
         title, author, license = CREDITS[name]
         print(f"[optix] downloading '{title}' by {author} ({license}) from benedikt-bitterli.me")
         root.mkdir(parents=True, exist_ok=True)
-        archive = root / f"{name}.zip"
-        urllib.request.urlretrieve(URL.format(name=name), archive)
-        with zipfile.ZipFile(archive) as zf:
-            zf.extractall(root / name)
-        archive.unlink()
+        # Publish only a complete scene; failed or concurrent downloads must not
+        # leave a cached XML whose meshes and textures have not arrived yet.
+        with tempfile.TemporaryDirectory(prefix=f".{name}-", dir=root) as temporary:
+            staging = Path(temporary)
+            archive = staging / "scene.zip"
+            urllib.request.urlretrieve(URL.format(name=name), archive)
+            extracted = staging / "extracted"
+            with zipfile.ZipFile(archive) as zf:
+                for entry in zf.infolist():
+                    _asset_path(extracted, entry.filename)
+                zf.extractall(extracted)
+            if not (extracted / name / "scene_v3.xml").is_file():
+                raise ValueError(f"Scene archive lacks {name}/scene_v3.xml")
+            try:
+                extracted.rename(root / name)
+            except OSError:
+                if not xml.is_file():
+                    raise
     return xml
+
+
+def _asset_path(directory: Path, filename: str) -> Path:
+    """Keep archive entries and XML asset references inside the scene directory."""
+    path = (directory / filename).resolve()
+    if not path.is_relative_to(directory.resolve()):
+        raise ValueError(f"Scene asset escapes its directory: {filename!r}")
+    return path
 
 
 def _values(node, tag, name):
@@ -112,24 +136,32 @@ def _read_obj(path: Path):
             elif line.startswith("vn "):
                 normals.append(line.split()[1:4])
             elif line.startswith("f "):
-                face = [(c.split("/") + ["", ""])[:3] for c in line.split()[1:]]
+                face = []
+                for corner in line.split("#", 1)[0].split()[1:]:
+                    values = (corner.split("/") + ["", ""])[:3]
+                    indices = []
+                    for value, count in zip(values, (len(positions), len(uvs), len(normals))):
+                        if not value:
+                            indices.append(None)
+                            continue
+                        index = int(value)
+                        index = index - 1 if index > 0 else count + index
+                        if not 0 <= index < count or int(value) == 0:
+                            raise ValueError(f"Invalid OBJ index in {path}: {corner!r}")
+                        indices.append(index)
+                    if indices[0] is None:
+                        raise ValueError(f"Missing OBJ position index in {path}")
+                    face.append(indices)
                 for k in range(1, len(face) - 1):
                     corners += [face[0], face[k], face[k + 1]]
     positions = np.array(positions, dtype=np.float32)
-    uvs = np.array(uvs or [(0.0, 0.0)], dtype=np.float32)
-    normals = np.array(normals or [(0.0, 0.0, 0.0)], dtype=np.float32)
-
-    def index(column, count):
-        values = np.array([int(c[column]) if c[column] else 0 for c in corners])
-        return np.where(values > 0, values - 1, values + count) if count > 1 else np.zeros_like(values)
-
-    p = positions[index(0, len(positions))]
-    uv = uvs[index(1, len(uvs))]
-    n = normals[index(2, len(normals))]
-    if not np.any(n):
-        tri = p.reshape(-1, 3, 3)
-        face_normals = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
-        n = np.repeat(face_normals, 3, axis=0)
+    p = positions[np.array([c[0] for c in corners], dtype=np.intp)].reshape(-1, 3)
+    uv = np.array([uvs[c[1]] if c[1] is not None else (0.0, 0.0) for c in corners], dtype=np.float32).reshape(-1, 2)
+    tri = p.reshape(-1, 3, 3)
+    face_normals = np.repeat(np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0]), 3, axis=0)
+    n = np.array(
+        [normals[c[2]] if c[2] is not None else face_normals[i] for i, c in enumerate(corners)], dtype=np.float32
+    ).reshape(-1, 3)
     return p, uv, n
 
 
@@ -154,7 +186,7 @@ class MitsubaScene:
         if filename not in self._texture_ids:
             from PIL import Image
 
-            image = np.asarray(Image.open(self.directory / filename).convert("RGBA"))[::-1]
+            image = np.asarray(Image.open(_asset_path(self.directory, filename)).convert("RGBA"))[::-1]
             self._texture_ids[filename] = len(self._textures)
             self._textures.append(np.ascontiguousarray(image))
         return self._texture_ids[filename]
@@ -215,7 +247,7 @@ class MitsubaScene:
                 materials[key] = self._material(api, bsdf, emitter)
             if shape.get("type") == "obj":
                 filename = next(c.get("value") for c in shape if c.get("name") == "filename")
-                p, uv, n = _read_obj(self.directory / filename)
+                p, uv, n = _read_obj(_asset_path(self.directory, filename))
             elif shape.get("type") == "rectangle":
                 p, uv, n = _RECTANGLE
             else:

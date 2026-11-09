@@ -16,7 +16,6 @@
 """Validate the example's generated solids independently of GPU rendering."""
 
 import importlib.util
-from collections import Counter
 from itertools import count
 from pathlib import Path
 from types import SimpleNamespace
@@ -91,9 +90,15 @@ def test_all_chess_components_are_closed_and_outward_facing():
             assert instance not in overrides
     assert len(piece_materials) == 32
     assert all(len(values) == 1 for values in piece_materials.values())
+    checked = set()
     for p, t, n, uv in meshes:
-        assert np.isfinite(p).all() and np.isfinite(n).all() and np.isfinite(uv).all()
-        assert uv.shape == (len(p), 2)
+        assert np.isfinite(uv).all() and uv.shape == (len(p), 2)
+        # Pieces rebuild the same geometry with different UVs; check each geometry once.
+        geometry = (p.tobytes(), t.tobytes(), n.tobytes())
+        if geometry in checked:
+            continue
+        checked.add(geometry)
+        assert np.isfinite(p).all() and np.isfinite(n).all()
         np.testing.assert_allclose(np.linalg.norm(n, axis=1), 1, atol=1e-6)
         a, b, c = p[t[:, 0]], p[t[:, 1]], p[t[:, 2]]
         area = np.cross(b - a, c - a)
@@ -102,9 +107,12 @@ def test_all_chess_components_are_closed_and_outward_facing():
         assert np.sum(a * np.cross(b, c)) / 6 > 0  # positive enclosed volume
         # Weld only for topology checks: UV seams and sharp edges need duplicates.
         _, welded = np.unique(np.round(p, 6), axis=0, return_inverse=True)
-        tri = welded[t]
-        directed = Counter((int(a), int(b)) for face in tri for a, b in zip(face, np.roll(face, -1)))
-        assert all(count == 1 and directed[(b, a)] == 1 for (a, b), count in directed.items())
+        tri = welded[t].astype(np.int64)
+        # Closed and consistently oriented: every directed edge appears once, and so does its reverse.
+        start, end = tri.reshape(-1), np.roll(tri, -1, axis=1).reshape(-1)
+        edges = start * len(p) + end
+        assert len(np.unique(edges)) == len(edges)
+        assert np.isin(end * len(p) + start, edges).all()
 
 
 def test_procedural_textures_are_repeatable_rgba():

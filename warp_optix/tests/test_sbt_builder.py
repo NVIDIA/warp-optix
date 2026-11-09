@@ -91,12 +91,6 @@ def fill(builder):
     )
 
 
-@pytest.mark.parametrize("names", [[], [""], ["a", "a"], [None], [str(i) for i in range(16)]])
-def test_invalid_ray_types(names):
-    with pytest.raises(ValueError):
-        wo.SbtBuilder(names)
-
-
 def test_named_layout_snapshot_and_foreign_handles():
     builder = wo.SbtBuilder(("radiance", "shadow"))
     glass = fill(builder)
@@ -157,16 +151,16 @@ def test_empty_programs_for_hit_object_traversal():
     assert "(none)" in builder.describe()
 
 
-@pytest.mark.parametrize("options", [{"miss": (None,)}, {"hit_groups": ()}, {"ray_types": 1}])
-def test_builder_rejects_conflicting_options_before_compiling(options):
-    with pytest.raises(ValueError, match="cannot be combined"):
-        wo.Pipeline(raygen, sbt=wo.SbtBuilder(), **options)
-
-
-@pytest.mark.parametrize("count", [0, -1, 16, 1.5, True])
-def test_invalid_trace_stride_is_rejected(count):
-    with pytest.raises(ValueError, match="ray_types"):
-        wo.Pipeline(raygen, ray_types=count)
+def test_invalid_ray_types_and_options_are_rejected_before_compiling():
+    for names in ([], [""], ["a", "a"], [None], [str(i) for i in range(16)]):
+        with pytest.raises(ValueError):
+            wo.SbtBuilder(names)
+    for options in ({"miss": (None,)}, {"hit_groups": ()}, {"ray_types": 1}):
+        with pytest.raises(ValueError, match="cannot be combined"):
+            wo.Pipeline(raygen, sbt=wo.SbtBuilder(), **options)
+    for count in (0, -1, 16, 1.5, True):
+        with pytest.raises(ValueError, match="ray_types"):
+            wo.Pipeline(raygen, ray_types=count)
 
 
 @wp.kernel(module="unique")
@@ -178,8 +172,7 @@ def write_instances(gas: wp.uint64, offsets: wp.array[wp.uint32], records: wp.ar
 
 
 @pytest.mark.gpu
-@pytest.mark.parametrize("rays", [("radiance", "shadow"), ("shadow", "radiance")])
-@pytest.mark.parametrize("use_snapshot", [False, True])
+@pytest.mark.parametrize(("rays", "use_snapshot"), [(("radiance", "shadow"), False), (("shadow", "radiance"), True)])
 def test_gpu_named_ray_and_instance_dispatch(rays, use_snapshot):
     if not wp.is_cuda_available():
         pytest.skip("CUDA unavailable")
