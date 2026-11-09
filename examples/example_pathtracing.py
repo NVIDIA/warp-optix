@@ -61,22 +61,14 @@ BALL_VIEW = View((0.0, 0.18, 3.55), 180.0, -3.0, 42.0)
 
 
 @wp.kernel
-def _pack_display_rgba8(
-    src: wp.array2d(dtype=wp.vec4),
-    dst: wp.array(dtype=wp.uint32),
-    width: int,
-    height: int,
-):
+def _pack_display_rgba8(src: wp.array2d(dtype=wp.vec4), dst: wp.array(dtype=wp.uint32)):
     y, x = wp.tid()
-    if x >= width or y >= height:
-        return
-
     c = src[y, x]
     r = wp.uint32(wp.clamp(c[0] * 255.0, 0.0, 255.0))
     g = wp.uint32(wp.clamp(c[1] * 255.0, 0.0, 255.0))
     b = wp.uint32(wp.clamp(c[2] * 255.0, 0.0, 255.0))
     a = wp.uint32(255)
-    dst[y * width + x] = (a << wp.uint32(24)) | (b << wp.uint32(16)) | (g << wp.uint32(8)) | r
+    dst[y * src.shape[1] + x] = (a << wp.uint32(24)) | (b << wp.uint32(16)) | (g << wp.uint32(8)) | r
 
 
 class FreeCameraController:
@@ -335,13 +327,11 @@ def main():
 
         lines = ContactLines(api, args.contact_count)
 
-    render_width, render_height = args.width, args.height
     last_elapsed = 0.0
 
     def on_resize(width: int, height: int):
-        nonlocal render_width, render_height, last_elapsed
-        render_width, render_height = int(width), int(height)
-        api.resize(render_width, render_height)
+        nonlocal last_elapsed
+        api.resize(int(width), int(height))
         if lines is not None:
             lines.resize()
         last_elapsed = 0.0
@@ -364,12 +354,8 @@ def main():
         if lines is not None:
             lines.update(frame, elapsed)
         api.render_frame()
-        wp.launch(
-            _pack_display_rgba8,
-            dim=(render_height, render_width),
-            inputs=[api.viewer.tonemapped_output, mapped_image, render_width, render_height],
-            device="cuda",
-        )
+        image = api.viewer.tonemapped_output
+        wp.launch(_pack_display_rgba8, dim=image.shape, inputs=[image, mapped_image], device="cuda")
 
     print(f"[optix] scene: {name}, denoiser: {api.active_denoiser}")
     print(f"[optix] controls: {FreeCameraController.__doc__}")
