@@ -36,7 +36,7 @@ class Params:
     values: wp.array2d[wp.uint32]
 
 
-@wo.kernel(kind=wo.ProgramKind.RAYGEN, module="unique")
+@wo.kernel(kind=wo.ProgramKind.RAYGEN)
 def raygen(values: wp.array2d[wp.uint32]):
     y, x = wp.tid()
     payload = Payload()
@@ -44,15 +44,14 @@ def raygen(values: wp.array2d[wp.uint32]):
     values[y, x] = payload.value
 
 
-@wo.kernel(kind=wo.ProgramKind.MISS, module="unique")
+@wo.kernel(kind=wo.ProgramKind.MISS)
 def miss(scale: wp.uint32):
     index = wp.optix_get_launch_index()
     wp.optix_set_payload(0, scale * index[1] + index[0])
 
 
 def main() -> None:
-    sbt = wo.SbtBuilder(["radiance"])
-    sbt.set_miss("radiance", miss)
+    sbt = wo.SbtLayout(ray_types=["radiance"], miss={"radiance": miss})
     with wo.Pipeline(raygen, sbt=sbt, params_type=Params, payload_words=1) as pipeline:
         outputs = []
         for scale in (100, 200):

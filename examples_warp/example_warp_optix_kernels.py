@@ -46,7 +46,7 @@ def miss(scale: wp.uint32):
 
 
 def main() -> None:
-    pipeline = wo.Pipeline(raygen, miss=[miss], payload_words=1)
+    pipeline = wo.Pipeline(raygen, sbt=wo.SbtLayout(miss=miss), payload_words=1)
     values = wp.zeros((4, 8), dtype=wp.uint32)
     wo.launch(pipeline, dim=values.shape, inputs=[100, values])
     result = values.numpy()
