@@ -355,14 +355,16 @@ def main() -> None:
             [wo.curves(curve_vertices, curve_widths, curve_indices, curve_type=curve_type)], compact=True
         )
 
-        sbt = wo.SbtBuilder()
-        sbt.set_miss("radiance", miss)
-        triangles = sbt.add_hit_group("triangles", radiance=wo.HitGroup(closest_hit=triangle_closest_hit))
-        shapes = sbt.add_hit_group(
-            "analytical shapes",
-            radiance=wo.HitGroup(closest_hit=analytical_closest_hit, intersection=analytical_intersection),
+        sbt = wo.SbtLayout(
+            miss=miss,
+            hit_groups={
+                "triangles": wo.HitGroup(closest_hit=triangle_closest_hit),
+                "analytical shapes": wo.HitGroup(
+                    closest_hit=analytical_closest_hit, intersection=analytical_intersection
+                ),
+                "curves": wo.HitGroup(closest_hit=curve_closest_hit, builtin=curve_type),
+            },
         )
-        curves = sbt.add_hit_group("curves", radiance=wo.HitGroup(closest_hit=curve_closest_hit, builtin=curve_type))
         pipeline = wo.Pipeline(
             raygen,
             sbt=sbt,
@@ -375,10 +377,11 @@ def main() -> None:
         shape_positions = [(-1.15, 0.57), (0.0, 0.57), (1.15, 0.57), (-1.15, -0.57), (0.0, -0.57), (1.15, -0.57)]
         accel_ids = [triangle_accel.id] + [shape_accel.id] * 6 + [curve_accel.id]
         translations = [(0.0, 0.0, 0.0)] + [(x, y, 0.0) for x, y in shape_positions] + [(0.0, 0.0, 0.0)]
-        layout = pipeline.sbt_layout
-        print(layout.describe())
+        print(sbt.describe())
         sbt_offsets = (
-            [layout.get_sbt_offset(triangles)] + [layout.get_sbt_offset(shapes)] * 6 + [layout.get_sbt_offset(curves)]
+            [sbt.get_sbt_offset("triangles")]
+            + [sbt.get_sbt_offset("analytical shapes")] * 6
+            + [sbt.get_sbt_offset("curves")]
         )
         records = wp.empty(len(accel_ids), dtype=wo.Instance)
         wp.launch(
@@ -391,7 +394,7 @@ def main() -> None:
                 records,
             ],
         )
-        scene = wo.Accel([wo.instances(records)])
+        scene = wo.Accel([wo.instances(records, [triangle_accel, shape_accel, curve_accel])])
 
         image = wp.empty((args.height, args.width), dtype=wp.uint32)
         wo.launch(pipeline, dim=image.shape, inputs=[scene, curve_vertices, curve_indices, image])

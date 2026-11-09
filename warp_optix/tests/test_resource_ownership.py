@@ -258,8 +258,9 @@ def test_instances_keep_closed_children_alive_at_every_level():
     gas = wo.Accel([wo.triangles(vertices, indices)])
     gas_ref, gas_buffer = weakref.ref(gas), weakref.ref(gas._buffer)
     inner_records = instance_records(gas)
-    inner = wo.Accel([wo.instances(inner_records)])
-    outer = wo.Accel([wo.instances(instance_records(inner))])
+    inner = wo.Accel([wo.instances(inner_records, [gas])])
+    outer_records = instance_records(inner)
+    outer = wo.Accel([wo.instances(outer_records, [inner])])
 
     # Instances keep their children's memory, not the objects: a dropped child is collected.
     del gas, vertices, indices
@@ -271,12 +272,33 @@ def test_instances_keep_closed_children_alive_at_every_level():
     np.testing.assert_allclose(depth.numpy(), [5.0])
 
     # A closed child can no longer be instanced.
-    with pytest.raises(ValueError, match="live acceleration structures"):
-        wo.Accel([wo.instances(inner_records)])
+    with pytest.raises(RuntimeError, match="closed"):
+        wo.Accel([wo.instances(outer_records, [inner])])
 
     outer.close()
     settle()
     assert gas_buffer() is None
+
+
+def test_instances_retain_child_traversal_memory_without_build_resources():
+    vertices, indices = geometry()
+    gas = wo.Accel([wo.triangles(vertices, indices)], flags=wo.BuildFlags.ALLOW_UPDATE)
+    gas_ref = weakref.ref(gas)
+    buffer_ref, scratch_ref, vertices_ref = weakref.ref(gas._buffer), weakref.ref(gas._scratch), weakref.ref(vertices)
+    parent = wo.Accel([wo.instances(instance_records(gas), [gas])])
+
+    del gas, vertices, indices
+    settle()
+    assert gas_ref() is None
+    assert scratch_ref() is None and vertices_ref() is None
+    assert buffer_ref() is not None
+    depth = wp.empty(1, dtype=float, device="cuda")
+    wo.launch(wo.Pipeline(depth_raygen), 1, [parent, depth])
+    np.testing.assert_allclose(depth.numpy(), [5.0])
+
+    parent.close()
+    settle()
+    assert buffer_ref() is None
 
 
 def test_release_callbacks_run_once_when_collect_reenters():
@@ -331,11 +353,23 @@ def test_pipeline_forgets_streams_whose_launches_finished(gate, explicit_params)
     settle()
 
 
-def test_instance_build_rejects_unknown_children():
-    records = wp.empty(1, dtype=wo.Instance, device="cuda")
-    wp.launch(write_instance, 1, inputs=[wp.uint64(0x123456789A0), records], device="cuda")
-    with pytest.raises(ValueError, match="Instance children must be live acceleration structures on this device"):
-        wo.Accel([wo.instances(records)])
+def test_instance_builds_never_wait_unless_verifying(gate, monkeypatch):
+    vertices, indices = geometry()
+    gas = wo.Accel([wo.triangles(vertices, indices)])
+    records = instance_records(gas)
+    wp.synchronize()
+    stream = wp.Stream("cuda")
+    pending = gate.block(stream)
+    wo.Accel([wo.instances(records, [gas])], stream=stream)
+    assert not pending.is_complete, "the instance build waited for the stream"
+    gate.open()
+
+    monkeypatch.setattr(wo.config, "verify_instances", True)
+    wo.Accel([wo.instances(records, [gas])])
+    with pytest.raises(ValueError, match="missing from children"):
+        wo.Accel([wo.instances(records, [])])
+    with pytest.raises(TypeError, match="Accel"):
+        wo.instances(records, [gas.id])
 
 
 def test_wrong_devices_and_streams_are_rejected_before_native_work():

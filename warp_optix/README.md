@@ -43,6 +43,7 @@ Like Warp's CUDA context, the OptiX device context is implicit: each CUDA device
 on first use and destroyed at interpreter exit. Its settings come from `wo.config`
 (`wo.config.validation = True`, `wo.config.log_level = 4`), which is read when a device's context is
 first created; later changes only affect devices whose context does not exist yet.
+`wo.config.verify_instances` is read on every instance build.
 `wo.get_context(device).native` gives the PyOptiX `DeviceContext` for advanced calls; it is borrowed
 and must not be destroyed.
 
@@ -75,8 +76,8 @@ with `.close()` or `with`:
   the `wo.Accel` alive while work that reads the id may still be submitted. A `wo.Accel` passed in
   launch inputs is referenced by the pipeline's parameter storage until the next launch on that
   stream replaces it.
-- An instance structure keeps the memory of its child structures alive, at every level of nesting,
-  even if a child is closed or dropped.
+- An instance structure keeps the memory of the children listed in `wo.instances(records, children)`
+  alive, at every level of nesting, even if a child is closed or dropped.
 - Failed pipeline construction destroys only the native objects it created.
 
 ## Programs and pipelines
@@ -114,12 +115,8 @@ def background():
     wp.optix_set_payload(0, wp.optix_float_as_uint32(0.0))
 
 
-pipeline = wo.Pipeline(
-    raygen,
-    miss=[background],
-    hit_groups=[wo.HitGroup(closest_hit=shade)],
-    payload_words=3,
-)
+sbt = wo.SbtLayout(miss=background, hit_groups={"triangles": wo.HitGroup(closest_hit=shade)})
+pipeline = wo.Pipeline(raygen, sbt=sbt, payload_words=3)
 wo.launch(pipeline, dim=image.shape, inputs=[accel.id, wp.vec3(1.0, 0.5, 0.2), image])
 ```
 
@@ -129,25 +126,18 @@ may be omitted but not skipped by keyword, because Warp's external-builtin API h
 arguments; `wp.optix_traverse()` takes the same arguments with an optional payload. Flags, masks,
 SBT indices, and register indices accept any integer type, so `wo.RayFlags` members need no cast.
 
-`wo.Pipeline(raygen, *, miss, hit_groups, ray_types, sbt, callables, continuation_callables,
-exception, exception_flags,
+`wo.Pipeline(raygen, *, sbt, callables, exception, exception_flags,
 payload_words, attribute_words, max_trace_depth, max_traversable_depth, graph_flags, motion_blur,
 max_registers, device)` compiles all programs into one module and builds the shader binding table:
 
-- `miss` lists one miss program per ray type; `None` is a record without a program.
-- `hit_groups` holds `wo.HitGroup(closest_hit=, any_hit=, intersection=, builtin=, build_flags=)` entries.
-  The hit record for geometry type `g` and ray type `r` is `hit_groups[g * ray_types + r]`;
-  trace with `sbt_offset=r` and `sbt_stride=ray_types`, and give instances `sbt_offset=g *
-  ray_types`. `builtin=wo.PrimitiveType.*` selects OptiX's built-in curve intersector, which
-  OptiX specializes on build flags: `build_flags` (default `PREFER_FAST_TRACE`, like `wo.Accel`)
-  must match the curve structures' flags, so curves built with other flags need their own group. A
-  group with an `intersection` program serves custom primitives. Primitive-type flags are derived
-  from the groups.
-- `callables` are direct-callable programs, invoked with `wp.optix_direct_call(index)` in list
-  order. `continuation_callables` are invoked with `wp.optix_continuation_call(index)`; they
-  follow the direct callables in the same SBT section, so `continuation_callables[k]` has index
-  `len(callables) + k`. Callables use a no-argument, void interface: they read launch parameters
-  and write referenced Warp arrays.
+- `sbt` is a [`wo.SbtLayout`](#sbt-layouts) of ray types, miss records, and hit groups. The
+  default is one ray type with a miss record without a program and one empty hit group.
+- `callables` are callable programs; `index` is the position in the list. Call a direct callable
+  with `wp.optix_direct_call(index)`, and declare a continuation callable with
+  `@wo.kernel(kind=wo.ProgramKind.CONTINUATION_CALLABLE)` and call it with
+  `wp.optix_continuation_call(index)`. Callables use a no-argument, void interface: they read
+  launch parameters and write referenced Warp arrays. Miss and callable entries may be `wo.Record(kernel, data=)` to carry
+  [record data](#per-record-sbt-data).
 - `exception` enables user exceptions. Raise one with `wp.optix_throw_exception(code, ...)` (up
   to eight optional details) and read it with `wp.optix_get_exception_code()` and
   `wp.optix_get_exception_detail(i)`.
@@ -193,11 +183,15 @@ that raygen does not declare. Launch with `inputs=[my_params_instance]`.
 The schema is the parameter block itself; to use a single `params: MyParams`
 argument in every shader, keep the default inferred schema instead.
 
-An optional `@wo.kernel(kind=wo.ProgramKind.RAYGEN, module="unique")`
+An optional `@wo.kernel(kind=wo.ProgramKind.RAYGEN)`
 decorator replaces `@wp.kernel` when a shader should declare its intended stage.
-It also accepts an existing Warp kernel. Pipeline construction rejects a declared
-stage that disagrees with its slot. Undecorated Warp kernels continue to get their
-stage from their pipeline slot.
+It defaults to `module="unique"`, because a kernel using `wp.optix_*` builtins
+cannot compile as part of an ordinary Warp module and would break `wp.launch` of the
+other kernels in it; an explicit `module=` is honored. It also accepts an existing
+Warp kernel, which keeps the module chosen by its `@wp.kernel`; a kernel in its Python module's
+default Warp module is rejected for the same reason. Pipeline construction
+rejects a declared stage that disagrees with its slot. Undecorated Warp kernels
+continue to get their stage from their pipeline slot.
 
 Compare `examples_warp/example_warp_optix_kernels.py` with
 `examples_warp/example_warp_optix_explicit_params.py`: both compute the same
@@ -205,55 +199,85 @@ output; the latter uses a shared schema, stage declarations, named SBT layout,
 and separate buffers on separate streams.
 
 
-### Explicit SBT layouts
+### SBT layouts
 
-The default pipeline API packs SBT records automatically. For explicit control
-over ray names, group ordering, and instance offsets, use `wo.SbtBuilder`:
+`wo.SbtLayout(ray_types=("radiance",), miss=None, hit_groups={"default": wo.HitGroup()})` is the
+one description of a pipeline's miss and hit records. It is plain, validated, immutable data that
+owns no native resources, so it can be built before any scene or pipeline and reused across
+devices:
 
 ```python
-sbt = wo.SbtBuilder(ray_types=("radiance", "shadow"))
-sbt.set_miss("radiance", radiance_miss)
-sbt.set_miss("shadow", shadow_miss)
-glass = sbt.add_hit_group(
-    "glass",
-    radiance=wo.HitGroup(closest_hit=glass_hit),
-    shadow=wo.HitGroup(any_hit=glass_shadow),
-)
-metal = sbt.add_hit_group(
-    "metal",
-    radiance=wo.HitGroup(closest_hit=metal_hit),
-    shadow=wo.HitGroup(any_hit=metal_shadow),
+sbt = wo.SbtLayout(
+    ray_types=("radiance", "shadow"),
+    miss={"radiance": radiance_miss, "shadow": shadow_miss},
+    hit_groups={
+        "glass": {"radiance": wo.HitGroup(closest_hit=glass_hit), "shadow": wo.HitGroup(any_hit=glass_shadow)},
+        "metal": {"radiance": wo.HitGroup(closest_hit=metal_hit), "shadow": wo.HitGroup(any_hit=metal_shadow)},
+    },
 )
 print(sbt.describe())
+metal_offset = sbt.get_sbt_offset("metal")  # 2 records; use in wo.make_instance()
+shadow_index = sbt.ray_type_index("shadow")  # trace SBT offset and miss index
+trace_stride = sbt.trace_stride  # 2 records
 pipeline = wo.Pipeline(raygen, sbt=sbt, payload_words=1)
-layout = pipeline.sbt_layout
-metal_offset = layout.get_sbt_offset(metal)  # 2 records; use in wo.make_instance()
-shadow_index = layout.ray_type_index("shadow")  # trace SBT offset and miss index
-trace_stride = layout.trace_stride  # 2 records
 ```
 
-Programs are ordinary Warp kernels, with their kind determined by the assigned
-slot. Each group specifies every ray type, using the same geometry kind across
-those rays. `set_miss(name, None)` explicitly creates an empty miss slot;
-`HitGroup()` creates an empty hit group for hit-object traversal. Ray names must
-be unique, and the trace stride supports at most 15 ray types.
+`miss` maps every ray type to a miss program, a `wo.Record`, or `None` (a record without a
+program). `hit_groups` maps each group name to a `wo.HitGroup(closest_hit=, any_hit=,
+intersection=, builtin=, data=)` per ray type. A bare miss entry or `HitGroup` applies to every
+ray type, so a single ray type needs no inner mapping:
+`wo.SbtLayout(miss=background, hit_groups={"triangles": wo.HitGroup(closest_hit=shade)})`.
+Programs are ordinary Warp kernels, with their kind determined by their slot.
+`builtin=wo.PrimitiveType.*` selects OptiX's built-in curve intersector; a group with an
+`intersection` program serves custom primitives; each group uses the same geometry kind for every
+ray type. `HitGroup()` is an empty hit group for hit-object traversal. Primitive-type flags are
+derived from the groups. Ray names must be unique, and the trace stride supports at most 15 ray
+types.
 
-Layouts use group-major, ray-type-minor order. Append groups to control their
-order; previously returned `HitGroupHandle` offsets remain stable. Pass offsets
-obtained from `layout.get_sbt_offset(handle)` to the Warp kernel that writes
-instances with `wo.make_instance()`. This lookup rejects handles from another
-builder or groups added after the snapshot. Offsets and trace strides count
-records, not bytes.
+Records are group-major and ray-type-minor in mapping order. Pass `get_sbt_offset(name)` to the
+Warp kernel that writes instances with `wo.make_instance()` (or use it as the GAS's offset), and
+trace with `sbt_offset=ray_type_index(name)`, `sbt_stride=trace_stride`, and
+`miss_index=ray_type_index(name)`. Offsets and strides count records, not bytes.
+`pipeline.sbt_layout` returns the layout. See `examples_warp/example_warp_optix_mixed_geometry.py`
+for a complete example.
 
-`wo.Pipeline(..., sbt=builder)` takes an immutable snapshot. Later builder
-edits do not change existing pipelines. You may also pass `sbt=builder.snapshot()`
-to reuse a frozen layout. Builders own no native resources and can be reused
-across devices; each pipeline owns its compiled programs and packed buffers.
-`pipeline.sbt_layout` exposes the named snapshot; automatic pipelines have `sbt_layout=None`.
+### Per-record SBT data
 
-An explicit `sbt` cannot be combined with `miss`, `hit_groups`, or `ray_types`.
-Callables and exception programs remain independent pipeline options. See
-`examples_warp/example_warp_optix_mixed_geometry.py` for a complete example.
+Like most OptiX applications, a hit group, miss, or callable record can carry its own data, so one
+closest-hit program shades many materials. `data` is a `@wp.struct` instance; the program reads it
+with `wp.optix_load_sbt_data(value)`, which fills a struct of the same type:
+
+```python
+@wp.struct
+class Material:
+    color: wp.vec3
+
+
+@wp.kernel(module="unique")
+def shade():
+    material = Material()
+    wp.optix_load_sbt_data(material)
+    payload = Payload()
+    payload.color = material.color
+    wp.optix_store_payload(payload)
+
+
+red, blue, sky = Material(), Material(), Material()
+red.color, blue.color, sky.color = wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.5, 0.7, 1.0)
+sbt = wo.SbtLayout(
+    miss=wo.Record(background, data=sky),  # background also loads a Material
+    hit_groups={"red": wo.HitGroup(closest_hit=shade, data=red), "blue": wo.HitGroup(closest_hit=shade, data=blue)},
+)
+pipeline = wo.Pipeline(raygen, sbt=sbt, payload_words=3)
+red.color = wp.vec3(1.0, 0.5, 0.0)
+pipeline.update_sbt_data()  # re-upload every record's data; no rebuild
+```
+
+Records in one section (miss, hit group, callables) may use different struct types; the
+section's stride fits the largest. The device does not check the type, so load the type that
+was stored. Arrays referenced by record data stay alive with the pipeline, and must be on its
+device. `update_sbt_data(stream=None)` is ordered with launches on that stream, like writing a
+`wp.array`, and does not wait on the host.
 
 `wo.ProgramKind` names the program kinds and their OptiX entry-name prefixes. Flags are typed
 enums usable both on the host and inside kernels (Warp supports `IntEnum`/`IntFlag` in kernels):
@@ -290,7 +314,7 @@ retain their Warp **device** arrays:
 | `wo.triangles(points, indices, flags=)` | `vec3` (or `float32[N, 3]`) points, int32/uint32 index triplets; a list of point arrays gives motion keys |
 | `wo.aabbs(lowers, uppers, flags=, sbt_indices=)` | `vec3` bounds per custom primitive, like `wp.Bvh(lowers, uppers)`; or packed `wo.aabbs(bounds=float32[N, 6])` to avoid a packing copy |
 | `wo.curves(points, widths, indices, curve_type=, flags=)` | control points, per-point radii, first control point of each segment |
-| `wo.instances(records)` | `wp.array(dtype=wo.Instance)` |
+| `wo.instances(records, children)` | `wp.array(dtype=wo.Instance)`, plus the `wo.Accel` objects the records reference |
 
 Geometry defaults to `GeometryFlags.DISABLE_ANYHIT`; pass `flags=wo.GeometryFlags.NONE` when an
 any-hit program must run. Any build input may be empty (no primitives or records); the structure
@@ -302,8 +326,11 @@ Keep those indices unchanged when reusing a build input; create a new input
 after changing topology. Point-only refits do not repeat this validation.
 
 `wo.Accel(inputs, *, flags=, compact=, motion=, device=, stream=)` builds on a Warp stream and
-exposes `.id` (the `wp.uint64` passed to kernels), `.device`, and `.flags`. Initial instance builds
-read child ids back once to verify that every child is a live structure on the same device.
+exposes `.id` (the `wp.uint64` passed to kernels), `.device`, and `.flags`. Instance records are
+written on the GPU, so builds never read them back: `children` names the structures they reference,
+and the instance structure keeps those alive. Like `wp.config.verify_cuda`,
+`wo.config.verify_instances = True` makes instance builds synchronize and check that every record
+references a listed child; otherwise an unlisted or invalid child id is undefined behavior.
 `compact=True` also synchronizes to shrink static structures; `wo.compact(accels, stream=)` compacts
 many structures built with `wo.BuildFlags.ALLOW_COMPACTION`, which keep their scratch buffer until then,
 with a single synchronization. Compaction changes `.id`, so compact children before building instance
@@ -333,7 +360,7 @@ def write_instances(gas: wp.uint64, poses: wp.array[wp.transform], records: wp.a
 
 records = wp.empty(world_count, dtype=wo.Instance)
 wp.launch(write_instances, dim=world_count, inputs=[gas.id, poses, records])
-ias = wo.Accel([wo.instances(records)], flags=wo.BuildFlags.ALLOW_UPDATE)
+ias = wo.Accel([wo.instances(records, [gas])], flags=wo.BuildFlags.ALLOW_UPDATE)
 # Each step: rewrite the records, then refit.
 wp.launch(write_instances, dim=world_count, inputs=[gas.id, poses, records])
 ias.refit()
@@ -703,7 +730,7 @@ when direct registration is unavailable.
 
 - `warp_optix/__init__.py` — public API.
 - `warp_optix/context.py` — implicit per-device contexts (`get_context`), device/stream resolution, and native-object release.
-- `warp_optix/config.py` — global settings (`validation`, `log_level`).
+- `warp_optix/config.py` — global settings (`validation`, `log_level`, `verify_instances`).
 - `warp_optix/accel.py` — build inputs, `Accel`, and `Instance`/`make_instance`.
 - `warp_optix/pipeline.py` — `Pipeline`, `HitGroup`, `Launch`, and `launch`.
 - `warp_optix/program.py` — rewrites Warp kernels into OptiX programs (`ProgramKind`, `kernel`).

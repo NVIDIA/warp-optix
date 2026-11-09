@@ -36,7 +36,8 @@ def write(value: wp.uint32, output: wp.array[wp.uint32]):
     output[i] = value
 
 
-@wo.kernel(kind=wo.ProgramKind.RAYGEN, module="unique")
+# Declares no module, so it gets its own: `fill` below shares this file and must still launch.
+@wo.kernel(kind=wo.ProgramKind.RAYGEN)
 def trace(output: wp.array[wp.uint32]):
     i = wp.tid()
     payload = Payload()
@@ -63,6 +64,11 @@ def miss(value: wp.uint32):
     wp.optix_set_payload(0, value)
 
 
+@wp.kernel
+def fill(output: wp.array[wp.uint32]):
+    output[wp.tid()] = wp.uint32(5)
+
+
 def params(value, output):
     result = Params()
     result.value = wp.uint32(value)
@@ -71,9 +77,7 @@ def params(value, output):
 
 
 def test_schema_independent_of_raygen_and_recorded_equivalence():
-    sbt = wo.SbtBuilder(["radiance"])
-    sbt.set_miss("radiance", miss)
-    pipeline = wo.Pipeline(trace, sbt=sbt, params_type=Params, payload_words=1)
+    pipeline = wo.Pipeline(trace, sbt=wo.SbtLayout(miss=miss), params_type=Params, payload_words=1)
     assert pipeline.params_type is Params
     first = wp.empty(64, dtype=wp.uint32, device=pipeline.device)
     second = wp.empty_like(first)
@@ -81,6 +85,17 @@ def test_schema_independent_of_raygen_and_recorded_equivalence():
     wo.launch(pipeline, (64,), [params(37, second)], record_cmd=True).launch()
     np.testing.assert_array_equal(first.numpy(), np.full(64, 37))
     np.testing.assert_array_equal(first.numpy(), second.numpy())
+
+
+def test_declared_programs_default_to_their_own_module():
+    output = wp.empty(64, dtype=wp.uint32)
+    wp.launch(fill, output.shape, [output])
+    np.testing.assert_array_equal(output.numpy(), np.full(64, 5))
+    named = wo.kernel(trace.func, kind=wo.ProgramKind.RAYGEN, module="wo_test_named")
+    assert named.module.name == "wo_test_named" and fill.module is not trace.module
+    # Declaring a kernel of the default module would put OptiX builtins in it.
+    with pytest.raises(TypeError, match="default Warp module"):
+        wo.kernel(fill, kind=wo.ProgramKind.RAYGEN)
 
 
 def test_launches_across_streams_use_their_own_parameters():
@@ -134,7 +149,7 @@ def test_invalid_params_schemas_and_stage_placements():
     with pytest.raises(TypeError, match="declares MISS.*RAYGEN"):
         wo.Pipeline(miss)
     with pytest.raises(TypeError, match="declares RAYGEN.*MISS"):
-        wo.Pipeline(write, miss=[trace])
+        wo.Pipeline(write, sbt=wo.SbtLayout(miss=trace))
     with pytest.raises(TypeError, match="Warp struct"):
         wo.Pipeline(write, params_type=int)
     pipeline = wo.Pipeline(write, params_type=Params)
@@ -339,7 +354,7 @@ def test_equal_pipelines_share_one_module_name():
 
     def name(raygen, miss=(None,)):
         return pipeline_module._module_name(
-            pipeline_module.params_struct(raygen), raygen, miss, [wo.HitGroup()], (), (), None
+            pipeline_module.params_struct(raygen), raygen, miss, [wo.HitGroup()], (), None
         )
 
     assert name(write) == name(write)

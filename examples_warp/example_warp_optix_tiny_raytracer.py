@@ -562,8 +562,7 @@ def main():
         accel = wo.Accel([wo.triangles(vertices, indices)], compact=True)
         pipeline = wo.Pipeline(
             tiny_raygen,
-            miss=[tiny_miss],
-            hit_groups=[wo.HitGroup(closest_hit=tiny_closest_hit)],
+            sbt=wo.SbtLayout(miss=tiny_miss, hit_groups={"triangles": wo.HitGroup(closest_hit=tiny_closest_hit)}),
             payload_words=6,
         )
         seed = wp.uint32(1337)

@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import itertools
 import logging
 import operator
 import os
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from typing import cast
 
 import numpy as np
 import warp as wp
@@ -21,9 +22,9 @@ from warp_optix import native
 from warp_optix.accel import Accel
 from warp_optix.addon import build_options
 from warp_optix.context import CAPTURE_ERROR, native_objects, resolve
-from warp_optix.enums import BuildFlags, ExceptionFlags, PrimitiveType, TraversableGraphFlags
+from warp_optix.enums import ExceptionFlags, PrimitiveType, TraversableGraphFlags
 from warp_optix.program import ProgramKind, as_program, params_struct
-from warp_optix.sbt import SbtBuilder, SbtLayout
+from warp_optix.sbt import HitGroup, Record, SbtLayout
 
 _log = logging.getLogger(__name__)
 _BUILTIN_PRIMITIVE_FLAGS = {
@@ -41,33 +42,6 @@ _BUILTIN_PRIMITIVE_FLAGS = {
 }
 
 
-@dataclass(frozen=True)
-class HitGroup:
-    """Programs run for one geometry type and ray type.
-
-    ``builtin`` selects an OptiX built-in intersection (a :class:`PrimitiveType`)
-    for curves. OptiX specializes it on the curve structures' build flags, so
-    ``build_flags`` must match the :class:`BuildFlags` those structures were built
-    with; curves built with different flags need separate hit groups. A hit group
-    without programs still occupies its SBT record, which is what pipelines that
-    only use ``optix_traverse`` hit objects need.
-    """
-
-    closest_hit: wp.Kernel | None = None
-    any_hit: wp.Kernel | None = None
-    intersection: wp.Kernel | None = None
-    builtin: int | None = None
-    build_flags: int = BuildFlags.PREFER_FAST_TRACE
-
-    def __post_init__(self):
-        if self.builtin is None:
-            return
-        if self.intersection is not None:
-            raise ValueError("HitGroup intersection and builtin cannot be combined")
-        if int(self.builtin) not in _BUILTIN_PRIMITIVE_FLAGS:
-            raise ValueError(f"HitGroup.builtin must be a curve PrimitiveType, got {self.builtin!r}")
-
-
 class Pipeline:
     """Warp kernels compiled into a linked OptiX pipeline with its shader binding table.
 
@@ -76,17 +50,13 @@ class Pipeline:
     Every other program is a Warp kernel whose arguments are a subset of the
     raygen arguments, bound by name. With ``params_type=MyStruct``, all stages
     instead bind any subset of that struct's fields, and launch takes
-    ``inputs=[my_struct_instance]``. ``None`` in ``miss`` is a miss record
-    without a program.
+    ``inputs=[my_struct_instance]``.
 
-    The hit record of geometry ``g`` and ray type ``r`` is
-    ``hit_groups[g * ray_types + r]``; trace with ``sbt_stride=ray_types``.
-    Direct and continuation callables share one SBT section: ``callables[k]``
-    is index ``k`` and ``continuation_callables[k]`` is index ``len(callables) + k``.
-
-    Pass ``sbt=SbtBuilder(...)`` or a snapshot for named ray types and hit
-    groups. This cannot be combined with ``miss``, ``hit_groups``, or
-    ``ray_types``; the pipeline keeps the snapshot as :attr:`sbt_layout`.
+    ``sbt`` is an :class:`SbtLayout` describing the ray types, miss records, and
+    hit groups; the pipeline keeps it as :attr:`sbt_layout`.
+    ``wo.Record(kernel, data=...)`` in the miss records or callables, and
+    ``HitGroup(data=...)``, store a Warp struct instance in the record;
+    :meth:`update_sbt_data` uploads later changes to those instances.
 
     Release is automatic when the last reference is dropped, or explicit with
     :meth:`close` or ``with``. Device memory is freed in stream order, like
@@ -98,12 +68,8 @@ class Pipeline:
         self,
         raygen: wp.Kernel,
         *,
-        miss: Sequence[wp.Kernel | None] | None = None,
-        hit_groups: Sequence[HitGroup] | None = None,
-        ray_types: int | None = None,
-        sbt: SbtBuilder | SbtLayout | None = None,
-        callables: Sequence[wp.Kernel] = (),
-        continuation_callables: Sequence[wp.Kernel] = (),
+        sbt: SbtLayout | None = None,
+        callables: Sequence[wp.Kernel | Record] = (),
         exception: wp.Kernel | None = None,
         exception_flags: ExceptionFlags | None = None,
         params_type: type | None = None,
@@ -117,35 +83,29 @@ class Pipeline:
         device: wp.DeviceLike = None,
     ):
         self._closed = True
-        layout = None
-        if sbt is not None:
-            if any(value is not None for value in (miss, hit_groups, ray_types)):
-                raise ValueError("sbt cannot be combined with miss, hit_groups, or ray_types")
-            if not isinstance(sbt, (SbtBuilder, SbtLayout)):
-                raise TypeError("sbt must be an SbtBuilder or SbtLayout")
-            layout = sbt.snapshot() if isinstance(sbt, SbtBuilder) else sbt
-            miss = layout._miss_entries
-            hit_groups = tuple(group for row in layout._hit_kernels for group in row)
-            ray_types = layout.trace_stride
-        else:
-            miss = (None,) if miss is None else tuple(miss)
-            hit_groups = (HitGroup(),) if hit_groups is None else tuple(hit_groups)
-            ray_types = 1 if ray_types is None else ray_types
-        if not isinstance(ray_types, int) or isinstance(ray_types, bool) or not 1 <= ray_types <= 15:
-            raise ValueError("ray_types must be an integer between 1 and 15")
-        if len(hit_groups) % ray_types:
-            raise ValueError("hit_groups must contain one group per geometry type and ray type")
-        if not miss:
-            raise ValueError("miss must contain at least one entry (None for a record without a program)")
+        layout = SbtLayout() if sbt is None else sbt
+        if not isinstance(layout, SbtLayout):
+            raise TypeError("sbt must be a warp_optix.SbtLayout")
+        # SbtLayout normalizes the constructor's shorthand to these mappings.
+        miss = list(cast(Mapping[str, wp.Kernel | Record | None], layout.miss).values())
+        layout_groups = cast(Mapping[str, Mapping[str, HitGroup]], layout.hit_groups)
+        hit_groups = [group for per_ray in layout_groups.values() for group in per_ray.values()]
         if params_type is not None and not all(hasattr(params_type, name) for name in ("vars", "ctype")):
             raise TypeError("params_type must be a Warp struct type")
+        miss, miss_data = _split_records(miss)
+        callables, callable_data = _split_records(callables)
+        hit_data = [group.data for group in hit_groups]
+        record_data = [*miss_data, *hit_data, *callable_data]
+        if any(data is not None and not wp.types.is_struct(data) for data in record_data):
+            raise TypeError("SBT record data must be a Warp struct instance")
         context, _ = resolve(device)
         device = context.device
+        context.check_arrays(record_data)
 
         with native_objects(context) as owned:
             # All programs compile into one Warp module that inherits the raygen module's options.
             params = params_struct(raygen) if params_type is None else params_type
-            module_name = _module_name(params, raygen, miss, hit_groups, callables, continuation_callables, exception)
+            module_name = _module_name(params, raygen, miss, hit_groups, callables, exception)
 
             def program(kernel, kind):
                 return None if kernel is None else as_program(kernel, kind, params, module_name)
@@ -160,8 +120,14 @@ class Pipeline:
                 )
                 for g in hit_groups
             ]
-            callable_programs = [program(k, ProgramKind.DIRECT_CALLABLE) for k in callables]
-            continuation_programs = [program(k, ProgramKind.CONTINUATION_CALLABLE) for k in continuation_callables]
+            # A callable is direct unless declared with wo.kernel(kind=ProgramKind.CONTINUATION_CALLABLE).
+            callable_kinds = [
+                ProgramKind.CONTINUATION_CALLABLE
+                if getattr(k, "_optix_kind", None) is ProgramKind.CONTINUATION_CALLABLE
+                else ProgramKind.DIRECT_CALLABLE
+                for k in callables
+            ]
+            callable_programs = [program(k, kind) for k, kind in zip(callables, callable_kinds)]
             exception_program = program(exception, ProgramKind.EXCEPTION)
 
             module = wp.get_module(module_name)
@@ -244,8 +210,12 @@ class Pipeline:
                 )
                 for group, (ch, ah, is_) in zip(hit_groups, hit_programs)
             ]
-            callable_descs = [native.ProgramGroupDesc(**slot("callables", "DC", k)) for k in callable_programs]
-            callable_descs += [native.ProgramGroupDesc(**slot("callables", "CC", k)) for k in continuation_programs]
+            callable_descs = [
+                native.ProgramGroupDesc(
+                    **slot("callables", "CC" if kind is ProgramKind.CONTINUATION_CALLABLE else "DC", k)
+                )
+                for k, kind in zip(callable_programs, callable_kinds)
+            ]
             exception_descs = (
                 [native.ProgramGroupDesc(**slot("exception", "", exception_program))] if exception_program else []
             )
@@ -264,34 +234,46 @@ class Pipeline:
                 native.util.accumulateStackSizes(group, stack_sizes, pipeline)
             pipeline.setStackSize(
                 *native.util.computeStackSizes(
-                    stack_sizes, max_trace_depth, 1 if continuation_callables else 0, 1 if callables else 0
+                    stack_sizes,
+                    max_trace_depth,
+                    int(ProgramKind.CONTINUATION_CALLABLE in callable_kinds),
+                    int(ProgramKind.DIRECT_CALLABLE in callable_kinds),
                 ),
                 max_traversable_depth,
             )
 
-            # One device buffer holds every header-only SBT record, in descriptor order.
-            stride = -(-native.SBT_RECORD_HEADER_SIZE // native.SBT_RECORD_ALIGNMENT) * native.SBT_RECORD_ALIGNMENT
-            host_records = np.zeros((len(groups), stride), dtype=np.uint8)
-            for group, record in zip(groups, host_records):
-                native.sbtRecordPackHeader(group, record)
-            records = wp.array(host_records.reshape(-1), dtype=wp.uint8, device=device)
+            # One device buffer holds every SBT record in descriptor order: the header, then
+            # the record data. Each section's stride fits its largest record.
+            header = native.SBT_RECORD_HEADER_SIZE
+            sections = [[None], [None] * len(exception_descs), miss_data, hit_data, callable_data]
+            strides = [_record_stride(section) for section in sections]
+            bases = list(itertools.accumulate((len(s) * n for s, n in zip(sections, strides)), initial=0))
+            offsets = [base + i * n for s, n, base in zip(sections, strides, bases) for i in range(len(s))]
+            host_records = np.zeros(bases[-1], dtype=np.uint8)
+            for group, offset in zip(groups, offsets):
+                native.sbtRecordPackHeader(group, host_records[offset : offset + header])
+            data_offsets = [
+                (offset + header, data)
+                for offset, data in zip(offsets, [data for section in sections for data in section])
+                if data is not None
+            ]
+            _pack_record_data(host_records, data_offsets)
+            records = wp.array(host_records, dtype=wp.uint8, device=device)
             # Launches on other streams do not wait for this upload.
             wp.synchronize_stream(wp.get_stream(device))
 
-            first_miss = records.ptr + (1 + len(exception_descs)) * stride
-            first_hit = first_miss + len(miss_descs) * stride
-            first_callable = first_hit + len(hit_descs) * stride
+            _, exception_base, miss_base, hit_base, callable_base, _ = (records.ptr + base for base in bases)
             sbt_table = native.ShaderBindingTable(
                 raygenRecord=records.ptr,
-                exceptionRecord=records.ptr + stride if exception_descs else 0,
-                missRecordBase=first_miss,
-                missRecordStrideInBytes=stride,
+                exceptionRecord=exception_base if exception_descs else 0,
+                missRecordBase=miss_base,
+                missRecordStrideInBytes=strides[2],
                 missRecordCount=len(miss_descs),
-                hitgroupRecordBase=first_hit if hit_descs else 0,
-                hitgroupRecordStrideInBytes=stride,
+                hitgroupRecordBase=hit_base if hit_descs else 0,
+                hitgroupRecordStrideInBytes=strides[3],
                 hitgroupRecordCount=len(hit_descs),
-                callablesRecordBase=first_callable if callable_descs else 0,
-                callablesRecordStrideInBytes=stride,
+                callablesRecordBase=callable_base if callable_descs else 0,
+                callablesRecordStrideInBytes=strides[4],
                 callablesRecordCount=len(callable_descs),
             )
 
@@ -300,6 +282,9 @@ class Pipeline:
         self._owned = tuple(owned)
         self._sbt = sbt_table
         self._records = records
+        self._host_records = host_records
+        self._data_offsets = data_offsets
+        self._data_arrays = tuple(_record_arrays(record_data))
         self._params_size = ctypes.sizeof(params.ctype)
         self._param_names = tuple(arg.label for arg in raygen.adj.args)
         self._tid_ndim = raygen_program._wo_tid_ndim
@@ -321,7 +306,7 @@ class Pipeline:
 
     @property
     def sbt_layout(self) -> SbtLayout | None:
-        """The SBT snapshot the pipeline was built from, if ``sbt=`` was given."""
+        """The SBT layout the pipeline was built from, or None after close()."""
         return self._sbt_layout
 
     @property
@@ -339,12 +324,37 @@ class Pipeline:
         self._streams = {}
         self._owned = ()
         self._records = None
+        self._data_arrays = ()
+        self._data_offsets = []
+        self._host_records = None
+        self._sbt_layout = None
 
         def destroy():
             for obj in reversed(owned):
                 obj.destroy()
 
         self._context.release(destroy, streams)
+
+    def update_sbt_data(self, stream: wp.Stream | None = None) -> None:
+        """Upload the current field values of every record's ``data`` struct instance.
+
+        The copy is ordered with launches on ``stream``, like writing a ``wp.array``, and
+        does not wait on the host. Arrays referenced by the data stay alive with the pipeline.
+        """
+        self._check_open()
+        context, stream = resolve(self.device, stream)
+        data = [data for _, data in self._data_offsets]
+        context.check_arrays(data)
+        _pack_record_data(self._host_records, self._data_offsets)
+        # Copying from pageable memory returns once the bytes are staged, so the host table can be reused.
+        _warp_context.runtime.core.wp_memcpy_h2d(
+            context.device.context,
+            self._records.ptr,
+            self._host_records.ctypes.data,
+            self._host_records.nbytes,
+            stream.cuda_stream,
+        )
+        self._data_arrays = tuple(_record_arrays(data))
 
     def __enter__(self) -> Pipeline:
         self._check_open()
@@ -609,7 +619,36 @@ def _launch(pipeline: Pipeline, context, storage: _ParamsStorage, size, stream: 
     pipeline._streams[stream.cuda_stream] = stream
 
 
-def _module_name(params, raygen, miss, hit_groups, callables, continuation_callables, exception) -> str:
+def _split_records(entries) -> tuple[list, list]:
+    """Split miss or callable entries into their programs and record data."""
+    pairs = [(e.program, e.data) if isinstance(e, Record) else (e, None) for e in entries]
+    return [program for program, _ in pairs], [data for _, data in pairs]
+
+
+def _record_arrays(values):
+    """Snapshot array references separately from the mutable record structs."""
+    for value in values:
+        if isinstance(value, wp.array):
+            yield value
+        elif wp.types.is_struct(value):
+            yield from _record_arrays(getattr(value, name) for name in value._cls.vars)
+
+
+def _record_stride(section: list) -> int:
+    size = native.SBT_RECORD_HEADER_SIZE + max(
+        (ctypes.sizeof(d._cls.ctype) for d in section if d is not None), default=0
+    )
+    return -(-size // native.SBT_RECORD_ALIGNMENT) * native.SBT_RECORD_ALIGNMENT
+
+
+def _pack_record_data(host_records: np.ndarray, data_offsets) -> None:
+    # A Warp struct instance keeps its packed bytes current in _ctype, as launch parameters rely on.
+    base = host_records.ctypes.data
+    for offset, data in data_offsets:
+        ctypes.memmove(base + offset, ctypes.addressof(data._ctype), ctypes.sizeof(data._ctype))
+
+
+def _module_name(params, raygen, miss, hit_groups, callables, exception) -> str:
     """Name the Warp module of a pipeline after its programs and parameters.
 
     Equal pipelines get equal names, and so equal generated code, which lets
@@ -624,8 +663,7 @@ def _module_name(params, raygen, miss, hit_groups, callables, continuation_calla
         identity(raygen),
         [identity(k) for k in miss],
         [(identity(g.closest_hit), identity(g.any_hit), identity(g.intersection)) for g in hit_groups],
-        [identity(k) for k in callables],
-        [identity(k) for k in continuation_callables],
+        [(identity(k), getattr(k, "_optix_kind", ProgramKind.DIRECT_CALLABLE)) for k in callables],
         identity(exception),
     )
     return f"warp_optix_{hashlib.sha256(repr(key).encode()).hexdigest()[:16]}"

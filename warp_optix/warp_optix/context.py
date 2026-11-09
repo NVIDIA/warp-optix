@@ -62,8 +62,6 @@ class Context:
         self.log_level = int(config.log_level)
         self.log_message_count = 0
         self._destroyed = False
-        # Live acceleration structures by id, for validating instance children.
-        self._accels: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
         # Native destroys waiting for (events, streams, callback); events are recorded outside graph capture.
         self._releases: list[tuple[list[wp.Event] | None, tuple, object]] = []
         owner = weakref.ref(self)
@@ -158,7 +156,6 @@ class Context:
                 pending, self._releases = self._releases, []
                 for _, _, callback in pending:
                     _run(callback)
-            self._accels.clear()
             self._native.destroy()
             self._destroyed = True
 
