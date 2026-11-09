@@ -128,11 +128,12 @@ def test_pipeline_close_defers_native_objects_and_buffers_until_launches_finish(
     params = weakref.ref(pipeline._buffers[stream.cuda_stream].data)
     sizes = [records().capacity, params().capacity]
     output = wp.empty(1, dtype=float, device="cuda")
-    gate.block(stream)
+    pending = gate.block(stream)
     wo.launch(pipeline, 1, [output], stream=stream)
 
     # close() returns at once and frees device memory in stream order, like wp.array;
     # the native objects are destroyed only after the pending launch.
+    assert not pending.is_complete, "The gate expired before pipeline release"
     pipeline.close()
     assert pipeline.closed and destroyed == [] and len(context._releases) == 1
     assert records() is None and params() is None
@@ -187,11 +188,12 @@ def test_accels_are_released_in_stream_order(gate):
     by_object = wp.empty(1, dtype=float, device="cuda")
     wo.launch(pipeline, 1, [wp.uint64(0), by_id], stream=stream)  # Warm-up.
     settle()
-    gate.block(stream)
+    pending = gate.block(stream)
     wo.launch(pipeline, 1, [closed.id, by_id], stream=stream)
     wo.launch(pipeline, 1, [dropped, by_object], stream=stream)
     # Like wp.Mesh, close() frees memory at once; Warp's stream-ordered free keeps
     # it valid for the launch already submitted.
+    assert not pending.is_complete, "The gate expired before acceleration structure release"
     closed.close()
     assert closed.closed and closed._buffer is None
     assert closed_buffer() is None and all(ref() is None for ref in input_refs[:2])
@@ -296,18 +298,27 @@ def test_release_callbacks_run_once_when_collect_reenters():
     assert context._releases == []
 
 
-def test_pipeline_forgets_streams_whose_launches_finished(gate):
+@pytest.mark.parametrize("explicit_params", [False, True])
+def test_pipeline_forgets_streams_whose_launches_finished(gate, explicit_params):
     pipeline = wo.Pipeline(write_value)
     output = wp.empty(1, dtype=float, device="cuda")
+    if explicit_params:
+        params = wo.LaunchParams(pipeline)
+        params.assign([output])
+        arguments = {"params": params}
+    else:
+        arguments = {"inputs": [output]}
     for _ in range(8):
-        wo.launch(pipeline, 1, [output], stream=wp.Stream("cuda"))
+        wo.launch(pipeline, 1, **arguments, stream=wp.Stream("cuda"))
         wp.synchronize()
-    assert len(pipeline._streams) == len(pipeline._buffers) == 1
+    assert len(pipeline._streams) == 1
+    assert len(pipeline._buffers) == (0 if explicit_params else 1)
 
     busy_stream = wp.Stream("cuda")
-    gate.block(busy_stream)
-    wo.launch(pipeline, 1, [output], stream=busy_stream)
-    wo.launch(pipeline, 1, [output], stream=wp.Stream("cuda"))
+    pending = gate.block(busy_stream)
+    wo.launch(pipeline, 1, **arguments, stream=busy_stream)
+    wo.launch(pipeline, 1, **arguments, stream=wp.Stream("cuda"))
+    assert not pending.is_complete, "The gate expired before checking busy-stream retention"
     assert busy_stream.cuda_stream in pipeline._streams
     gate.open()
     settle()

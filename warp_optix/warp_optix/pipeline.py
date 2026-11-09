@@ -533,6 +533,8 @@ def launch(
     if params is not None and (inputs is not None or outputs is not None):
         raise ValueError("Provide either inputs/outputs or params, not both")
     key = stream.cuda_stream
+    if key not in pipeline._streams:
+        pipeline._forget_idle_streams()
     if params is not None:
         if not isinstance(params, LaunchParams) or params.pipeline is not pipeline:
             raise ValueError("params must be LaunchParams of this pipeline")
@@ -543,7 +545,6 @@ def launch(
         inputs = (*(inputs or ()), *(outputs or ()))
         storage = pipeline._buffers.get(key)
         if storage is None:
-            pipeline._forget_idle_streams()
             storage = pipeline._buffers[key] = _ParamsStorage(pipeline.params_type, context.device)
         if pipeline._explicit_params:
             if len(inputs) != 1:

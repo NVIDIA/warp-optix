@@ -164,7 +164,7 @@ def test_dropping_launch_params_frees_storage_in_stream_order(gate):
     wo.launch(pipeline, (1,), params=warm, stream=stream)
     wp.synchronize_device(device)
 
-    gate.block(stream)
+    pending = gate.block(stream)
     output = wp.empty(128, dtype=wp.uint32, device=device)
     launch_params = wo.LaunchParams(pipeline)
     storage_ref = weakref.ref(launch_params.data)
@@ -172,6 +172,7 @@ def test_dropping_launch_params_frees_storage_in_stream_order(gate):
     wo.launch(pipeline, (128,), params=launch_params, stream=stream)
     # Like a wp.array, the storage goes away with its last reference (no garbage collection
     # needed); Warp frees the device memory in stream order, so the pending launch still reads it.
+    assert not pending.is_complete, "The gate expired before launch parameter release"
     del launch_params
     assert storage_ref() is None
     gate.open()

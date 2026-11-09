@@ -357,7 +357,7 @@ def instances(records: wp.array) -> BuildInput:
     if records.dtype is not Instance or not records.device.is_cuda or not records.is_contiguous:
         raise ValueError("records must be a contiguous CUDA array of Instance")
     return BuildInput(
-        native.BuildInputInstanceArray(instances=records.ptr or 0, numInstances=records.size),
+        native.BuildInputInstanceArray(instances=records.ptr if records.size else 0, numInstances=records.size),
         (records,),
         instance_records=records,
     )

@@ -495,17 +495,20 @@ def test_empty_build_inputs_build_refit_and_miss():
     vertices = wp.array(QUAD_VERTICES, dtype=wp.vec3, device=device)
     none = wp.empty(0, dtype=wp.int32, device=device)
     no_points = wp.empty(0, dtype=wp.vec3, device=device)
+    records = wp.empty(1, dtype=wo.Instance, device=device)
     inputs = [
         wo.triangles(vertices, none),
         wo.curves(vertices, wp.full(4, 0.1, dtype=float, device=device), none),
         wo.aabbs(no_points, no_points),
         wo.instances(wp.empty(0, dtype=wo.Instance, device=device)),
+        wo.instances(records[:0]),  # An empty view still has a non-null backing pointer.
     ]
     pipeline = wo.Pipeline(curve_query_raygen, device=device)
     results = wp.full(4, -7.0, dtype=float, device=device)
     for build_input in inputs:
         accel = wo.Accel([build_input], flags=wo.BuildFlags.ALLOW_UPDATE)
         accel.refit()
+        accel.rebuild()
         wo.launch(pipeline, dim=1, inputs=[accel, results])
         assert results.numpy()[0] == 0.0
 
