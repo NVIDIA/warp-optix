@@ -2,9 +2,9 @@
 
 [![Glass and gold chess, a glass of water, and a sunlit breakfast room, all rendered with warp-optix](docs/images/banner.webp)](docs/images/banner.webp)
 
-warp-optix puts NVIDIA's OptiX ray tracing engine inside [Warp](https://github.com/NVIDIA/warp).
-You build scenes from Warp arrays, write OptiX programs as ordinary Warp kernels, and launch them
-the way you launch any other kernel. If you just want pictures, there's a full path tracer on top.
+warp-optix brings NVIDIA OptiX ray tracing to [Warp](https://github.com/NVIDIA/warp). Scenes are
+built from Warp arrays, OptiX programs are written as ordinary Warp kernels, and launches work like
+`wp.launch`. A physically based path tracer built on the same API is included.
 
 > [!WARNING]
 > warp-optix is alpha software. The API will change between releases, sometimes without a
@@ -17,39 +17,39 @@ pip install warp-optix
 pip install "warp-optix[pathtracing,ui,usd]"   # adds the path tracer, viewer, and USD loading
 ```
 
-Wheels exist for Python 3.12 on Linux x86-64 and Windows x64. All you need is an NVIDIA driver. No
-CUDA Toolkit, no OptiX SDK: PyOptiX 9.1.1 comes in as a dependency, and the wheel carries the OptiX
-9.1.0 headers that kernels compile against.
+Wheels are available for Python 3.12 on Linux x86-64 and Windows x64 and require only an NVIDIA
+driver. Neither the CUDA Toolkit nor the OptiX SDK is needed: PyOptiX 9.1.1 is installed as a
+dependency, and the wheel includes the OptiX 9.1.0 headers that kernels compile against.
 
-Working from a checkout needs a C++17 compiler as well:
+Building from a checkout also requires a C++17 compiler:
 
 ```bash
 uv sync --extra pathtracing --extra ui --extra usd
 uv run python examples/example_pathtracing.py --scene hairball
 ```
 
-## Four ways in
+## Overview
 
-warp-optix has layers. Most people only need the first one or two.
+warp-optix can be used at four levels. Most applications need only the first or second.
 
-1. **Ray queries in a Warp kernel.** Call `wo.accel_query_ray()` from a kernel, the same way you'd
-   call `wp.mesh_query_ray()`. One kernel, no other programs. Good for depth images, visibility,
-   sensors, and collision rays.
-2. **Your own OptiX programs.** Write ray generation, closest-hit, any-hit, miss, intersection, and
-   callable programs as Warp kernels, and let OptiX call them as rays hit things.
+1. **Ray queries in a Warp kernel.** `wo.accel_query_ray()` is called from a kernel, in the same way
+   as `wp.mesh_query_ray()`. It needs a single kernel and no other programs, and suits depth images,
+   visibility tests, sensors, and collision rays.
+2. **Custom OptiX programs.** Ray generation, closest-hit, any-hit, miss, intersection, and callable
+   programs are written as Warp kernels, and OptiX invokes them as rays traverse the scene.
 3. **The path tracer.** `warp_optix.pathtracing` renders glTF, USD, or procedural scenes with
-   physically based materials, denoising, and an interactive viewer. You don't write any shaders.
-4. **Raw OptiX.** `warp_optix.native` hands you PyOptiX itself when you need something the layers
-   above don't cover.
+   physically based materials, denoising, and an interactive viewer, without any shader code.
+4. **Native OptiX.** `warp_optix.native` exposes PyOptiX directly for functionality the other levels
+   do not cover.
 
-All four use the same scenes, so let's start there. When you need exact signatures or the full
-list of device builtins, the [API reference](docs/api.md) has them.
+All four levels share the same scene representation, which is described first. The
+[API reference](docs/api.md) lists exact signatures and every device builtin.
 
 ## Building a scene
 
 OptiX traces rays against *acceleration structures*: BVHs that it builds and owns on the GPU. In
-warp-optix that's `wo.Accel`, and it works a lot like `wp.Mesh`. You hand it Warp arrays, it
-builds, and kernels see it as a `wp.uint64` id.
+warp-optix these are `wo.Accel` objects, which work much like `wp.Mesh`: they are built from Warp
+arrays, and kernels refer to them by a `wp.uint64` id.
 
 ```python
 import numpy as np
@@ -64,19 +64,19 @@ indices = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32)
 quad = wo.Accel([wo.triangles(points, indices)])
 ```
 
-Triangles are one kind of input. There are three others:
+Four kinds of build input are available:
 
 | Input | What goes in |
 | --- | --- |
 | `wo.triangles(points, indices)` | `vec3` points and index triplets |
 | `wo.curves(points, widths, indices, curve_type=)` | control points, a radius per point, and the first point of each segment (round linear, B-spline, Catmull-Rom, Bézier, or flat ribbon curves) |
-| `wo.aabbs(lowers, uppers)` | a box per custom primitive, like `wp.Bvh(lowers, uppers)`; you supply the intersection program |
+| `wo.aabbs(lowers, uppers)` | a bounding box per custom primitive, like `wp.Bvh(lowers, uppers)`, with a user-supplied intersection program |
 | `wo.instances(records, children)` | `wo.Instance` records that place other structures in the world |
 
-Instances are how you get many copies of a mesh, or many worlds in one scene. Records are
-plain Warp structs, so a kernel can write a thousand of them in one launch, straight from your
-simulation state. You also tell `wo.instances` which structures the records point at. That lets the
-build skip reading the records back, and it keeps those children alive for as long as the
+Instances place many copies of a structure in a scene, or many worlds in one scene. Instance
+records are Warp structs, so a single kernel launch can write thousands of them directly from
+simulation state. `wo.instances` also receives the structures that the records reference. The build
+therefore never reads the records back, and the referenced structures stay alive for as long as the
 instance structure needs them:
 
 ```python
@@ -93,13 +93,13 @@ wp.launch(place, dim=3, inputs=[quad.id, heights, records])
 scene = wo.Accel([wo.instances(records, [quad])], flags=wo.BuildFlags.ALLOW_UPDATE)
 ```
 
-When things move, rewrite the records (or the points) and call `scene.refit()`. A refit doesn't
-allocate and doesn't wait on the host, so it's cheap enough to run every simulation step. Refits do
-slowly lose trace quality, so call `scene.rebuild()` every so often. Static geometry can shrink
-instead: `compact=True` cuts a structure to about a third of its size, and `wo.compact(accels)` does
-a whole batch with a single sync.
+When geometry moves, update the records or points and call `scene.refit()`. A refit neither
+allocates memory nor waits on the host, so it can run every simulation step. Because trace quality
+degrades over many refits, call `scene.rebuild()` periodically. Static geometry can be compacted
+instead: `compact=True` reduces a structure to about a third of its size, and `wo.compact(accels)`
+compacts a batch of structures with a single synchronization.
 
-For vertex motion blur, give `wo.triangles` a list of point arrays, one per time step, plus OptiX
+For vertex motion blur, pass `wo.triangles` one point array per time step, together with OptiX
 motion options:
 
 ```python
@@ -112,8 +112,9 @@ blurred = wo.Accel([wo.triangles([points, later], indices)], motion=motion)
 
 ## 1. Ray queries in a Warp kernel
 
-This is the shortest path from a scene to an answer. `wo.accel_query_ray` works like
-`wp.mesh_query_ray`: give it a ray, get back whether it hit, how far, and what.
+Ray queries are the simplest way to trace a scene. `wo.accel_query_ray` works like
+`wp.mesh_query_ray`: given a ray, it returns whether anything was hit, at what distance, and what
+was hit.
 
 ```python
 @wp.kernel(module="unique")
@@ -129,26 +130,25 @@ depth = wp.empty((64, 64), dtype=float)
 wo.launch(pipeline, dim=depth.shape, inputs=[scene, depth])
 ```
 
-Three things here are different from plain Warp:
+Three details differ from plain Warp:
 
 - The kernel becomes a `wo.Pipeline` and runs with `wo.launch`, which takes the same `dim`, `inputs`,
   and `stream` as `wp.launch`. `wp.tid()` works as usual.
-- `module="unique"` gives the kernel its own Warp module. OptiX kernels can't compile next to normal
-  kernels, and this keeps them apart.
-- You can pass the `wo.Accel` itself in `inputs`. It arrives as its id and stays alive until the
-  launch is done.
+- `module="unique"` gives the kernel its own Warp module. Kernels that use OptiX builtins cannot be
+  compiled together with ordinary kernels.
+- A `wo.Accel` may be passed directly in `inputs`. It is passed to the kernel as its id and kept
+  alive until the launch completes.
 
-Besides `t`, the result has the instance id, primitive index, and barycentrics (`u`, `v`).
-`wo.accel_query_ray_anyhit` only answers "did it hit anything?", and stops at the first hit, which
-makes it the cheap choice for shadow and visibility rays.
+In addition to `t`, the result contains the instance id, primitive index, and barycentrics (`u`,
+`v`). `wo.accel_query_ray_anyhit` only reports whether anything was hit and stops at the first hit,
+which makes it the efficient choice for shadow and visibility rays.
 
-## 2. Writing your own OptiX programs
+## 2. Custom OptiX programs
 
-Queries are enough until you want different code for different surfaces, custom primitives, or
-rays that bounce. That's what OptiX programs are for. Your ray generation kernel calls
-`wp.optix_trace`, OptiX walks the scene, and then it runs your closest-hit program on the nearest
-hit, or your miss program if there wasn't one. The programs talk through a *payload*, a small Warp
-struct that rides along with the ray.
+OptiX programs are needed for per-surface shading, custom primitives, and rays that bounce. The ray
+generation kernel calls `wp.optix_trace`, OptiX traverses the scene, and then runs the closest-hit
+program for the nearest hit, or the miss program if nothing was hit. The programs exchange data
+through a *payload*, a small Warp struct carried with the ray.
 
 ```python
 @wp.struct
@@ -185,18 +185,18 @@ image = wp.empty((64, 64), dtype=wp.vec3)
 wo.launch(pipeline, dim=image.shape, inputs=[scene, wp.vec3(1.0, 0.5, 0.2), image])
 ```
 
-The ray generation kernel's arguments are the launch parameters, and every other program can take
-any of them **by name**. `shade` asks for `tint`, and that's all it gets. Inside a program, the
-`wp.optix_*` builtins read the hit: the distance (`wp.optix_get_ray_tmax()`), which instance and
-primitive got hit, the barycentrics, front or back face, and transforms between object and world
-space. The [API reference](docs/api.md#device-builtins) lists them all.
+The ray generation kernel's arguments are the launch parameters, and every other program may
+declare any of them **by name**; `shade` declares only `tint`. Inside a program, the `wp.optix_*`
+builtins describe the hit: its distance (`wp.optix_get_ray_tmax()`), the instance and primitive that
+were hit, the barycentrics, the face orientation, and transforms between object and world space. The
+[API reference](docs/api.md#device-builtins) lists all of them.
 
 ### The shader binding table
 
-`wo.SbtLayout` decides which program runs where. OptiX calls this the shader binding table, or SBT.
-The idea is simple. You name your *ray types* (most renderers have a camera ray and a shadow ray),
-and you name your *hit groups*, one per kind of surface. Each hit group can have different programs
-for each ray type:
+`wo.SbtLayout` determines which program runs for each hit. OptiX calls this the shader binding
+table, or SBT. A layout names the *ray types* (most renderers use a camera ray and a shadow ray) and
+the *hit groups*, one per kind of surface. Each hit group can use different programs for each ray
+type:
 
 ```python
 @wp.kernel(module="unique")
@@ -220,16 +220,17 @@ lights = wo.SbtLayout(
 print(lights.describe())
 ```
 
-The layout answers the two numbers OptiX needs. `lights.get_sbt_offset("metal")` is what you pass to
-`wo.make_instance` for every metal instance, and `lights.ray_type_index("shadow")` is what a shadow
-`wp.optix_trace` passes as its SBT offset and miss index, with `lights.trace_stride` as the stride.
-Nobody has to count records by hand. If one program works for every ray type, give a bare
-`wo.HitGroup` instead of a mapping, like the first example does.
+The layout provides the indices OptiX needs, so records never have to be counted by hand.
+`lights.get_sbt_offset("metal")` is the SBT offset passed to `wo.make_instance` for each metal
+instance, and `lights.ray_type_index("shadow")` is the SBT offset and miss index of a shadow
+`wp.optix_trace`, with `lights.trace_stride` as its stride. When one program serves every ray type,
+a single `wo.HitGroup` can be given instead of a mapping, as in the first example.
 
 ### Per-surface data
 
-A hit group can carry a `@wp.struct`, so one closest-hit program can shade a hundred materials
-instead of you writing a hundred programs. The program reads it with `wp.optix_load_sbt_data`:
+A hit group can carry a `@wp.struct`, so that one closest-hit program shades many materials
+instead of requiring a program per material. The program reads the data with
+`wp.optix_load_sbt_data`:
 
 ```python
 @wp.struct
@@ -263,13 +264,13 @@ red.color = wp.vec3(1.0, 0.5, 0.0)
 painted.update_sbt_data()  # uploads the new color; no rebuild
 ```
 
-Miss and callable programs can carry data too: wrap them as `wo.Record(kernel, data=...)`.
+Miss and callable programs can carry data as well, given as `wo.Record(kernel, data=...)`.
 
 ### Launching in a loop
 
-`wo.launch` is cheap: about 13 µs of host time per call on an RTX PRO 6000, against roughly
-5.5 µs for OptiX's own launch. In a tight simulation loop, record the launch once and replay it,
-just like `wp.launch(..., record_cmd=True)`:
+`wo.launch` costs about 13 µs of host time per call on an RTX PRO 6000, compared with roughly
+5.5 µs for the OptiX launch itself. In a simulation loop, a launch can be recorded once and
+replayed, as with `wp.launch(..., record_cmd=True)`:
 
 ```python
 launch = wo.launch(pipeline, dim=image.shape, inputs=[scene, wp.vec3(1.0, 0.5, 0.2), image], record_cmd=True)
@@ -280,28 +281,28 @@ for step in range(3):
 
 ### More program kinds
 
-- **Custom primitives.** Build `wo.aabbs`, then give the hit group an `intersection` program that
-  calls `wp.optix_report_intersection(t, kind, ...)`.
+- **Custom primitives.** Build the geometry with `wo.aabbs` and give its hit group an
+  `intersection` program that calls `wp.optix_report_intersection(t, kind, ...)`.
 - **Built-in curves.** Use `wo.HitGroup(builtin=wo.PrimitiveType.ROUND_CUBIC_BEZIER, ...)`. OptiX
-  specializes its curve intersector on the structure's build flags, so pass `build_flags=` when your
-  curves weren't built with the default `PREFER_FAST_TRACE`.
+  specializes its curve intersector on the structure's build flags, so pass `build_flags=` for curves
+  built with flags other than the default `PREFER_FAST_TRACE`.
 - **Callables.** `wo.Pipeline(..., callables=[a, b])` makes `a` and `b` callable from any program
-  with `wp.optix_direct_call(0)` and `wp.optix_direct_call(1)`. Declare a continuation callable with
-  `@wo.kernel(kind=wo.ProgramKind.CONTINUATION_CALLABLE)`.
-- **Exceptions.** `exception=` adds an exception program, and `exception_flags=` turns on OptiX's
-  stack-overflow and trace-depth checks while you debug.
-- **A shared parameter struct.** By default the ray generation kernel's arguments define the
-  launch parameters. Pass `params_type=MyParams` to use a `@wp.struct` instead, so that hit programs
-  can read fields the camera kernel never mentions.
+  with `wp.optix_direct_call(0)` and `wp.optix_direct_call(1)`. Continuation callables are declared
+  with `@wo.kernel(kind=wo.ProgramKind.CONTINUATION_CALLABLE)`.
+- **Exceptions.** `exception=` adds an exception program, and `exception_flags=` enables OptiX's
+  stack-overflow and trace-depth checks for debugging.
+- **A shared parameter struct.** By default, the ray generation kernel's arguments define the launch
+  parameters. `params_type=MyParams` uses a `@wp.struct` instead, so that hit programs can read fields
+  the ray generation kernel does not declare.
 
-[`examples/example_mixed_geometry.py`](examples/example_mixed_geometry.py) puts most of this in one
-place: triangles, curves, and six analytic shapes under GPU-written instances, with a named SBT.
+[`examples/example_mixed_geometry.py`](examples/example_mixed_geometry.py) combines most of these
+features: triangles, curves, and six analytic shapes under GPU-written instances, with a named SBT.
 
 ## 3. The path tracer
 
-If what you want is a rendered image, skip the programs. `warp_optix.pathtracing` is a physically
-based path tracer built on everything above. It reads glTF and USD, has native curves for hair and
-fur, denoises with OptiX (optionally upscaling 2x), and comes with an OpenGL viewer.
+`warp_optix.pathtracing` is a physically based path tracer built on the API above, for rendering
+without writing OptiX programs. It loads glTF and USD, renders native curves for hair and fur,
+denoises with OptiX (with optional 2x upscaling), and includes an OpenGL viewer.
 
 ```python
 from warp_optix.pathtracing import PathTracer
@@ -316,51 +317,51 @@ frame = tracer.get_frame()  # (240, 320, 4) float RGBA
 tracer.close()
 ```
 
-For your own scenes, use `load_scene_from_gltf(path)` or `load_scene_from_usd(path)`, or build one
-from meshes, curves, spheres, and materials. Dynamic meshes and curves update from device arrays, so a
-simulation can drive them every frame without copying to the host. The [path tracer
+Scenes can be loaded with `load_scene_from_gltf(path)` or `load_scene_from_usd(path)`, or built
+from meshes, curves, spheres, and materials. Dynamic meshes and curves are updated from device
+arrays, so a simulation can drive them every frame without host copies. The [path tracer
 guide](docs/pathtracing.md) covers materials, denoising, the viewer, and USD.
 
-## 4. Raw OptiX
+## 4. Native OptiX
 
-`warp_optix.native` is PyOptiX 9.1.1 plus a few things it's missing: cooperative-vector matrix
-conversion, the extra enum values, and fixes for module compile options. The device's OptiX context
-is one call away:
+`warp_optix.native` is PyOptiX 9.1.1 with a few additions: cooperative-vector matrix conversion,
+missing enum values, and fixes for module compile options. The OptiX context of a device is
+available through `wo.get_context`:
 
 ```python
-context = wo.get_context("cuda").native  # PyOptiX DeviceContext, borrowed: don't destroy it
+context = wo.get_context("cuda").native  # borrowed PyOptiX DeviceContext; do not destroy it
 print(native.version(), native.getCoopVecProperty(context))
 ```
 
-Native objects follow PyOptiX's rules. You destroy them yourself, and you keep them on their own
-device. Importing warp-optix doesn't change the `optix` module, so other PyOptiX code in the same
-process keeps working as before.
+Native objects follow PyOptiX's conventions: they are destroyed explicitly and must stay on their
+own device. Importing warp-optix does not modify the `optix` module, so other PyOptiX code in the
+same process is unaffected.
 
-## Things to know
+## Usage notes
 
-**Lifetime.** `wo.Accel` and `wo.Pipeline` work like `wp.array`. They free themselves when the last
-reference goes away, or right away with `close()` or a `with` block. Memory is freed in stream order,
-so GPU work that's already queued can still use it.
+**Lifetime.** `wo.Accel` and `wo.Pipeline` behave like `wp.array`. They are released when the last
+reference is dropped, or immediately with `close()` or a `with` block. Memory is freed in stream
+order, so work already queued on the GPU can still use it.
 
-**Streams.** Every call takes Warp's `stream=` and `device=` arguments with Warp's rules. Builds,
-refits, and launches are asynchronous. Only compaction and the opt-in `wo.config.verify_instances`
-check wait on the host.
+**Streams.** All calls accept Warp's `stream=` and `device=` arguments and follow Warp's rules.
+Builds, refits, and launches are asynchronous; only compaction and the optional
+`wo.config.verify_instances` check wait on the host.
 
-**CUDA graphs.** OptiX launches can't be captured into CUDA graphs yet, and warp-optix raises an
-error if you try. Capture your Warp work in graphs and run the OptiX work between them on the same
+**CUDA graphs.** OptiX launches cannot currently be captured into CUDA graphs, and warp-optix raises
+an error during capture. Capture Warp work in graphs and run OptiX work between them on the same
 stream.
 
-**Debugging.** `wo.config.validation = True` turns on OptiX's validation layer, which catches API
-misuse and reports it through the log. It's slow, so leave it off otherwise.
+**Debugging.** `wo.config.validation = True` enables OptiX's validation layer, which reports API
+misuse through the log. It is slow and intended for debugging only.
 
 ## Examples
 
-The [examples](examples/README.md) folder has a gallery with images and commands. The best places
-to start:
+The [examples](examples/README.md) folder contains a gallery with images and commands. Good
+starting points are:
 
 ```bash
 uv run python examples/example_minimal.py                       # the smallest pipeline
-uv run python examples/example_raytracing.py --live             # a Cornell box you can fly through
+uv run python examples/example_raytracing.py --live             # Cornell box with an interactive viewer
 uv run python examples/example_pathtracing.py --scene glass_chess
 ```
 
@@ -371,14 +372,15 @@ uv run pytest warp_optix/tests
 uv run pytest examples/neural_texture
 ```
 
-The suite takes a few seconds once Warp's kernel cache is warm.
+With a warm Warp kernel cache, the suite runs in a few seconds.
 
 ## License
 
-The Warp integration is [Apache-2.0](LICENSE.md). `src/extension.cpp`, `src/pyoptix_compat.h`, and
-`CMakeLists.txt` are [BSD-3-Clause](LICENSE.txt). The bundled OptiX headers keep their
-[NVIDIA SDK terms](OptiX_LICENSE.txt), and NVIDIA has approved shipping them, unmodified, in this
-package. See the [third-party notices](THIRD_PARTY_NOTICES.txt) for the rest.
+The Warp integration is licensed under [Apache-2.0](LICENSE.md). `src/extension.cpp`,
+`src/pyoptix_compat.h`, and `CMakeLists.txt` are licensed under [BSD-3-Clause](LICENSE.txt). The
+bundled OptiX headers retain their [NVIDIA SDK terms](OptiX_LICENSE.txt), and their redistribution,
+unmodified, in this package has been approved. See the [third-party notices](THIRD_PARTY_NOTICES.txt)
+for other components.
 
-We aren't taking outside contributions yet; [CONTRIBUTING.md](CONTRIBUTING.md) will say when that
-changes. To report a security issue, follow [SECURITY.md](SECURITY.md).
+This project is not yet accepting outside contributions; see [CONTRIBUTING.md](CONTRIBUTING.md) for
+updates. To report a security vulnerability, follow [SECURITY.md](SECURITY.md).
