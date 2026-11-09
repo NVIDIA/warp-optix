@@ -1,12 +1,11 @@
 # Publishing warp-optix to PyPI
 
 Releases use GitHub Actions Trusted Publishing. Maintainers do not share a
-PyPI token. This workflow currently releases Windows x64 / CPython 3.12 wheels.
-Package metadata therefore requires Python 3.12 (`>=3.12,<3.13`) and advertises
-Windows support only. Linux wheels need a separate manylinux packaging change;
-broaden the metadata when those wheels and additional Python versions ship.
-No source distribution is published by this workflow. PyOptiX remains a
-separate dependency; the bundled CI PyOptiX wheel is not published by this project.
+PyPI token. Each release publishes CPython 3.12 wheels for Linux x86-64
+(`manylinux_2_28`) and Windows x64, plus a source distribution. Package
+metadata requires Python 3.12 (`>=3.12,<3.13`); broaden it when additional
+Python versions ship. PyOptiX remains a separate dependency installed from its
+own PyPI wheels.
 
 ## One-time GitHub setup
 
@@ -53,9 +52,11 @@ repository's normal review process. Neither merging the workflow nor configuring
 the publisher uploads a package. Publishing starts when a new `v*` tag is pushed,
 and still requires approval in the `pypi` environment.
 
-Release builds disable the uv, PyOptiX, and Warp kernel caches. The GitHub-hosted
-build records the warp-optix wheel's SHA-256 as a workflow output; validation
-checks the downloaded wheel against that digest before inspecting or staging it.
+Release builds disable the uv and Warp kernel caches. Wheels are built with
+cibuildwheel on GitHub-hosted runners (Linux in a manylinux container) and
+tested on the NVIDIA GPU runners. Each build records its wheel's SHA-256 as a
+workflow output; validation checks every downloaded wheel against that digest
+before inspecting or staging it.
 Validation also requires the tagged commit to be an ancestor of `origin/main`.
 
 ## Publish the next version
@@ -85,7 +86,8 @@ Use an unused version for the next release, for example 0.2.1 or 0.2.1a1.
    Substitute the actual version in both commands. Pushing the tag starts release
    automation; it is not a test run.
 4. Open https://github.com/NVIDIA/warp-optix/actions/workflows/release.yml.
-   Open the new run. Wait for the Windows build, GPU tests, and metadata validation.
+   Open the new run. Wait for the Linux and Windows builds, GPU tests, and
+   metadata validation.
 5. When **Publish to PyPI** waits for approval, click **Review deployments**,
    select `pypi`, and click **Approve and deploy**. This authorizes the public upload.
 6. Confirm the new release appears at https://pypi.org/project/warp-optix/.
@@ -98,7 +100,7 @@ Use an unused version for the next release, for example 0.2.1 or 0.2.1a1.
   the GitHub setup. PyPI project ownership does not grant GitHub administration.
 - `invalid-publisher`: compare the four PyPI fields above with the workflow and
   repository, including the environment `pypi`.
-- Tag mismatch: the tag suffix must exactly match the wheel's version. Do not
+- Tag mismatch: the tag suffix must exactly match the distributions' version. Do not
   rename or move an existing release tag to work around a mismatch.
 - Commit outside `main`: merge the release changes through normal review before
   tagging. The workflow rejects tags whose commits are not in `origin/main`.
@@ -106,5 +108,5 @@ Use an unused version for the next release, for example 0.2.1 or 0.2.1a1.
   output. Investigate the build, artifact, and GPU runner before starting a new release.
 - File already exists: the version/file was already uploaded. Published wheels
   cannot be replaced; prepare a new version for changed package contents.
-- Waiting for a GPU runner: the Windows suite uses the existing NVIDIA runner
-  pool; publishing waits for its tests to complete.
+- Waiting for a GPU runner: the Linux and Windows suites use the existing NVIDIA
+  runner pools; publishing waits for both to complete.

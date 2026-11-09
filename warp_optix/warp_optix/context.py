@@ -114,16 +114,18 @@ class Context:
         if not self._releases or self.device.is_capturing:
             # Native destroys free device memory, which graph capture does not allow.
             return
+        # Callbacks (or the garbage collector) may re-enter collect(); swap first so each release runs once.
+        pending, self._releases = self._releases, []
+        waiting = []
         with wp.ScopedDevice(self.device):
-            waiting = []
-            for events, streams, callback in self._releases:
+            for events, streams, callback in pending:
                 if events is None:
                     events = [stream.record_event() for stream in streams]
                 if all(event.is_complete for event in events):
                     _run(callback)
                 else:
                     waiting.append((events, streams, callback))
-            self._releases = waiting
+        self._releases[:0] = waiting
 
     def check_arrays(self, values) -> None:
         for value in _arrays(values):
@@ -133,9 +135,10 @@ class Context:
     def _shutdown(self) -> None:
         with wp.ScopedDevice(self.device):
             wp.synchronize_device(self.device)
-            for _, _, callback in self._releases:
-                _run(callback)
-            self._releases.clear()
+            while self._releases:
+                pending, self._releases = self._releases, []
+                for _, _, callback in pending:
+                    _run(callback)
             self._accels.clear()
             self._native.destroy()
             self._destroyed = True

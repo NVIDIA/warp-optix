@@ -380,6 +380,19 @@ class Pipeline:
         if self._closed:
             raise RuntimeError("The pipeline is closed")
 
+    def _forget_idle_streams(self) -> None:
+        """Drop the streams, and their parameter blocks, whose launches have all finished.
+
+        Runs when a launch first uses a stream, so launching on a new stream each
+        frame keeps only the streams with work in flight.
+        """
+        if self.device.is_capturing:
+            return
+        for key, stream in list(self._streams.items()):
+            if stream.is_complete:
+                del self._streams[key]
+                self._buffers.pop(key, None)
+
 
 class _ParamsStorage:
     """A device launch-parameter block and the inputs written into it.
@@ -530,6 +543,7 @@ def launch(
         inputs = (*(inputs or ()), *(outputs or ()))
         storage = pipeline._buffers.get(key)
         if storage is None:
+            pipeline._forget_idle_streams()
             storage = pipeline._buffers[key] = _ParamsStorage(pipeline.params_type, context.device)
         if pipeline._explicit_params:
             if len(inputs) != 1:

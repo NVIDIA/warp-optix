@@ -14,13 +14,13 @@ shader binding tables, and launches that mirror `wp.launch`.
 pip install warp-optix
 ```
 
-GPU execution requires a compatible NVIDIA GPU and driver. The 0.2.0 PyPI wheel
-supports Python 3.12 on Windows x86-64. Source builds require Python 3.10+,
-a CUDA Toolkit, and a C++17 compiler. See the
+GPU execution requires a compatible NVIDIA GPU and driver; no CUDA Toolkit or
+OptiX SDK is needed. Wheels support Python 3.12 on Linux x86-64 and Windows x64.
+Source builds require Python 3.12 and a C++17 compiler. See the
 [installation guide](https://github.com/NVIDIA/warp-optix/blob/main/README.md#installation)
 for source and development setup.
 
-PyOptiX 9.1.0 is installed automatically. The package includes OptiX SDK 9.1.0
+PyOptiX 9.1.1 is installed automatically. The package includes OptiX SDK 9.1.0
 headers for runtime kernel compilation, so a separate OptiX SDK installation
 is not required.
 
