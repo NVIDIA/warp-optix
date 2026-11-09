@@ -31,19 +31,12 @@ import warp as wp
 
 import warp_optix as wo
 
+from . import pathtracing_warp_kernels as pwk
 from .color_utils import srgb_to_linear_u8
 from .materials import ALPHA_OPAQUE, MaterialManager
 
 logger = logging.getLogger(__name__)
 
-# Build flags of static and dynamic geometry. Curve hit groups must declare the same flags, since
-# OptiX specializes its built-in curve intersection on them.
-STATIC_BUILD_FLAGS = (
-    wo.BuildFlags.ALLOW_RANDOM_VERTEX_ACCESS | wo.BuildFlags.PREFER_FAST_TRACE | wo.BuildFlags.ALLOW_COMPACTION
-)
-DYNAMIC_BUILD_FLAGS = (
-    wo.BuildFlags.ALLOW_RANDOM_VERTEX_ACCESS | wo.BuildFlags.ALLOW_UPDATE | wo.BuildFlags.PREFER_FAST_BUILD
-)
 _MAX_TEXTURE_BUILD_WORKERS = 8
 NO_MATERIAL_OVERRIDE = np.uint32(np.iinfo(np.uint32).max)
 
@@ -268,7 +261,8 @@ class Mesh:
     """Represents a mesh with vertices, indices, and GPU buffers."""
 
     primitive_type = "triangles"
-    sbt_offset = 0
+    # Its hit group in the path tracer's SBT layout.
+    hit_group = "triangles"
 
     def __init__(
         self,
@@ -446,12 +440,10 @@ class Curve:
     swept-surface radius per control point and uses the same interpolation basis.
     """
 
-    # Hit groups: static linear and cubic curves use SBT offsets 2 and 4, dynamic ones 6 and 8.
     _BASIS_SPECS = {
-        "linear": ("round_linear", 2, 2, 1),
-        "cubic_bezier": ("round_cubic_bezier", 4, 4, 2),
+        "linear": ("round_linear", 2, 1),
+        "cubic_bezier": ("round_cubic_bezier", 4, 2),
     }
-    _DYNAMIC_SBT_SHIFT = 4
 
     def __init__(
         self,
@@ -466,7 +458,7 @@ class Curve:
         basis = str(basis).lower()
         if basis not in self._BASIS_SPECS:
             raise ValueError("curve basis must be 'linear' or 'cubic_bezier'")
-        primitive_type, control_point_count, sbt_offset, geometry_type = self._BASIS_SPECS[basis]
+        primitive_type, control_point_count, geometry_type = self._BASIS_SPECS[basis]
         vertices = np.asarray(vertices, dtype=np.float32)
         if vertices.ndim != 2 or vertices.shape[1] != 3:
             raise ValueError("curve vertices must have shape (N, 3)")
@@ -504,8 +496,9 @@ class Curve:
 
         self.basis = basis
         self.primitive_type = primitive_type
+        # Dynamic curves are built with other flags, which their built-in intersector must match.
+        self.hit_group = primitive_type + ("_dynamic" if dynamic else "")
         self.control_point_count = control_point_count
-        self.sbt_offset = sbt_offset + (self._DYNAMIC_SBT_SHIFT if dynamic else 0)
         self.geometry_type = geometry_type
         self.vertices = np.ascontiguousarray(vertices, dtype=np.float32)
         self.radii = np.ascontiguousarray(radii, dtype=np.float32)
@@ -1578,7 +1571,7 @@ class Scene:
                     flags=geometry_flags,
                     validate=False,
                 )
-            build_flags = DYNAMIC_BUILD_FLAGS if geometry.dynamic else STATIC_BUILD_FLAGS
+            build_flags = pwk.DYNAMIC_BUILD_FLAGS if geometry.dynamic else pwk.STATIC_BUILD_FLAGS
             gas = wo.Accel([build_input], flags=build_flags, stream=streams[index % len(streams)])
             self._gas.append(gas)
             if not geometry.dynamic:
@@ -1687,7 +1680,9 @@ class Scene:
                         wo.InstanceFlags.DISABLE_ANYHIT if override_opaque else wo.InstanceFlags.ENFORCE_ANYHIT
                     )
             handles = np.array([gas.id for gas in self._gas], dtype=np.uint64)
-            sbt_offsets = np.array([geometry.sbt_offset for geometry in self._meshes], dtype=np.uint32)
+            sbt_offsets = np.array(
+                [pwk.SBT.get_sbt_offset(geometry.hit_group) for geometry in self._meshes], dtype=np.uint32
+            )
             self._instance_traversables = wp.array(handles[mesh_indices], dtype=wp.uint64, device=self.device)
             self._instance_sbt_offsets = wp.array(sbt_offsets[mesh_indices], dtype=wp.uint32, device=self.device)
             self._instance_flags = wp.array(flags, dtype=wp.uint32, device=self.device)

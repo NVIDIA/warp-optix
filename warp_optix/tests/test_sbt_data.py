@@ -21,7 +21,7 @@ class Payload:
 
 
 @wp.struct
-class Flat:
+class Color:
     color: wp.vec3
 
 
@@ -42,14 +42,13 @@ class Textured:
     index: wp.int64
 
 
-@wp.struct
-class Sky:
-    color: wp.vec3
-
-
 @wp.kernel(module="unique")
 def raygen(scene: wp.uint64, image: wp.array[wp.vec3]):
     i = wp.tid()
+    if i == 3:
+        wp.optix_continuation_call(0)
+        wp.optix_direct_call(1)
+        return
     payload = Payload()
     wp.optix_trace(scene, wp.vec3(0.25 + 2.0 * float(i), 0.25, 1.0), wp.vec3(0.0, 0.0, -1.0), 10.0, payload)
     image[i] = payload.color
@@ -57,7 +56,7 @@ def raygen(scene: wp.uint64, image: wp.array[wp.vec3]):
 
 @wp.kernel(module="unique")
 def flat_hit():
-    data = Flat()
+    data = Color()
     wp.optix_load_sbt_data(data)
     payload = Payload()
     payload.color = data.color
@@ -77,28 +76,23 @@ def textured_hit():
 
 @wp.kernel(module="unique")
 def sky_miss():
-    data = Sky()
+    data = Color()
     wp.optix_load_sbt_data(data)
     payload = Payload()
     payload.color = data.color
     wp.optix_store_payload(payload)
 
 
-@wp.kernel(module="unique")
-def callable_raygen(output: wp.array[wp.vec3]):
-    wp.optix_direct_call(1)
+@wo.kernel(kind=wo.ProgramKind.CONTINUATION_CALLABLE, module="unique")
+def continuation_callable(image: wp.array[wp.vec3]):
+    image[4] = wp.vec3(-1.0)
 
 
 @wp.kernel(module="unique")
-def data_callable(output: wp.array[wp.vec3]):
-    data = Sky()
+def data_callable(image: wp.array[wp.vec3]):
+    data = Color()
     wp.optix_load_sbt_data(data)
-    output[0] = data.color
-
-
-@wp.kernel(module="unique")
-def other_callable(output: wp.array[wp.vec3]):
-    output[0] = wp.vec3(-1.0)
+    image[3] = data.color
 
 
 def two_triangle_gas(device):
@@ -125,25 +119,33 @@ def textured(device):
 def test_records_carry_their_own_data():
     device = wp.get_device("cuda")
     gas = two_triangle_gas(device)
-    flat = Flat()
+    flat, sky, ground = Color(), Color(), Color()
     flat.color = wp.vec3(0.1, 0.2, 0.3)
-    sky = Sky()
     sky.color = wp.vec3(0.0, 0.0, 1.0)
+    ground.color = wp.vec3(4.0, 5.0, 6.0)
     data = textured(device)
     palette = weakref.ref(data.palette)
     pipeline = wo.Pipeline(
         raygen,
-        miss=[wo.Record(sky_miss, data=sky)],
-        hit_groups=[wo.HitGroup(closest_hit=flat_hit, data=flat), wo.HitGroup(closest_hit=textured_hit, data=data)],
+        sbt=wo.SbtLayout(
+            miss=wo.Record(sky_miss, data=sky),
+            hit_groups={
+                "flat": wo.HitGroup(closest_hit=flat_hit, data=flat),
+                "textured": wo.HitGroup(closest_hit=textured_hit, data=data),
+            },
+        ),
+        # Direct and continuation callables share one list, indexed by position.
+        callables=[continuation_callable, wo.Record(data_callable, data=ground)],
         payload_words=3,
         device=device,
     )
     del data
     gc.collect()
     assert palette() is not None
-    image = wp.zeros(3, dtype=wp.vec3, device=device)
-    wo.launch(pipeline, 3, [gas, image])
-    np.testing.assert_allclose(image.numpy(), [[0.1, 0.2, 0.3], [2.5, 4.25, 6.125], [0.0, 0.0, 1.0]])
+    image = wp.empty(5, dtype=wp.vec3, device=device)
+    wo.launch(pipeline, 4, [gas, image])
+    expected = [[0.1, 0.2, 0.3], [2.5, 4.25, 6.125], [0.0, 0.0, 1.0], [4.0, 5.0, 6.0], [-1.0, -1.0, -1.0]]
+    np.testing.assert_allclose(image.numpy(), expected)
 
     # Records of different sizes share their section's 16-byte aligned stride.
     assert pipeline._sbt.hitgroupRecordStrideInBytes % 16 == 0
@@ -154,43 +156,33 @@ def test_records_carry_their_own_data():
     flat.color = wp.vec3(1.0, 0.0, 0.0)
     sky.color = wp.vec3(0.0, 1.0, 0.0)
     pipeline.update_sbt_data()
-    wo.launch(pipeline, 3, [gas, image])
-    np.testing.assert_allclose(image.numpy(), [[1.0, 0.0, 0.0], [2.5, 4.25, 6.125], [0.0, 1.0, 0.0]])
-
-
-def test_callable_records_carry_data():
-    device = wp.get_device("cuda")
-    sky = Sky()
-    sky.color = wp.vec3(4.0, 5.0, 6.0)
-    output = wp.zeros(1, dtype=wp.vec3, device=device)
-    pipeline = wo.Pipeline(
-        callable_raygen, callables=[other_callable, wo.Record(data_callable, data=sky)], device=device
-    )
-    wo.launch(pipeline, 1, [output])
-    np.testing.assert_allclose(output.numpy(), [[4.0, 5.0, 6.0]])
+    wo.launch(pipeline, 4, [gas, image])
+    expected[0], expected[2] = [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]
+    np.testing.assert_allclose(image.numpy(), expected)
 
 
 def test_invalid_record_data():
     with pytest.raises(TypeError, match="Warp kernel"):
         wo.Record(None)
     with pytest.raises(TypeError, match="Warp struct instance"):
-        wo.Pipeline(raygen, hit_groups=[wo.HitGroup(closest_hit=flat_hit, data=wp.vec3(1.0))])
+        wo.Pipeline(raygen, sbt=wo.SbtLayout(hit_groups={"flat": wo.HitGroup(closest_hit=flat_hit, data=wp.vec3(1.0))}))
     data = textured("cuda")
     data.palette = wp.zeros(2, dtype=wp.vec3, device="cpu")
     with pytest.raises(ValueError, match="same CUDA device"):
-        wo.Pipeline(raygen, hit_groups=[wo.HitGroup(closest_hit=textured_hit, data=data)], payload_words=3)
+        hit_groups = {"textured": wo.HitGroup(closest_hit=textured_hit, data=data)}
+        wo.Pipeline(raygen, sbt=wo.SbtLayout(hit_groups=hit_groups), payload_words=3)
 
 
 def test_record_array_snapshots_update_and_close():
     data = textured("cuda")
     original = weakref.ref(data.palette)
-    sky = Sky()
-    builder = wo.SbtBuilder(("radiance",))
-    builder.set_miss("radiance", wo.Record(sky_miss, data=sky))
-    builder.add_hit_group("textured", radiance=wo.HitGroup(closest_hit=textured_hit, data=data))
-    assert "sky_miss" in builder.describe()
-    pipeline = wo.Pipeline(raygen, sbt=builder, payload_words=3)
-    del builder, sky
+    sky = Color()
+    layout = wo.SbtLayout(
+        miss=wo.Record(sky_miss, data=sky), hit_groups={"textured": wo.HitGroup(closest_hit=textured_hit, data=data)}
+    )
+    assert "sky_miss" in layout.describe()
+    pipeline = wo.Pipeline(raygen, sbt=layout, payload_words=3)
+    del layout, sky
 
     # Mutating the host struct must not release the array still referenced by
     # the uploaded record, including when an attempted update is rejected.
