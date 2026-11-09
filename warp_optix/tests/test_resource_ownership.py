@@ -4,8 +4,6 @@
 """Resource lifetime, native-object release, failed construction, and device/stream boundaries."""
 
 import gc
-import subprocess
-import sys
 import weakref
 
 import numpy as np
@@ -13,20 +11,10 @@ import pytest
 import warp as wp
 
 import warp_optix as wo
+from warp_optix import context as context_module
 from warp_optix import native
 
 pytestmark = [pytest.mark.gpu, pytest.mark.skipif(not wp.is_cuda_available(), reason="CUDA unavailable")]
-
-# Iterations of the single-thread busy kernel used to keep a stream occupied (about one second on an RTX 3080).
-SPIN_ITERATIONS = 4_000_000
-
-
-@wp.kernel(module="unique")
-def spin(iterations: int, sink: wp.array[float]):
-    x = float(0.0)
-    for _ in range(iterations):
-        x = wp.sin(x + 1.0)
-    sink[0] = x
 
 
 @wp.kernel(module="unique")
@@ -65,21 +53,17 @@ def geometry():
     return vertices, indices
 
 
+def instance_records(child):
+    records = wp.empty(1, dtype=wo.Instance, device="cuda")
+    wp.launch(write_instance, 1, inputs=[child.id, records], device="cuda")
+    return records
+
+
 def settle():
     """Wait for all GPU work, then run every native release whose work has completed."""
     wp.synchronize()
     wo.get_context("cuda").collect()
     gc.collect()
-
-
-def occupy(stream):
-    """Queue a long-running kernel on ``stream`` and return an event marking its end.
-
-    Callers warm up every kernel they launch next: loading a CUDA module synchronizes the device.
-    """
-    sink = wp.empty(1, dtype=float, device=stream.device)
-    wp.launch(spin, 1, inputs=[SPIN_ITERATIONS, sink], stream=stream)
-    return stream.record_event()
 
 
 @pytest.fixture
@@ -98,7 +82,7 @@ def destroyed(monkeypatch):
 
 
 def test_use_after_close_raises_and_with_closes_on_exception():
-    output = wp.zeros(1, dtype=float, device="cuda")
+    output = wp.empty(1, dtype=float, device="cuda")
     with pytest.raises(ValueError, match="application error"):
         with wo.Pipeline(write_value) as pipeline:
             wo.launch(pipeline, 1, [output])
@@ -131,36 +115,42 @@ def test_use_after_close_raises_and_with_closes_on_exception():
     assert "closed" in repr(accel) and "closed" in repr(pipeline)
 
 
-def test_pipeline_native_objects_outlive_submitted_launches(destroyed):
+def test_pipeline_close_defers_native_objects_and_buffers_until_launches_finish(destroyed, gate):
     settle()
     context = wo.get_context("cuda")
     stream = wp.Stream("cuda")
     pipeline = wo.Pipeline(write_value)
     owned = list(pipeline._owned)
-    output = wp.zeros(1, dtype=float, device="cuda")
-    wo.launch(pipeline, 1, [wp.zeros(1, dtype=float, device="cuda")], stream=stream)
-    occupy(stream)
+    # Warm-up: loading a CUDA module synchronizes the device.
+    wo.launch(pipeline, 1, [wp.empty(1, dtype=float, device="cuda")], stream=stream)
     settle()
-    busy = occupy(stream)
+    records = weakref.ref(pipeline._records)
+    params = weakref.ref(pipeline._buffers[stream.cuda_stream].data)
+    sizes = [records().capacity, params().capacity]
+    output = wp.empty(1, dtype=float, device="cuda")
+    gate.block(stream)
     wo.launch(pipeline, 1, [output], stream=stream)
-    assert not busy.is_complete, "busy kernel finished too early for this test"
 
-    # close() returns at once; the native objects survive the pending launch.
+    # close() returns at once and frees device memory in stream order, like wp.array;
+    # the native objects are destroyed only after the pending launch.
     pipeline.close()
-    assert pipeline.closed
-    assert destroyed == []
-    assert len(context._releases) == 1
+    assert pipeline.closed and destroyed == [] and len(context._releases) == 1
+    assert records() is None and params() is None
+    # Without stream-ordered frees, these allocations could reuse and overwrite that memory now.
+    clobber = [wp.full(size, 255, dtype=wp.uint8, device="cuda") for size in sizes]
     with pytest.raises(RuntimeError, match="closed"):
-        wo.launch(pipeline, 1, [wp.zeros(1, dtype=float, device="cuda")])
+        wo.launch(pipeline, 1, [output])
 
+    gate.open()
     settle()
     assert context._releases == []
     assert {id(obj) for obj in destroyed} == {id(obj) for obj in owned}
     np.testing.assert_array_equal(output.numpy(), [42.0])
+    del clobber
 
 
 def test_dropping_a_launched_pipeline_releases_it_without_garbage_collection(destroyed):
-    output = wp.zeros(1, dtype=float, device="cuda")
+    output = wp.empty(1, dtype=float, device="cuda")
     pipeline = wo.Pipeline(write_value)
     owned = list(pipeline._owned)
     pipeline_ref = weakref.ref(pipeline)
@@ -178,34 +168,46 @@ def test_dropping_a_launched_pipeline_releases_it_without_garbage_collection(des
     np.testing.assert_array_equal(output.numpy(), [42.0])
 
 
-def test_accel_close_releases_memory_at_once_in_stream_order():
+def test_accels_are_released_in_stream_order(gate):
     settle()
     stream = wp.Stream("cuda")
-    vertices, indices = geometry()
-    vertex_ref, index_ref = weakref.ref(vertices), weakref.ref(indices)
-    gas = wo.Accel([wo.triangles(vertices, indices)], stream=stream)
-    buffer_ref = weakref.ref(gas._buffer)
-    del vertices, indices
+    closed_inputs, dropped_inputs = geometry(), geometry()
+    input_refs = [weakref.ref(a) for a in (*closed_inputs, *dropped_inputs)]
+    closed = wo.Accel([wo.triangles(*closed_inputs)], stream=stream)
+    closed_buffer = weakref.ref(closed._buffer)
+    dropped = wo.Accel([wo.triangles(*dropped_inputs)], stream=stream)
+    dropped_ref = weakref.ref(dropped)
+    del closed_inputs, dropped_inputs
     gc.collect()
-    # The structure retains its build inputs while open.
-    assert vertex_ref() is not None and index_ref() is not None
+    # Structures retain their build inputs while open.
+    assert all(ref() is not None for ref in input_refs)
 
-    depth = wp.zeros(1, dtype=float, device="cuda")
     pipeline = wo.Pipeline(depth_raygen)
-    wo.launch(pipeline, 1, [wp.uint64(0), depth], stream=stream)
-    occupy(stream)
+    by_id = wp.empty(1, dtype=float, device="cuda")
+    by_object = wp.empty(1, dtype=float, device="cuda")
+    wo.launch(pipeline, 1, [wp.uint64(0), by_id], stream=stream)  # Warm-up.
     settle()
-    busy = occupy(stream)
-    wo.launch(pipeline, 1, [gas.id, depth], stream=stream)
-    assert not busy.is_complete, "busy kernel finished too early for this test"
-    # Like wp.Mesh: memory is released right away; Warp's stream-ordered free keeps
+    gate.block(stream)
+    wo.launch(pipeline, 1, [closed.id, by_id], stream=stream)
+    wo.launch(pipeline, 1, [dropped, by_object], stream=stream)
+    # Like wp.Mesh, close() frees memory at once; Warp's stream-ordered free keeps
     # it valid for the launch already submitted.
-    gas.close()
-    assert gas.closed and gas._buffer is None
-    assert buffer_ref() is None and vertex_ref() is None and index_ref() is None
+    closed.close()
+    assert closed.closed and closed._buffer is None
+    assert closed_buffer() is None and all(ref() is None for ref in input_refs[:2])
+    # An Accel passed in launch inputs is retained by the launch parameters.
+    del dropped
+    gc.collect()
+    assert dropped_ref() is not None
 
-    wp.synchronize_stream(stream)
-    np.testing.assert_allclose(depth.numpy(), [5.0])
+    gate.open()
+    settle()
+    np.testing.assert_allclose(by_id.numpy(), [5.0])
+    np.testing.assert_allclose(by_object.numpy(), [5.0])
+    # Once the parameters are replaced and the work has finished, nothing holds the structure.
+    wo.launch(pipeline, 1, [wp.uint64(0), by_object], stream=stream)
+    settle()
+    assert dropped_ref() is None and all(ref() is None for ref in input_refs)
 
 
 def test_native_release_runs_under_the_resource_device(destroyed):
@@ -213,7 +215,7 @@ def test_native_release_runs_under_the_resource_device(destroyed):
     if len(devices) < 2:
         pytest.skip("requires two CUDA devices")
     pipeline = wo.Pipeline(write_value, device=devices[1])
-    output = wp.zeros(1, dtype=float, device=devices[1])
+    output = wp.empty(1, dtype=float, device=devices[1])
     wo.launch(pipeline, 1, [output])
     wp.synchronize()
     seen = []
@@ -235,7 +237,7 @@ def test_native_release_runs_under_the_resource_device(destroyed):
 def test_native_release_waits_for_graph_capture_to_end(destroyed):
     pipeline = wo.Pipeline(write_value)
     owned = list(pipeline._owned)
-    output = wp.zeros(1, dtype=float, device="cuda")
+    output = wp.empty(1, dtype=float, device="cuda")
     wo.launch(pipeline, 1, [output])
     wp.synchronize()
     context = wo.get_context("cuda")
@@ -248,31 +250,67 @@ def test_native_release_waits_for_graph_capture_to_end(destroyed):
     assert {id(obj) for obj in destroyed} == {id(obj) for obj in owned}
 
 
-def test_instance_accel_keeps_closed_child_alive_and_traces():
+def test_instances_keep_closed_children_alive_at_every_level():
     settle()
     vertices, indices = geometry()
     gas = wo.Accel([wo.triangles(vertices, indices)])
-    child_buffer = weakref.ref(gas._buffer)
-    records = wp.empty(1, dtype=wo.Instance, device="cuda")
-    wp.launch(write_instance, 1, inputs=[gas.id, records], device="cuda")
-    ias = wo.Accel([wo.instances(records)])
-    assert [child for child, _ in ias._dependencies] == [gas]
+    gas_ref, gas_buffer = weakref.ref(gas), weakref.ref(gas._buffer)
+    inner_records = instance_records(gas)
+    inner = wo.Accel([wo.instances(inner_records)])
+    outer = wo.Accel([wo.instances(instance_records(inner))])
 
-    gas.close()
-    del vertices, indices
+    # Instances keep their children's memory, not the objects: a dropped child is collected.
+    del gas, vertices, indices
+    inner.close()
     settle()
-    assert child_buffer() is not None
-    depth = wp.zeros(1, dtype=float, device="cuda")
-    wo.launch(wo.Pipeline(depth_raygen), 1, [ias, depth])
+    assert gas_ref() is None and gas_buffer() is not None
+    depth = wp.empty(1, dtype=float, device="cuda")
+    wo.launch(wo.Pipeline(depth_raygen, max_traversable_depth=3), 1, [outer, depth])
     np.testing.assert_allclose(depth.numpy(), [5.0])
 
-    # The closed child can no longer be instanced.
+    # A closed child can no longer be instanced.
     with pytest.raises(ValueError, match="live acceleration structures"):
-        wo.Accel([wo.instances(records)])
+        wo.Accel([wo.instances(inner_records)])
 
-    ias.close()
+    outer.close()
     settle()
-    assert child_buffer() is None
+    assert gas_buffer() is None
+
+
+def test_release_callbacks_run_once_when_collect_reenters():
+    settle()
+    context = wo.get_context("cuda")
+    calls = []
+
+    def inner():
+        calls.append("inner")
+
+    def outer():
+        calls.append("outer")
+        # Re-enters collect(), like a pipeline finalized by the garbage collector during collect().
+        context.release(inner)
+
+    context.release(outer)
+    settle()
+    assert calls == ["outer", "inner"]
+    assert context._releases == []
+
+
+def test_pipeline_forgets_streams_whose_launches_finished(gate):
+    pipeline = wo.Pipeline(write_value)
+    output = wp.empty(1, dtype=float, device="cuda")
+    for _ in range(8):
+        wo.launch(pipeline, 1, [output], stream=wp.Stream("cuda"))
+        wp.synchronize()
+    assert len(pipeline._streams) == len(pipeline._buffers) == 1
+
+    busy_stream = wp.Stream("cuda")
+    gate.block(busy_stream)
+    wo.launch(pipeline, 1, [output], stream=busy_stream)
+    wo.launch(pipeline, 1, [output], stream=wp.Stream("cuda"))
+    assert busy_stream.cuda_stream in pipeline._streams
+    gate.open()
+    settle()
 
 
 def test_instance_build_rejects_unknown_children():
@@ -280,32 +318,6 @@ def test_instance_build_rejects_unknown_children():
     wp.launch(write_instance, 1, inputs=[wp.uint64(0x123456789A0), records], device="cuda")
     with pytest.raises(ValueError, match="Instance children must be live acceleration structures on this device"):
         wo.Accel([wo.instances(records)])
-
-
-def test_accel_objects_in_launch_inputs_are_converted_and_retained():
-    settle()
-    stream = wp.Stream("cuda")
-    vertices, indices = geometry()
-    gas = wo.Accel([wo.triangles(vertices, indices)])
-    gas_ref = weakref.ref(gas)
-    pipeline = wo.Pipeline(depth_raygen)
-    depth = wp.zeros(1, dtype=float, device="cuda")
-    wo.launch(pipeline, 1, [wp.uint64(0), depth], stream=stream)
-    occupy(stream)
-    settle()
-    busy = occupy(stream)
-    wo.launch(pipeline, 1, [gas, depth], stream=stream)
-    assert not busy.is_complete, "busy kernel finished too early for this test"
-    del gas
-    gc.collect()
-    assert gas_ref() is not None
-    settle()
-    np.testing.assert_allclose(depth.numpy(), [5.0])
-
-    # Once the parameters are replaced and the work has finished, nothing holds the structure.
-    wo.launch(pipeline, 1, [wp.uint64(0), depth], stream=stream)
-    settle()
-    assert gas_ref() is None
 
 
 def test_wrong_devices_and_streams_are_rejected_before_native_work():
@@ -317,7 +329,7 @@ def test_wrong_devices_and_streams_are_rejected_before_native_work():
         wo.Accel([], device="cpu")
     pipeline = wo.Pipeline(write_value)
     assert pipeline.device == wp.get_device("cuda")
-    cpu = wp.zeros(1, dtype=float, device="cpu")
+    cpu = wp.empty(1, dtype=float, device="cpu")
     with pytest.raises(ValueError, match="Array and OptiX resource must use the same CUDA device"):
         wo.launch(pipeline, 1, [cpu])
     params = Params()
@@ -325,7 +337,7 @@ def test_wrong_devices_and_streams_are_rejected_before_native_work():
     struct_pipeline = wo.Pipeline(write_struct)
     with pytest.raises(ValueError, match="Array and OptiX resource must use the same CUDA device"):
         wo.launch(struct_pipeline, 1, [params])
-    output = wp.zeros(1, dtype=float, device="cuda")
+    output = wp.empty(1, dtype=float, device="cuda")
     with pytest.raises(TypeError, match="stream must be a Warp Stream"):
         wo.launch(pipeline, 1, [output], stream=123)
     with pytest.raises(ValueError, match="Device and pipeline must be the same CUDA device"):
@@ -344,7 +356,7 @@ def test_stream_from_another_device_is_rejected():
     vertices, indices = geometry()
     with pytest.raises(ValueError, match="Stream and device must be the same CUDA device"):
         wo.Accel([wo.triangles(vertices, indices)], device=devices[0], stream=wp.Stream(devices[1]))
-    other = wp.zeros(1, dtype=float, device=devices[1])
+    other = wp.empty(1, dtype=float, device=devices[1])
     with pytest.raises(ValueError, match="Array and OptiX resource must use the same CUDA device"):
         wo.launch(wo.Pipeline(write_value, device=devices[0]), 1, [other])
 
@@ -377,7 +389,7 @@ def test_failed_pipeline_construction_destroys_only_its_own_objects(monkeypatch,
 
     monkeypatch.setattr(native, "sbtRecordPackHeader", original_pack)
     replacement = wo.Pipeline(write_value)
-    output = wp.zeros(2, dtype=float, device="cuda")
+    output = wp.empty(2, dtype=float, device="cuda")
     wo.launch(good, 2, [output])
     wo.launch(replacement, 2, [output])
     np.testing.assert_array_equal(output.numpy(), [42.0, 42.0])
@@ -395,34 +407,23 @@ def test_exception_debug_flags_reach_native_pipeline(monkeypatch):
     monkeypatch.setattr(native.DeviceContext, "pipelineCreate", capture)
     pipeline = wo.Pipeline(write_value, exception_flags=flags)
     assert seen == [int(flags)]
-    output = wp.zeros(1, dtype=float, device="cuda")
+    output = wp.empty(1, dtype=float, device="cuda")
     wo.launch(pipeline, 1, [output])
     np.testing.assert_array_equal(output.numpy(), [42.0])
 
 
-def test_config_is_read_when_the_context_is_first_created():
-    subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            """
-import warp as wp
-import warp_optix as wo
-from warp_optix import context as context_module
-
-assert context_module._contexts == {}
-wo.config.validation = True
-wo.config.log_level = 3
-ctx = wo.get_context("cuda")
-assert ctx.validation is True and ctx.log_level == 3
-assert ctx.device == wp.get_device("cuda") and ctx.native is not None
-
-# Later changes do not affect the existing context.
-wo.config.validation = False
-wo.config.log_level = 1
-again = wo.get_context("cuda")
-assert again is ctx and again.validation is True and again.log_level == 3
-""",
-        ],
-        check=True,
-    )
+def test_config_is_read_when_the_context_is_first_created(monkeypatch):
+    monkeypatch.setattr(context_module, "_contexts", {})
+    monkeypatch.setattr(wo.config, "validation", True)
+    monkeypatch.setattr(wo.config, "log_level", 3)
+    ctx = wo.get_context("cuda")
+    try:
+        assert ctx.validation is True and ctx.log_level == 3
+        assert ctx.device == wp.get_device("cuda") and ctx.native is not None
+        # Later changes do not affect the existing context.
+        monkeypatch.setattr(wo.config, "validation", False)
+        monkeypatch.setattr(wo.config, "log_level", 1)
+        again = wo.get_context("cuda")
+        assert again is ctx and again.validation is True and again.log_level == 3
+    finally:
+        ctx._shutdown()

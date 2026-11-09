@@ -71,7 +71,8 @@ with `.close()` or `with`:
   the `wo.Accel` alive while work that reads the id may still be submitted. A `wo.Accel` passed in
   launch inputs is referenced by the pipeline's parameter storage until the next launch on that
   stream replaces it.
-- An instance structure keeps the memory of its child structures alive, even if a child is closed.
+- An instance structure keeps the memory of its child structures alive, at every level of nesting,
+  even if a child is closed or dropped.
 - Failed pipeline construction destroys only the native objects it created.
 
 ## Programs and pipelines

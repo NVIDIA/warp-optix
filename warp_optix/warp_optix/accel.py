@@ -398,7 +398,7 @@ class Accel:
             options = native.AccelBuildOptions(buildFlags=flags, operation=native.BUILD_OPERATION_BUILD)
             if motion is not None:
                 options.motionOptions = motion
-            dependencies = []
+            children = {}
             for item in inputs:
                 if item.instance_records is not None:
                     # Validate GPU-written child ids once. Refits keep this topology.
@@ -409,8 +409,7 @@ class Accel:
                         child = context._accels.get(int(child_id))
                         if child is None:
                             raise ValueError("Instance children must be live acceleration structures on this device")
-                        # Keep the child's memory, not just the object, so closing the child cannot free it.
-                        dependencies.append((child, child._buffer))
+                        children[int(child_id)] = child._memory
                 if item.prepare is not None:
                     item.prepare()
             native_inputs = [item.native for item in inputs]
@@ -449,7 +448,9 @@ class Accel:
         self._inputs = inputs
         self._flags = flags
         self._motion = motion
-        self._dependencies = tuple(dependencies)
+        # The memory traversal reads: this buffer and, through instances, every level of children.
+        # Holding memory rather than child objects lets children be closed or dropped.
+        self._memory = (buffer, *children.values())
         self._closed = False
         context._accels[self._id] = self
 
@@ -492,7 +493,7 @@ class Accel:
         if self._context._accels.get(self._id) is self:
             del self._context._accels[self._id]
         self._buffer = self._scratch = None
-        self._inputs = self._dependencies = ()
+        self._inputs = self._memory = ()
 
     def __enter__(self) -> Accel:
         self._check_open()
