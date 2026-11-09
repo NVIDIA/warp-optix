@@ -3,6 +3,7 @@
 
 """Explicit parameter schemas, buffer ordering, and stage declarations."""
 
+import ast
 import inspect
 import weakref
 from typing import Any
@@ -13,6 +14,7 @@ import warp as wp
 
 import warp_optix as wo
 from warp_optix import pipeline as pipeline_module
+from warp_optix import program as program_module
 
 pytestmark = [pytest.mark.gpu, pytest.mark.skipif(not wp.is_cuda_available(), reason="CUDA unavailable")]
 
@@ -285,7 +287,48 @@ def test_program_errors_point_at_kernel_source():
     line = start + next(n for n, text in enumerate(lines) if "missing_symbol" in text)
     with pytest.raises(wp.WarpCodegenKeyError, match="missing_symbol") as error:
         wo.Pipeline(undefined_symbol)
-    assert f"{__file__}:{line}:" in str(error.value)
+    # KeyError.__str__ quotes and escapes backslashes in Windows paths.
+    assert f"{__file__}:{line}:" in error.value.args[0]
+
+
+def test_programs_preserve_explicit_source_and_transformers():
+    source = inspect.getsource(write.func).replace("output[i] = value", "output[i] = value + wp.uint32(1)")
+
+    class AddOne(ast.NodeTransformer):
+        def visit_Constant(self, node):
+            if node.value == 1:
+                node.value = 2
+            return node
+
+    overridden = wp.Kernel(
+        write.func,
+        key="source_override_write",
+        module=wp.get_module("wo_test_source_override"),
+        source=source,
+        code_transformers=[AddOne()],
+    )
+    # Inspecting write.func again would silently compile its original body instead.
+    program = program_module.as_program(overridden, wo.ProgramKind.RAYGEN, Params, "wo_test_source_program")
+    assert program.adj.source == overridden.adj.source
+    output = wp.empty(4, dtype=wp.uint32, device="cuda")
+    with wo.Pipeline(overridden) as pipeline:
+        wo.launch(pipeline, (4,), [7, output])
+        np.testing.assert_array_equal(output.numpy(), np.full(4, 9))
+
+
+def test_programs_preserve_closures_and_warp_aliases():
+    warp_alias = wp
+    offset = wp.uint32(11)
+
+    @wp.kernel(module="unique")
+    def aliased_tid(output: wp.array[wp.uint32]):
+        i = warp_alias.tid()
+        output[i] = offset + warp_alias.uint32(i)
+
+    output = wp.empty(4, dtype=wp.uint32, device="cuda")
+    with wo.Pipeline(aliased_tid) as pipeline:
+        wo.launch(pipeline, (4,), [output])
+        np.testing.assert_array_equal(output.numpy(), np.arange(4) + 11)
 
 
 def test_equal_pipelines_share_one_module_name():

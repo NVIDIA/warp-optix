@@ -24,6 +24,7 @@ import ast
 import enum
 import inspect
 import types
+from typing import TypeGuard
 
 import warp as wp
 
@@ -88,6 +89,7 @@ def as_program(kernel: wp.Kernel, kind: ProgramKind, params, module: str) -> wp.
     if declared is not None and declared is not kind:
         raise TypeError(f"Kernel {kernel.key!r} declares {declared.name}, but occupies {kind.name}")
     fields = params.vars
+    source_adj = kernel.adj
     names = list(kernel_signature(kernel))
     for name in names:
         if name not in fields:
@@ -119,8 +121,14 @@ def as_program(kernel: wp.Kernel, kind: ProgramKind, params, module: str) -> wp.
         key=f"{kind.value}{_identifier(kernel.key)}",
         module=wp.get_module(module),
         options=options,
-        code_transformers=[transformer],
+        source=source_adj.source,
+        code_transformers=[*source_adj.transformers, transformer],
     )
+    # source= also supports generated kernels whose Python function has no
+    # inspectable source. Warp starts explicit source at line zero; restore the
+    # original location for ordinary kernels and their generic overloads.
+    result.adj.filename = source_adj.filename
+    result.adj.fun_lineno = source_adj.fun_lineno
     result._wo_tid_ndim = transformer.tid_ndim
     return result
 
@@ -129,7 +137,7 @@ def _identifier(key: str) -> str:
     return "".join(c if c.isalnum() or c == "_" else "_" for c in key)
 
 
-def _is_tid_call(node: ast.AST) -> bool:
+def _is_tid_call(node: ast.AST) -> TypeGuard[ast.Call]:
     if not isinstance(node, ast.Call) or node.args or node.keywords:
         return False
     target = node.func
