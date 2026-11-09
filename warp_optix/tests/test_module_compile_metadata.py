@@ -51,10 +51,9 @@ def _context():
 
 
 def _compile(context, options, pipeline, ptx):
-    create = getattr(context, "moduleCreate", None)
-    if create is None:
-        create = context.moduleCreateFromPTX
-    return create(options, pipeline, ptx)[0]
+    from warp_optix import native
+
+    return native.moduleCreate(context, options, pipeline, ptx)[0]
 
 
 @pytest.mark.parametrize("setter", [False, True])

@@ -98,15 +98,22 @@ objects use explicit destruction. `wo.get_context(device).native` provides
 borrowed access to a device's PyOptiX `DeviceContext`. Do not destroy that
 borrowed handle separately.
 Standard objects are the dependency's actual `optix` types; both packages can
-be imported in either order. The supplement adds methods and fields to those
-types and repairs module-metadata and continuation-callable handling. Keep
-objects on their owning OptiX/CUDA context and obey their lifetimes.
+be imported in either order, and importing warp-optix leaves the `optix` module
+unmodified. Supplemental operations are module functions that take the context
+first: `native.coopVecMatrixComputeSize(context, ...)`,
+`native.coopVecMatrixConvert(context, ...)`, and
+`native.getCoopVecProperty(context)`. `native.moduleCreate(context, ...)` and
+`native.builtinISModuleGet(context, ...)` forward module compile metadata
+(`boundValues`, `payloadTypes`) that the PyOptiX 9.1.1 methods ignore. PyOptiX
+9.1.1 also ignores the `callablesModuleCC` argument of `ProgramGroupDesc`; set
+the attribute after construction. Keep objects on their owning OptiX/CUDA
+context and obey their lifetimes.
 
 PyOptiX 9.1.1 has no public native-handle API. The extension therefore uses a
 small, version-pinned pybind11 bridge and checks shared type identities and
 sizes before accessing them. Builds reject OptiX headers that differ from the
 PyOptiX dependency pin; imports reject mismatched compiled SDK versions before
-attaching bindings. Both extensions must use a compatible pybind11
+using upstream objects. Both extensions must use a compatible pybind11
 major version and C++ ABI. If the import reports an ABI mismatch, rebuild both
 packages with pybind11 3.x. See [dependency maintenance](docs/pyoptix-dependency.md).
 

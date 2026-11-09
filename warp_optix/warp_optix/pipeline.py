@@ -210,12 +210,14 @@ class Pipeline:
                 )
                 for group, (ch, ah, is_) in zip(hit_groups, hit_programs)
             ]
-            callable_descs = [
-                native.ProgramGroupDesc(
-                    **slot("callables", "CC" if kind is ProgramKind.CONTINUATION_CALLABLE else "DC", k)
-                )
-                for k, kind in zip(callable_programs, callable_kinds)
-            ]
+            callable_descs = []
+            for k, kind in zip(callable_programs, callable_kinds):
+                continuation = kind is ProgramKind.CONTINUATION_CALLABLE
+                desc = native.ProgramGroupDesc(**slot("callables", "CC" if continuation else "DC", k))
+                if continuation:
+                    # PyOptiX 9.1.1 ignores the callablesModuleCC constructor argument.
+                    desc.callablesModuleCC = optix_module
+                callable_descs.append(desc)
             exception_descs = (
                 [native.ProgramGroupDesc(**slot("exception", "", exception_program))] if exception_program else []
             )

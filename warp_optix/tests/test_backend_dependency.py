@@ -7,7 +7,7 @@ import subprocess
 import sys
 from importlib import import_module
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import optix
 import pytest
@@ -15,140 +15,61 @@ import pytest
 from warp_optix import _ext, native
 
 
-def test_optix_headers_are_available_without_separate_sdk(monkeypatch):
+def test_packaged_optix_headers_are_all_kernels_need(monkeypatch):
     monkeypatch.delenv("OPTIX_SDK_INCLUDE_DIR", raising=False)
     monkeypatch.delenv("OPTIX_INCLUDE_DIR", raising=False)
     include = Path(native.get_optix_include_dir())
-    assert (include / "optix.h").is_file()
-    assert (include / "optix_device.h").is_file()
-    assert (include / "OptiX_LICENSE.txt").is_file()
-    from warp_optix.addon import build_options
-
-    assert str(include) in build_options().extra_cuda_include_dirs
-
-
-def test_kernels_need_no_cuda_toolkit_headers():
-    # The packaged OptiX headers and warp_optix_builtins.h must be enough for
-    # NVRTC, so every GPU test also covers kernels compiling without a Toolkit.
+    for name in ("optix.h", "optix_device.h", "OptiX_LICENSE.txt"):
+        assert (include / name).is_file(), name
+    # No separate OptiX SDK and no CUDA Toolkit headers: every GPU test compiles with only these.
     from warp_optix.addon import _HEADER_DIR, build_options
 
-    assert build_options().extra_cuda_include_dirs == [str(_HEADER_DIR), native.get_optix_include_dir()]
+    assert build_options().extra_cuda_include_dirs == [str(_HEADER_DIR), str(include)]
 
 
-def test_optix_headers_editable_install_fallback(monkeypatch, tmp_path):
+def test_optix_header_lookup_falls_back_to_the_installed_package(monkeypatch, tmp_path):
     backend = import_module("warp_optix._backend")
     monkeypatch.setattr(backend, "_package_dir", tmp_path / "source")
     monkeypatch.setattr(backend, "_get_package_dir", lambda: tmp_path / "installed")
     include = tmp_path / "installed" / "include"
     include.mkdir(parents=True)
     (include / "optix.h").touch()
+    with pytest.raises(FileNotFoundError, match="missing or incomplete; reinstall"):
+        native.get_optix_include_dir()
     (include / "optix_device.h").touch()
     assert Path(native.get_optix_include_dir()) == include
 
 
-def test_optix_headers_incomplete_package(monkeypatch, tmp_path):
-    backend = import_module("warp_optix._backend")
-    monkeypatch.setattr(backend, "_package_dir", tmp_path)
-    monkeypatch.setattr(backend, "_get_package_dir", lambda: tmp_path)
-    include = tmp_path / "include"
-    include.mkdir()
-    (include / "optix.h").touch()
-    with pytest.raises(FileNotFoundError, match="missing or incomplete; reinstall"):
-        native.get_optix_include_dir()
-
-
-@pytest.mark.parametrize("first", ["optix", "warp_optix"])
-def test_dependency_and_supplement_import_in_either_order(first, tmp_path):
-    second = "warp_optix" if first == "optix" else "optix"
-    subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            f"""
-import {first}
-import {second}
-import sys
-from warp_optix import native
-assert sys.modules['optix'] is optix
-assert optix.__spec__.name == 'optix'
-assert 'warp_optix._bindings' not in sys.modules
-for name in ('DeviceContext', 'Module', 'ProgramGroup', 'Pipeline', 'Denoiser',
-             'BuildInputTriangleArray', 'Image2D', 'ModuleCompileOptions'):
-    assert getattr(native, name) is getattr(optix, name), name
-assert native.version() == (9, 1, 0)
-assert warp_optix._ext.optix_version() == optix.version()
-assert hasattr(native.DenoiserParams(), 'temporalModeUsePreviousLayers')
-assert hasattr(optix.DeviceContext, 'coopVecMatrixConvert')
-""",
-        ],
-        cwd=tmp_path,
-        check=True,
-    )
-
-
-def test_unsupported_wrapper_abi_rejected_before_installing_methods():
-    incompatible = ModuleType("incompatible_optix")
-    incompatible.__dict__.update(optix.__dict__)
-    incompatible.DeviceContext = type("DifferentContext", (), {})
-    original = optix.DeviceContext.coopVecMatrixConvert
-    with pytest.raises(ImportError, match="ABI-compatible pyoptix 9.1.1"):
-        _ext.install_pyoptix_extensions(incompatible)
-    assert optix.DeviceContext.coopVecMatrixConvert is original
-
-
-def test_unsupported_dependency_version_rejected(tmp_path):
+def test_importing_leaves_pyoptix_module_unmodified(tmp_path):
     subprocess.run(
         [
             sys.executable,
             "-c",
             """
-import importlib.metadata
-original = importlib.metadata.version
-importlib.metadata.version = lambda name: '9.2.0' if name == 'pyoptix' else original(name)
-try:
-    import warp_optix
-except ImportError as error:
-    assert 'requires pyoptix==9.1.1' in str(error), error
-else:
-    raise AssertionError('Unsupported dependency was accepted')
-""",
-        ],
-        cwd=tmp_path,
-        check=True,
-    )
-
-
-@pytest.mark.parametrize(
-    "upstream_sdk, extension_sdk",
-    [((9, 0, 0), (9, 1, 0)), ((9, 1, 0), (9, 0, 0)), ((9, 0, 0), (9, 0, 0))],
-)
-def test_compiled_sdk_mismatch_rejected_before_installing_methods(upstream_sdk, extension_sdk, tmp_path):
-    subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            f"""
-import sys
-from types import ModuleType
 import optix
-assert not hasattr(optix.DeviceContext, 'coopVecMatrixConvert')
-optix.version = lambda: {upstream_sdk!r}
-extension = ModuleType('warp_optix._ext')
-extension.optix_version = lambda: {extension_sdk!r}
-def install(upstream):
-    raise AssertionError('Bindings installed before checking SDK versions')
-extension.install_pyoptix_extensions = install
-sys.modules[extension.__name__] = extension
-try:
-    import warp_optix
-except ImportError as error:
-    message = str(error)
-    assert 'OptiX SDK version mismatch' in message, message
-    assert 'pyoptix was compiled with {".".join(map(str, upstream_sdk))}' in message, message
-    assert 'warp-optix was compiled with {".".join(map(str, extension_sdk))}' in message, message
-else:
-    raise AssertionError('Unsupported SDK was accepted')
-assert not hasattr(optix.DeviceContext, 'coopVecMatrixConvert')
+
+def snapshot():
+    return {
+        name: (value, dict(vars(value)) if isinstance(value, type) else None)
+        for name, value in vars(optix).items()
+    }
+
+before = snapshot()
+import warp_optix
+from warp_optix import native
+assert native.coopVecMatrixConvert and native.moduleCreate
+for name in ('DeviceContext', 'Module', 'ProgramGroup', 'Pipeline', 'Denoiser',
+             'BuildInputTriangleArray', 'Image2D', 'ModuleCompileOptions'):
+    assert getattr(native, name) is getattr(optix, name), name
+assert warp_optix._ext.optix_version() == optix.version()
+after = snapshot()
+assert before.keys() == after.keys(), sorted(before.keys() ^ after.keys())
+for name, (value, members) in before.items():
+    assert after[name][0] is value, name
+    if members is not None:
+        assert members.keys() == after[name][1].keys(), (name, sorted(members.keys() ^ after[name][1].keys()))
+        for member, attribute in members.items():
+            assert after[name][1][member] is attribute, (name, member)
 """,
         ],
         cwd=tmp_path,
@@ -156,14 +77,38 @@ assert not hasattr(optix.DeviceContext, 'coopVecMatrixConvert')
     )
 
 
-def test_native_installer_rejects_compiled_sdk_mismatch():
-    incompatible = ModuleType("incompatible_optix")
-    incompatible.__dict__.update(optix.__dict__)
-    incompatible.version = lambda: (9, 0, 0)
-    original = optix.DeviceContext.coopVecMatrixConvert
+def test_native_validator_rejects_other_abi_and_sdk():
+    other_abi = ModuleType("incompatible_optix")
+    other_abi.__dict__.update(optix.__dict__)
+    other_abi.DeviceContext = type("DifferentContext", (), {})
+    with pytest.raises(ImportError, match="ABI-compatible pyoptix 9.1.1"):
+        _ext.validate_pyoptix_bindings(other_abi)
+    other_sdk = ModuleType("incompatible_optix")
+    other_sdk.__dict__.update(optix.__dict__)
+    other_sdk.version = lambda: (9, 0, 0)
     with pytest.raises(ImportError, match="OptiX SDK version mismatch"):
-        _ext.install_pyoptix_extensions(incompatible)
-    assert optix.DeviceContext.coopVecMatrixConvert is original
+        _ext.validate_pyoptix_bindings(other_sdk)
+
+
+def test_loading_rejects_other_dependency_version_and_sdk_before_validating(monkeypatch):
+    backend = import_module("warp_optix._backend")
+    monkeypatch.setattr(backend, "version", lambda name: "9.2.0")
+    with pytest.raises(ImportError, match="requires pyoptix==9.1.1"):
+        backend._load_backend()
+    monkeypatch.setattr(backend, "version", lambda name: "9.1.1")
+
+    def validate(upstream):
+        raise AssertionError("Bindings validated before checking SDK versions")
+
+    for upstream_sdk, extension_sdk in (((9, 0, 0), (9, 1, 0)), ((9, 1, 0), (9, 0, 0)), ((9, 0, 0), (9, 0, 0))):
+        monkeypatch.setattr(optix, "version", lambda sdk=upstream_sdk: sdk)
+        extension = SimpleNamespace(optix_version=lambda sdk=extension_sdk: sdk, validate_pyoptix_bindings=validate)
+        monkeypatch.setattr(backend, "_extensions", extension)
+        with pytest.raises(ImportError, match="OptiX SDK version mismatch") as error:
+            backend._load_backend()
+        message = str(error.value)
+        assert f"pyoptix was compiled with {'.'.join(map(str, upstream_sdk))}" in message
+        assert f"warp-optix was compiled with {'.'.join(map(str, extension_sdk))}" in message
 
 
 def test_supplemental_enums_work_with_dependency_structs():
