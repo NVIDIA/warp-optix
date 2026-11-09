@@ -412,27 +412,40 @@ def test_round_linear_curve_queries_on_gpu():
     assert floats[6] == 0.0
 
 
+BEZIER_POINTS = [[0.0, -1.5, 0.0], [0.0, -0.5, 0.0], [0.0, 0.5, 0.0], [0.0, 1.5, 0.0]]
+
+
 @pytest.mark.parametrize(
-    ("curve_type", "control_points"),
+    ("curve_type", "control_points", "flags"),
     [
-        (wo.PrimitiveType.ROUND_QUADRATIC_BSPLINE, [[0.0, -1.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+        (
+            wo.PrimitiveType.ROUND_QUADRATIC_BSPLINE,
+            [[0.0, -1.0, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            RANDOM_ACCESS,
+        ),
+        (wo.PrimitiveType.ROUND_CUBIC_BEZIER, BEZIER_POINTS, RANDOM_ACCESS),
+        # The built-in intersector is specialized on build flags; a fast-build structure
+        # traced with the default intersector faults with a misaligned address.
         (
             wo.PrimitiveType.ROUND_CUBIC_BEZIER,
-            [[0.0, -1.5, 0.0], [0.0, -0.5, 0.0], [0.0, 0.5, 0.0], [0.0, 1.5, 0.0]],
+            BEZIER_POINTS,
+            wo.BuildFlags.ALLOW_RANDOM_VERTEX_ACCESS | wo.BuildFlags.PREFER_FAST_BUILD | wo.BuildFlags.ALLOW_UPDATE,
         ),
     ],
 )
-def test_higher_order_curve_vertex_data_on_gpu(curve_type, control_points):
+def test_higher_order_curve_vertex_data_on_gpu(curve_type, control_points, flags):
     device = wp.get_device("cuda")
     vertices = wp.array(control_points, dtype=wp.vec3, device=device)
     widths = wp.full(len(control_points), 0.25, dtype=float, device=device)
     indices = wp.array([0], dtype=wp.uint32, device=device)
-    gas = wo.Accel([wo.curves(vertices, widths, indices, curve_type=curve_type)], flags=RANDOM_ACCESS, device=device)
+    gas = wo.Accel([wo.curves(vertices, widths, indices, curve_type=curve_type)], flags=flags, device=device)
     pipeline = wo.Pipeline(
         curve_raygen,
         sbt=wo.SbtLayout(
             miss=query_miss,
-            hit_groups={"curves": wo.HitGroup(closest_hit=higher_order_curve_closest_hit, builtin=curve_type)},
+            hit_groups={
+                "curves": wo.HitGroup(closest_hit=higher_order_curve_closest_hit, builtin=curve_type, build_flags=flags)
+            },
         ),
         payload_words=1,
     )

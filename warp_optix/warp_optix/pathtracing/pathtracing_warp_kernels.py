@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import warp as wp
 
+import warp_optix as wo
 from warp_optix.enums import PrimitiveType, RayFlags
 from warp_optix.sbt import HitGroup, SbtLayout
 
@@ -2777,7 +2778,10 @@ def _evaluate_material_from_payload(
     return out
 
 
-@wp.kernel(module="unique")
+# The pipeline compiles every program with the raygen's module options. Fast math avoids the
+# precise sin/cos range reduction, which spills to local memory and uses fp64 instructions.
+@wo.kernel(kind=wo.ProgramKind.RAYGEN)
+@wp.kernel(module="unique", module_options={"fast_math": True})
 def primary_raygen(params: PathtraceLaunchParams):
     launch_idx = wp.optix_get_launch_index()
     x = int(launch_idx[0])
@@ -3515,6 +3519,7 @@ def primary_raygen(params: PathtraceLaunchParams):
     params.spec_hit_dist_output[y, x] = aux_spec_hit_dist
 
 
+@wo.kernel(kind=wo.ProgramKind.MISS)
 @wp.kernel(module="unique")
 def primary_miss(params: PathtraceLaunchParams):
     """Miss shader: set hitT = MISS_DISTANCE and store sky color in normal/envRad fields."""
@@ -3900,6 +3905,7 @@ def _store_primary_hit_payload(
     wp.optix_store_payload(payload)
 
 
+@wo.kernel(kind=wo.ProgramKind.CLOSEST_HIT)
 @wp.kernel(module="unique")
 def primary_closest_hit(params: PathtraceLaunchParams):
     """Closest-hit: pass geometry data only (matching C++ primary_rchit.h)."""
@@ -3911,6 +3917,7 @@ def primary_closest_hit(params: PathtraceLaunchParams):
     _store_primary_hit_payload(geo, wp.int32(inst_id), wp.int32(tri_id), front_face, bary[0], bary[1])
 
 
+@wo.kernel(kind=wo.ProgramKind.CLOSEST_HIT)
 @wp.kernel(module="unique")
 def curve_primary_closest_hit(params: PathtraceLaunchParams):
     """Adapt a native curve hit to the same PBR payload as a triangle hit."""
@@ -3932,6 +3939,7 @@ def _any_hit_rng(coverage_seed: wp.uint32) -> wp.uint32:
     return _pcg_advance(coverage_seed)
 
 
+@wo.kernel(kind=wo.ProgramKind.ANY_HIT)
 @wp.kernel(module="unique")
 def primary_any_hit(params: PathtraceLaunchParams):
     alpha_hit = _compute_any_hit_alpha(params)
@@ -3949,18 +3957,21 @@ def primary_any_hit(params: PathtraceLaunchParams):
             return
 
 
+@wo.kernel(kind=wo.ProgramKind.MISS)
 @wp.kernel(module="unique")
 def secondary_miss(params: PathtraceLaunchParams):
     """Matches C++ __miss__secondary: visible path for shadow ray."""
     wp.optix_set_payload(0, wp.uint32(1))
 
 
+@wo.kernel(kind=wo.ProgramKind.CLOSEST_HIT)
 @wp.kernel(module="unique")
 def secondary_closest_hit(params: PathtraceLaunchParams):
     """Matches C++ __closesthit__secondary: occluded path for shadow ray."""
     wp.optix_set_payload(0, wp.uint32(0))
 
 
+@wo.kernel(kind=wo.ProgramKind.ANY_HIT)
 @wp.kernel(module="unique")
 def secondary_any_hit(params: PathtraceLaunchParams):
     alpha_hit = _compute_any_hit_alpha(params)
@@ -3983,10 +3994,18 @@ def secondary_any_hit(params: PathtraceLaunchParams):
     wp.optix_terminate_ray()
 
 
-def _hit_groups(primary_closest_hit, builtin=None):
+STATIC_BUILD_FLAGS = (
+    wo.BuildFlags.ALLOW_RANDOM_VERTEX_ACCESS | wo.BuildFlags.PREFER_FAST_TRACE | wo.BuildFlags.ALLOW_COMPACTION
+)
+DYNAMIC_BUILD_FLAGS = (
+    wo.BuildFlags.ALLOW_RANDOM_VERTEX_ACCESS | wo.BuildFlags.ALLOW_UPDATE | wo.BuildFlags.PREFER_FAST_BUILD
+)
+
+
+def _hit_groups(primary_closest_hit, builtin=None, build_flags=wo.BuildFlags.PREFER_FAST_TRACE):
     return {
-        "primary": HitGroup(primary_closest_hit, primary_any_hit, builtin=builtin),
-        "secondary": HitGroup(secondary_closest_hit, secondary_any_hit, builtin=builtin),
+        "primary": HitGroup(primary_closest_hit, primary_any_hit, builtin=builtin, build_flags=build_flags),
+        "secondary": HitGroup(secondary_closest_hit, secondary_any_hit, builtin=builtin, build_flags=build_flags),
     }
 
 
@@ -3997,7 +4016,13 @@ SBT = SbtLayout(
     miss={"primary": primary_miss, "secondary": secondary_miss},
     hit_groups={
         "triangles": _hit_groups(primary_closest_hit),
-        "round_linear": _hit_groups(curve_primary_closest_hit, PrimitiveType.ROUND_LINEAR),
-        "round_cubic_bezier": _hit_groups(curve_primary_closest_hit, PrimitiveType.ROUND_CUBIC_BEZIER),
+        "round_linear": _hit_groups(curve_primary_closest_hit, PrimitiveType.ROUND_LINEAR, STATIC_BUILD_FLAGS),
+        "round_cubic_bezier": _hit_groups(
+            curve_primary_closest_hit, PrimitiveType.ROUND_CUBIC_BEZIER, STATIC_BUILD_FLAGS
+        ),
+        "round_linear_dynamic": _hit_groups(curve_primary_closest_hit, PrimitiveType.ROUND_LINEAR, DYNAMIC_BUILD_FLAGS),
+        "round_cubic_bezier_dynamic": _hit_groups(
+            curve_primary_closest_hit, PrimitiveType.ROUND_CUBIC_BEZIER, DYNAMIC_BUILD_FLAGS
+        ),
     },
 )

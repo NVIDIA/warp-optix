@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Explicit schema, stage declarations, named SBT, and independent LaunchParams.
+"""Explicit schema, stage declarations, named SBT, and recorded launches.
 
 Produces the same output as example_warp_optix_kernels.py. Only the miss
 program needs scale; the shared schema defines it independently of raygen.
@@ -31,7 +31,7 @@ class Payload:
 
 
 @wp.struct
-class LaunchParams:
+class Params:
     scale: wp.uint32
     values: wp.array2d[wp.uint32]
 
@@ -52,17 +52,16 @@ def miss(scale: wp.uint32):
 
 def main() -> None:
     sbt = wo.SbtLayout(ray_types=["radiance"], miss={"radiance": miss})
-    with wo.Pipeline(raygen, sbt=sbt, params_type=LaunchParams, payload_words=1) as pipeline:
+    with wo.Pipeline(raygen, sbt=sbt, params_type=Params, payload_words=1) as pipeline:
         outputs = []
         for scale in (100, 200):
             stream = wp.Stream(pipeline.device)
             values = wp.empty((4, 8), dtype=wp.uint32, device=pipeline.device)
-            fields = LaunchParams()
-            fields.scale = wp.uint32(scale)
-            fields.values = values
-            params = wo.LaunchParams(pipeline)
-            params.assign(fields, stream=stream)
-            wo.launch(pipeline, dim=values.shape, stream=stream, params=params)
+            params = Params()
+            params.scale = wp.uint32(scale)
+            params.values = values
+            launch = wo.launch(pipeline, dim=values.shape, inputs=[params], record_cmd=True)
+            launch.launch(stream=stream)
             outputs.append((scale, values, stream))
         for scale, values, stream in outputs:
             wp.synchronize_stream(stream)

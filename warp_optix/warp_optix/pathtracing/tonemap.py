@@ -89,6 +89,9 @@ def _read_hdr(image: wp.Texture2D, x: int, y: int, width: int, height: int) -> w
     return wp.texture_sample(image, uv, dtype=wp.vec4)
 
 
+_METER_BLOCK_DIM = 256
+
+
 @wp.kernel
 def _meter_auto_exposure(
     hdr_input: Any,
@@ -98,23 +101,24 @@ def _meter_auto_exposure(
     min_luminance_ev: float,
     max_luminance_ev: float,
 ):
-    """Accumulate a center-weighted log-average luminance on a 4x4 grid."""
-    tile_x, tile_y = wp.tid()
-    x = tile_x * 4 + 2
-    y = tile_y * 4 + 2
-    if x >= width or y >= height:
-        return
-    color = _read_hdr(hdr_input, x, y, width, height)
-    luminance = color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722
-    min_luminance = wp.pow(2.0, min_luminance_ev)
-    max_luminance = wp.pow(2.0, max_luminance_ev)
-    luminance = wp.clamp(luminance, min_luminance, max_luminance)
-    nx = (wp.float32(x) + 0.5) / wp.float32(width) * 2.0 - 1.0
-    ny = (wp.float32(y) + 0.5) / wp.float32(height) * 2.0 - 1.0
-    weight = 1.0 / (1.0 + 4.0 * (nx * nx + ny * ny))
-    log_luminance = wp.log(luminance) / wp.log(2.0)
-    wp.atomic_add(stats, 0, log_luminance * weight)
-    wp.atomic_add(stats, 1, weight)
+    """Accumulate a center-weighted log-average luminance on a 4x4 grid, one sum per block."""
+    block, lane = wp.tid()
+    sample = block * wp.block_dim() + lane
+    columns = (width + 3) // 4
+    x = (sample % columns) * 4 + 2
+    y = (sample // columns) * 4 + 2
+    weighted_log_luminance = float(0.0)
+    weight = float(0.0)
+    if x < width and y < height:
+        color = _read_hdr(hdr_input, x, y, width, height)
+        luminance = color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722
+        luminance = wp.clamp(luminance, wp.pow(2.0, min_luminance_ev), wp.pow(2.0, max_luminance_ev))
+        nx = (wp.float32(x) + 0.5) / wp.float32(width) * 2.0 - 1.0
+        ny = (wp.float32(y) + 0.5) / wp.float32(height) * 2.0 - 1.0
+        weight = 1.0 / (1.0 + 4.0 * (nx * nx + ny * ny))
+        weighted_log_luminance = wp.log2(luminance) * weight
+    wp.tile_atomic_add(stats, wp.tile_sum(wp.tile(weighted_log_luminance)), 0)
+    wp.tile_atomic_add(stats, wp.tile_sum(wp.tile(weight)), 1)
 
 
 @wp.kernel
@@ -296,8 +300,10 @@ def debug_visualize_kernel(
     ldr_output[y, x] = wp.vec4(out[0], out[1], out[2], 1.0)
 
 
-# Explicit overloads avoid relying on generic texture argument inference.
+# Concrete overloads avoid generic texture argument inference and resolving hdr_input every frame.
+_tonemap_array_kernel = wp.overload(tonemap_kernel, {"hdr_input": wp.array2d(dtype=wp.vec4)})
 _tonemap_texture_kernel = wp.overload(tonemap_kernel, {"hdr_input": wp.Texture2D})
+_meter_array_kernel = wp.overload(_meter_auto_exposure, {"hdr_input": wp.array2d(dtype=wp.vec4)})
 _meter_texture_kernel = wp.overload(_meter_auto_exposure, {"hdr_input": wp.Texture2D})
 
 
@@ -338,11 +344,29 @@ class Tonemapper:
 
         # Output buffer
         self._ldr_output = wp.zeros((height, width), dtype=wp.vec4, device="cuda")
+        self._recorded: dict = {}
 
     @property
     def output(self) -> wp.array:
         """Get the LDR output buffer."""
         return self._ldr_output
+
+    def _launch(self, kernel, dim, inputs, *, block_dim: int | None = None) -> None:
+        """Launch ``kernel``, replaying a recorded command while its inputs are unchanged.
+
+        A recorded command keeps its inputs alive, so their ids identify them.
+        """
+        key = (dim, *(value if isinstance(value, (int, float)) else id(value) for value in inputs))
+        recorded = self._recorded.get(kernel)
+        if recorded is None or recorded[0] != key:
+            if block_dim is None:
+                command = wp.launch(kernel, dim=dim, inputs=inputs, device="cuda", record_cmd=True)
+            else:
+                command = wp.launch_tiled(
+                    kernel, dim=dim, inputs=inputs, block_dim=block_dim, device="cuda", record_cmd=True
+                )
+            recorded = self._recorded[kernel] = (key, command)
+        recorded[1].launch()
 
     def resize(self, width: int, height: int):
         """Resize the output buffer."""
@@ -389,16 +413,12 @@ class Tonemapper:
         """
         is_texture = isinstance(hdr_input, wp.Texture2D)
         if self.auto_exposure:
-            wp.launch(
-                _reset_auto_exposure_stats,
-                dim=1,
-                inputs=[self._auto_exposure_stats],
-                device="cuda",
-            )
-            wp.launch(
-                _meter_texture_kernel if is_texture else _meter_auto_exposure,
-                dim=((self.width + 3) // 4, (self.height + 3) // 4),
-                inputs=[
+            self._launch(_reset_auto_exposure_stats, 1, [self._auto_exposure_stats])
+            samples = ((self.width + 3) // 4) * ((self.height + 3) // 4)
+            self._launch(
+                _meter_texture_kernel if is_texture else _meter_array_kernel,
+                ((samples + _METER_BLOCK_DIM - 1) // _METER_BLOCK_DIM,),
+                [
                     hdr_input,
                     self._auto_exposure_stats,
                     int(self.width),
@@ -406,7 +426,7 @@ class Tonemapper:
                     self.auto_exposure_min_luminance_ev,
                     self.auto_exposure_max_luminance_ev,
                 ],
-                device="cuda",
+                block_dim=_METER_BLOCK_DIM,
             )
             wp.launch(
                 _adapt_auto_exposure,
@@ -425,10 +445,10 @@ class Tonemapper:
                 device="cuda",
             )
             self._auto_exposure_initialized = True
-        wp.launch(
-            _tonemap_texture_kernel if is_texture else tonemap_kernel,
-            dim=(self.height, self.width),
-            inputs=[
+        self._launch(
+            _tonemap_texture_kernel if is_texture else _tonemap_array_kernel,
+            (self.height, self.width),
+            [
                 hdr_input,
                 self._ldr_output,
                 int(self.width),
@@ -442,7 +462,6 @@ class Tonemapper:
                 self.saturation,
                 self.vignette,
             ],
-            device="cuda",
         )
 
     def process_debug(

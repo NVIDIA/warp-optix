@@ -171,3 +171,37 @@ def test_invalid_record_data():
     with pytest.raises(ValueError, match="same CUDA device"):
         hit_groups = {"textured": wo.HitGroup(closest_hit=textured_hit, data=data)}
         wo.Pipeline(raygen, sbt=wo.SbtLayout(hit_groups=hit_groups), payload_words=3)
+
+
+def test_record_array_snapshots_update_and_close():
+    data = textured("cuda")
+    original = weakref.ref(data.palette)
+    hit = wo.HitGroup(closest_hit=textured_hit, data=data)
+    pipeline = wo.Pipeline(raygen, sbt=wo.SbtLayout(hit_groups={"textured": hit}), payload_words=3)
+    del hit
+
+    # Mutating the host struct must not release the array still referenced by
+    # the uploaded record, including when an attempted update is rejected.
+    data.palette = wp.zeros(2, dtype=wp.vec3, device="cpu")
+    gc.collect()
+    assert original() is not None
+    with pytest.raises(ValueError, match="same CUDA device"):
+        pipeline.update_sbt_data()
+    assert original() is not None
+    data.palette = wp.ones(2, dtype=wp.vec3, device="cuda")
+    replacement = weakref.ref(data.palette)
+    stream = wp.Stream("cuda")
+    pipeline.update_sbt_data(stream=stream)
+    wp.synchronize_stream(stream)
+    gc.collect()
+    assert original() is None
+
+    # close() releases both the array snapshot and the host struct/layout that
+    # keeps its current fields alive, even if the Pipeline itself remains held.
+    del data
+    pipeline.close()
+    gc.collect()
+    assert replacement() is None
+    assert pipeline.closed
+    with pytest.raises(RuntimeError, match="closed"):
+        pipeline.update_sbt_data()

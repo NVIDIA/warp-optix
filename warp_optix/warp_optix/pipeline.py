@@ -6,24 +6,27 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import itertools
 import logging
+import operator
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import cast
 
 import numpy as np
 import warp as wp
+from warp._src import context as _warp_context
 
 from warp_optix import native
 from warp_optix.accel import Accel
 from warp_optix.addon import build_options
-from warp_optix.context import CAPTURE_ERROR, _arrays, native_objects, resolve
-from warp_optix.enums import ExceptionFlags, TraversableGraphFlags
+from warp_optix.context import CAPTURE_ERROR, native_objects, resolve
+from warp_optix.enums import ExceptionFlags, PrimitiveType, TraversableGraphFlags
 from warp_optix.program import ProgramKind, as_program, params_struct
-from warp_optix.sbt import Record, SbtLayout
+from warp_optix.sbt import HitGroup, Record, SbtLayout
 
 _log = logging.getLogger(__name__)
-_PIPELINE_IDS = itertools.count()
 _BUILTIN_PRIMITIVE_FLAGS = {
     int(native.PRIMITIVE_TYPE_ROUND_LINEAR): int(native.PRIMITIVE_TYPE_FLAGS_ROUND_LINEAR),
     int(native.PRIMITIVE_TYPE_ROUND_QUADRATIC_BSPLINE): int(native.PRIMITIVE_TYPE_FLAGS_ROUND_QUADRATIC_BSPLINE),
@@ -31,6 +34,11 @@ _BUILTIN_PRIMITIVE_FLAGS = {
     int(native.PRIMITIVE_TYPE_ROUND_CATMULLROM): int(native.PRIMITIVE_TYPE_FLAGS_ROUND_CATMULLROM),
     int(native.PRIMITIVE_TYPE_ROUND_CUBIC_BEZIER): int(native.PRIMITIVE_TYPE_FLAGS_ROUND_CUBIC_BEZIER),
     int(native.PRIMITIVE_TYPE_FLAT_QUADRATIC_BSPLINE): int(native.PRIMITIVE_TYPE_FLAGS_FLAT_QUADRATIC_BSPLINE),
+    # Not exposed by PyOptiX 9.1; flag values from optix_types.h.
+    PrimitiveType.ROUND_QUADRATIC_BSPLINE_ROCAPS: 1 << 8,
+    PrimitiveType.ROUND_CUBIC_BSPLINE_ROCAPS: 1 << 9,
+    PrimitiveType.ROUND_CATMULLROM_ROCAPS: 1 << 10,
+    PrimitiveType.ROUND_CUBIC_BEZIER_ROCAPS: 1 << 11,
 }
 
 
@@ -63,13 +71,13 @@ class Pipeline:
         sbt: SbtLayout | None = None,
         callables: Sequence[wp.Kernel | Record] = (),
         exception: wp.Kernel | None = None,
-        exception_flags: int | None = None,
+        exception_flags: ExceptionFlags | None = None,
         params_type: type | None = None,
         payload_words: int = 0,
         attribute_words: int = 2,
         max_trace_depth: int = 1,
         max_traversable_depth: int = 2,
-        graph_flags: int = TraversableGraphFlags.ALLOW_ANY,
+        graph_flags: TraversableGraphFlags = TraversableGraphFlags.ALLOW_ANY,
         motion_blur: bool = False,
         max_registers: int = native.COMPILE_DEFAULT_MAX_REGISTER_COUNT,
         device: wp.DeviceLike = None,
@@ -78,8 +86,10 @@ class Pipeline:
         layout = SbtLayout() if sbt is None else sbt
         if not isinstance(layout, SbtLayout):
             raise TypeError("sbt must be a warp_optix.SbtLayout")
-        miss = list(layout.miss.values())
-        hit_groups = [group for per_ray in layout.hit_groups.values() for group in per_ray.values()]
+        # SbtLayout normalizes the constructor's shorthand to these mappings.
+        miss = list(cast(Mapping[str, wp.Kernel | Record | None], layout.miss).values())
+        layout_groups = cast(Mapping[str, Mapping[str, HitGroup]], layout.hit_groups)
+        hit_groups = [group for per_ray in layout_groups.values() for group in per_ray.values()]
         if params_type is not None and not all(hasattr(params_type, name) for name in ("vars", "ctype")):
             raise TypeError("params_type must be a Warp struct type")
         miss, miss_data = _split_records(miss)
@@ -95,7 +105,7 @@ class Pipeline:
         with native_objects(context) as owned:
             # All programs compile into one Warp module that inherits the raygen module's options.
             params = params_struct(raygen) if params_type is None else params_type
-            module_name = f"warp_optix_pipeline_{next(_PIPELINE_IDS)}"
+            module_name = _module_name(params, raygen, miss, hit_groups, callables, exception)
 
             def program(kernel, kind):
                 return None if kernel is None else as_program(kernel, kind, params, module_name)
@@ -161,11 +171,13 @@ class Pipeline:
                 _log.debug("module %s: %s", module_name, log)
             # Built-in intersection modules belong to the device context; they are not destroyed with the pipeline.
             builtin_modules = {
-                group.builtin: context.native.builtinISModuleGet(
+                (group.builtin, group.build_flags): context.native.builtinISModuleGet(
                     module_options,
                     pipeline_options,
                     native.BuiltinISOptions(
-                        builtinISModuleType=native.PrimitiveType(int(group.builtin)), usesMotionBlur=motion_blur
+                        builtinISModuleType=native.PrimitiveType(int(group.builtin)),
+                        usesMotionBlur=motion_blur,
+                        buildFlags=int(group.build_flags),
                     ),
                 )
                 for group in hit_groups
@@ -191,7 +203,7 @@ class Pipeline:
                     **slot("hitgroup", "CH", ch),
                     **slot("hitgroup", "AH", ah),
                     **(
-                        slot("hitgroup", "IS", None, builtin_modules[group.builtin])
+                        slot("hitgroup", "IS", None, builtin_modules[group.builtin, group.build_flags])
                         if group.builtin is not None
                         else slot("hitgroup", "IS", is_)
                     ),
@@ -247,6 +259,8 @@ class Pipeline:
             ]
             _pack_record_data(host_records, data_offsets)
             records = wp.array(host_records, dtype=wp.uint8, device=device)
+            # Launches on other streams do not wait for this upload.
+            wp.synchronize_stream(wp.get_stream(device))
 
             _, exception_base, miss_base, hit_base, callable_base, _ = (records.ptr + base for base in bases)
             sbt_table = native.ShaderBindingTable(
@@ -263,27 +277,6 @@ class Pipeline:
                 callablesRecordCount=len(callable_descs),
             )
 
-            # LaunchParams.assign() stores the raygen arguments into the device params block with a
-            # generated kernel, so Warp checks and packs them exactly as for wp.launch.
-            names = [arg.label for arg in raygen.adj.args]
-            arguments = ", ".join(f"{n}: T{i}" for i, n in enumerate(names))
-            stores = "".join(f"    p.{n} = {n}\n" for n in names)
-            arguments = f"{arguments}, " if arguments else ""
-            source = f"def write_params({arguments}_wo_params: wp.array(dtype=Params)):\n    p = Params()\n{stores}    _wo_params[0] = p\n"
-            if params_type is not None:
-                source = (
-                    "def write_params(value: Params, _wo_params: wp.array(dtype=Params)):\n    _wo_params[0] = value\n"
-                )
-            scope = {"wp": wp, "Params": params} | {f"T{i}": arg.type for i, arg in enumerate(raygen.adj.args)}
-            namespace: dict = {}
-            exec(compile(source, f"<warp_optix params {raygen.key}>", "exec"), scope, namespace)  # noqa: S102
-            writer = wp.Kernel(
-                namespace["write_params"],
-                key="write_params",
-                module=wp.get_module(f"{module_name}_params"),
-                source=source,
-            )
-
         self._context = context
         self._native = pipeline
         self._owned = tuple(owned)
@@ -291,9 +284,10 @@ class Pipeline:
         self._records = records
         self._host_records = host_records
         self._data_offsets = data_offsets
-        self._data_arrays = tuple(_arrays(record_data))
+        self._data_arrays = tuple(_record_arrays(record_data))
         self._params_size = ctypes.sizeof(params.ctype)
-        self._writer = writer
+        self._param_names = tuple(arg.label for arg in raygen.adj.args)
+        self._tid_ndim = raygen_program._wo_tid_ndim
         self._params_type = params
         self._explicit_params = params_type is not None
         self._sbt_layout = layout
@@ -311,8 +305,8 @@ class Pipeline:
         return self._params_type
 
     @property
-    def sbt_layout(self) -> SbtLayout:
-        """The SBT layout the pipeline was built from."""
+    def sbt_layout(self) -> SbtLayout | None:
+        """The SBT layout the pipeline was built from, or None after close()."""
         return self._sbt_layout
 
     @property
@@ -331,6 +325,9 @@ class Pipeline:
         self._owned = ()
         self._records = None
         self._data_arrays = ()
+        self._data_offsets = []
+        self._host_records = None
+        self._sbt_layout = None
 
         def destroy():
             for obj in reversed(owned):
@@ -350,7 +347,7 @@ class Pipeline:
         context.check_arrays(data)
         _pack_record_data(self._host_records, self._data_offsets)
         wp.copy(self._records, wp.array(self._host_records, dtype=wp.uint8, device="cpu"), stream=stream)
-        self._data_arrays = tuple(_arrays(data))
+        self._data_arrays = tuple(_record_arrays(data))
 
     def __enter__(self) -> Pipeline:
         self._check_open()
@@ -373,171 +370,246 @@ class Pipeline:
         if self._closed:
             raise RuntimeError("The pipeline is closed")
 
+    def _forget_idle_streams(self) -> None:
+        """Drop the streams, and their parameter blocks, whose launches have all finished.
+
+        Runs when a launch first uses a stream, so launching on a new stream each
+        frame keeps only the streams with work in flight.
+        """
+        if self.device.is_capturing:
+            return
+        for key, stream in list(self._streams.items()):
+            if stream.is_complete:
+                del self._streams[key]
+                self._buffers.pop(key, None)
+
 
 class _ParamsStorage:
-    """A device launch-parameter block and the inputs written into it.
+    """A device launch-parameter block, its host copy, and the inputs referenced by it.
 
-    Holds no reference to its pipeline, so a pipeline's automatic storage does
-    not form a reference cycle and ``del pipeline`` releases it at once.
+    Parameters are packed into the host copy and copied to ``data`` in stream
+    order. Holds no reference to its pipeline, so a pipeline's automatic storage
+    does not form a reference cycle and ``del pipeline`` releases it at once.
     """
 
-    __slots__ = ("data", "initialized", "inputs", "stream")
+    __slots__ = ("allocated", "data", "dirty", "host", "inputs", "reset_host", "stream")
 
     def __init__(self, params_type, device: wp.Device):
         self.data = wp.empty(1, dtype=params_type, device=device)
-        self.inputs: tuple = ()
-        self.initialized = False
+        self.host = params_type()
+        self.inputs: dict = {}
+        self.reset_host = False
+        self.dirty = False
+        # The allocation is ordered on the current stream: the first use waits for it, not for later work there.
+        self.allocated: wp.Event | None = wp.get_stream(device).record_event()
         self.stream: wp.Stream | None = None
 
-    def use(self, stream: wp.Stream) -> None:
-        """Order a use on ``stream`` after the previous use when that was on another stream."""
-        previous = self.stream
-        if previous is not None and previous.cuda_stream != stream.cuda_stream:
-            stream.wait_stream(previous)
-        self.stream = stream
-
-    def write(self, pipeline: Pipeline, context, stream: wp.Stream, values) -> None:
+    def pack(self, pipeline: Pipeline, context, values) -> None:
+        """Pack ``values`` (the raygen arguments, or one ``params_type`` instance) into the host copy."""
         if pipeline._explicit_params:
-            if getattr(values, "_cls", None) is not pipeline.params_type:
-                raise TypeError("values must be an instance of the pipeline params_type")
-            inputs = (values,)
+            values = tuple(values) if isinstance(values, Sequence) else (values,)
+            if len(values) != 1 or getattr(values[0], "_cls", None) is not pipeline.params_type:
+                raise TypeError("A pipeline with params_type takes one instance of it as its parameters")
+            context.check_arrays(values)
+            # Field setters retain Python references in the host struct as well.
+            # Discard those when replacing the entire parameter block.
+            if self.reset_host:
+                self.host = pipeline.params_type()
+                self.reset_host = False
+            ctypes.memmove(
+                ctypes.addressof(self.host._ctype), ctypes.addressof(values[0]._ctype), pipeline._params_size
+            )
+            self.inputs = {name: getattr(values[0], name) for name in pipeline.params_type.vars}
         else:
-            inputs = tuple(values)
-        inputs, accels = _replace_accels(inputs)
-        context.check_arrays(inputs)
-        with wp.ScopedDevice(context.device), wp.ScopedStream(stream):
-            self.use(stream)
-            wp.launch(pipeline._writer, dim=1, inputs=[*inputs, self.data], device=context.device, stream=stream)
-        self.inputs = (*inputs, *accels)
-        self.initialized = True
+            names = pipeline._param_names
+            values = tuple(values)
+            if len(values) != len(names):
+                raise TypeError(f"The raygen program takes {len(names)} arguments, but {len(values)} were given")
+            self.inputs = {}
+            for name, value in zip(names, values):
+                self.set(context, name, value)
+        self.dirty = True
+
+    def set(self, context, name: str, value) -> None:
+        """Set one parameter; an ``Accel`` is passed as its id and retained."""
+        retained = value
+        if isinstance(value, Accel):
+            value = wp.uint64(value.id)
+        elif isinstance(value, wp.array):
+            if value.device != context.device:
+                raise ValueError("Array and OptiX resource must use the same CUDA device")
+        elif wp.types.is_struct(value):
+            context.check_arrays((value,))
+            field = getattr(type(self.host._ctype), name)
+            if value._cls is self.host._cls.vars[name].type:
+                # Copy the bytes: assigning through the struct re-validates every nested field.
+                ctypes.memmove(
+                    ctypes.addressof(self.host._ctype) + field.offset, ctypes.addressof(value._ctype), field.size
+                )
+                self.inputs[name] = retained
+                self.dirty = True
+                return
+        setattr(self.host, name, value)
+        self.reset_host = True
+        self.inputs[name] = retained
+        self.dirty = True
+
+    def use(self, stream: wp.Stream) -> None:
+        """Order a use on ``stream`` after the previous use, and upload the host copy if it changed."""
+        if self.stream is None:
+            stream.wait_event(self.allocated)
+            self.allocated = None
+            self.stream = stream
+        elif self.stream.cuda_stream != stream.cuda_stream:
+            stream.wait_stream(self.stream)
+            self.stream = stream
+        if self.dirty:
+            device = self.data.device
+            # Copying from pageable memory returns once the bytes are staged, so the host copy can be reused.
+            _warp_context.runtime.core.wp_memcpy_h2d(
+                device.context,
+                self.data.ptr,
+                ctypes.addressof(self.host._ctype),
+                self.data.capacity,
+                stream.cuda_stream,
+            )
+            self.dirty = False
 
 
-class LaunchParams:
-    """Launch-parameter storage for one pipeline, written with :meth:`assign`.
+class Launch:
+    """A recorded launch that replays quickly, like ``wp.launch(..., record_cmd=True)``.
 
-    Pass it as ``launch(pipeline, dim, params=...)`` to launch with preset
-    parameters. The device comes from the pipeline. Uses on different streams
-    are ordered on the GPU; use separate objects for independent concurrent
-    launches. Writing ``data`` directly bypasses that ordering.
-
-    Release is automatic when the last reference is dropped, or explicit with
-    :meth:`close` or ``with``; memory is freed in stream order, like ``wp.array``.
+    Created by ``launch(..., record_cmd=True)``. The parameters are checked and
+    packed once and kept in this object's own parameter block; :meth:`launch`
+    copies them to the device only after they change, then launches. Replays on
+    different streams are ordered on the GPU; use separate ``Launch`` objects for
+    independent concurrent launches. Like ``wp.array``, the parameter block is
+    freed in stream order when the last reference is dropped. Set them
+    with :meth:`set_param_at_index`, :meth:`set_param_by_name`, or
+    :meth:`set_params`; names and indices are the launch-parameter fields (the
+    raygen arguments, or the fields of ``params_type``).
     """
 
-    def __init__(self, pipeline: Pipeline):
-        if not isinstance(pipeline, Pipeline):
-            raise TypeError("LaunchParams needs a warp_optix.Pipeline")
-        pipeline._check_open()
-        if wp.get_stream(pipeline.device).is_capturing:
-            raise RuntimeError(CAPTURE_ERROR)
+    def __init__(self, pipeline: Pipeline, dim, inputs, context):
         self.pipeline = pipeline
-        self._storage: _ParamsStorage | None = _ParamsStorage(pipeline.params_type, pipeline.device)
+        self._context = context
+        self._storage = _ParamsStorage(pipeline.params_type, context.device)
+        self._fields = tuple(pipeline.params_type.vars)
+        self.set_dim(dim)
+        self.set_params(inputs)
 
-    @property
-    def data(self) -> wp.array:
-        """The device parameter block (one ``params_type`` element)."""
-        return self._open_storage().data
+    def set_dim(self, dim: int | Sequence[int]) -> None:
+        """Set the launch dimensions, as in :func:`launch`."""
+        self.dim = _launch_dim(dim, self.pipeline)
+        self._size = [*reversed(self.dim), 1, 1][:3]
 
-    @property
-    def closed(self) -> bool:
-        return self._storage is None
+    def set_params(self, values: Sequence) -> None:
+        """Set all parameters: the ``inputs`` of :func:`launch`."""
+        self._storage.pack(self.pipeline, self._context, values)
 
-    def assign(self, values, stream: wp.Stream | None = None) -> None:
-        """Write a params-struct instance, or the raygen arguments as a sequence.
+    def set_param_at_index(self, index: int, value) -> None:
+        """Set the parameter at ``index`` of the launch-parameter fields."""
+        self.set_param_by_name(self._fields[index], value)
 
-        Waits on prior uses of this object on other streams on the GPU, never on
-        the host. Arrays and acceleration structures in ``values`` stay referenced
-        until replaced or until this object is released.
-        """
-        storage = self._open_storage()
-        pipeline = self.pipeline
-        pipeline._check_open()
-        context, stream = resolve(pipeline.device, stream)
-        storage.write(pipeline, context, stream, values)
+    def set_param_by_name(self, name: str, value) -> None:
+        """Set the launch-parameter field ``name``."""
+        if name not in self._fields:
+            raise KeyError(f"The launch parameters have no field {name!r}")
+        self._storage.set(self._context, name, value)
 
-    def close(self) -> None:
-        """Make the parameters unusable and release their memory and referenced inputs."""
-        self._storage = None
-
-    def __enter__(self) -> LaunchParams:
-        self._open_storage()
-        return self
-
-    def __exit__(self, *exc) -> None:
-        self.close()
-
-    def __repr__(self):
-        return f"LaunchParams({'closed, ' if self.closed else ''}device={self.pipeline.device.alias!r})"
-
-    def _open_storage(self) -> _ParamsStorage:
-        if self._storage is None:
-            raise RuntimeError("The launch parameters are closed")
-        return self._storage
+    def launch(self, stream: wp.Stream | None = None) -> None:
+        """Launch on ``stream`` (default: the device's current stream)."""
+        _launch(self.pipeline, self._context, self._storage, self._size, stream)
 
 
 def launch(
     pipeline: Pipeline,
     dim: int | Sequence[int],
     inputs: Sequence | None = None,
+    outputs: Sequence | None = None,
+    *,
     device: wp.DeviceLike = None,
     stream: wp.Stream | None = None,
-    *,
-    params: LaunchParams | None = None,
-) -> None:
+    record_cmd: bool = False,
+) -> Launch | None:
     """Launch an OptiX pipeline, mirroring ``wp.launch``.
 
-    Pass the raygen arguments as ``inputs`` (or ``inputs=[struct]`` with an
-    explicit ``params_type``), or preset :class:`LaunchParams` as ``params``.
-    ``wo.Accel`` objects in ``inputs`` are passed as their ``id``. As with
-    ``wp.launch``, keep resources alive while submitted work may use them.
-    ``device`` defaults to the pipeline's device; a different device is
-    rejected. Automatic parameter storage is separate for each CUDA stream.
-    Calls from multiple host threads require external synchronization.
+    Pass raygen arguments as ``inputs`` and ``outputs``, concatenated as in
+    ``wp.launch``, or ``inputs=[struct]`` with an
+    explicit ``params_type``. ``wo.Accel`` objects in ``inputs`` are passed as
+    their ``id``. As with ``wp.launch``, keep resources alive while submitted
+    work may use them. ``device`` defaults to the pipeline's device; a different
+    device is rejected. Parameter storage is separate for each CUDA stream.
+    With ``record_cmd=True``, nothing is launched; a :class:`Launch` is returned
+    for fast replays. Calls from multiple host threads require external synchronization.
     """
     if not isinstance(pipeline, Pipeline):
         raise TypeError("pipeline must be a warp_optix.Pipeline")
     pipeline._check_open()
     if device is not None and wp.get_device(device) != pipeline.device:
         raise ValueError("Device and pipeline must be the same CUDA device")
-    context, stream = resolve(pipeline.device, stream)
-    dim = (dim,) if isinstance(dim, int) else tuple(dim)
-    if not 1 <= len(dim) <= 3 or any(not isinstance(n, int) or n <= 0 for n in dim):
+    context = pipeline._context
+    inputs = (*(inputs or ()), *(outputs or ()))
+    if record_cmd:
+        return Launch(pipeline, dim, inputs, context)
+    size = [*reversed(_launch_dim(dim, pipeline)), 1, 1][:3]
+    stream = _stream(context, stream)
+    if stream.is_capturing:
+        raise RuntimeError(CAPTURE_ERROR)
+    if stream.cuda_stream not in pipeline._streams:
+        pipeline._forget_idle_streams()
+    storage = pipeline._buffers.get(stream.cuda_stream)
+    if storage is None:
+        storage = pipeline._buffers[stream.cuda_stream] = _ParamsStorage(pipeline.params_type, context.device)
+    storage.pack(pipeline, context, inputs)
+    _launch(pipeline, context, storage, size, stream)
+
+
+def _launch_dim(dim, pipeline: Pipeline) -> tuple[int, ...]:
+    try:
+        dim = (operator.index(dim),) if not isinstance(dim, Sequence) else tuple(operator.index(n) for n in dim)
+    except TypeError:
+        raise ValueError("dim must contain one to three positive integers") from None
+    if not 1 <= len(dim) <= 3 or any(n <= 0 for n in dim):
         raise ValueError("dim must contain one to three positive integers")
-    if (inputs is None) == (params is None):
-        raise ValueError("Provide exactly one of inputs or params")
-    key = stream.cuda_stream
-    if params is not None:
-        if not isinstance(params, LaunchParams) or params.pipeline is not pipeline:
-            raise ValueError("params must be LaunchParams of this pipeline")
-        storage = params._open_storage()
-        if not storage.initialized:
-            raise ValueError("Assign launch parameters before launching with them")
-    else:
-        inputs = tuple(inputs)
-        storage = pipeline._buffers.get(key)
-        if storage is None:
-            storage = pipeline._buffers[key] = _ParamsStorage(pipeline.params_type, context.device)
-        if pipeline._explicit_params:
-            if len(inputs) != 1:
-                raise ValueError("Explicit params_type requires inputs=[struct_instance]")
-            storage.write(pipeline, context, stream, inputs[0])
-        else:
-            storage.write(pipeline, context, stream, inputs)
-    with wp.ScopedDevice(context.device), wp.ScopedStream(stream):
-        storage.use(stream)
-        width, height, depth = [*reversed(dim), 1, 1][:3]
-        native.launch(
-            pipeline._native,
-            stream.cuda_stream,
-            storage.data.ptr,
-            pipeline._params_size,
-            pipeline._sbt,
-            width,
-            height,
-            depth,
+    if pipeline._tid_ndim and pipeline._tid_ndim != len(dim):
+        raise ValueError(
+            f"The raygen program unpacks {pipeline._tid_ndim} wp.tid() indices, but dim has {len(dim)} entries"
         )
+    return dim
+
+
+def _stream(context, stream: wp.Stream | None) -> wp.Stream:
+    if stream is None:
+        return context.device.stream
+    if not isinstance(stream, wp.Stream):
+        raise TypeError("stream must be a Warp Stream")
+    if stream.device != context.device:
+        raise ValueError("Stream and pipeline must be the same CUDA device")
+    return stream
+
+
+def _launch(pipeline: Pipeline, context, storage: _ParamsStorage, size, stream: wp.Stream | None) -> None:
+    """Upload changed parameters and launch: the path every launch shares."""
+    pipeline._check_open()
+    stream = _stream(context, stream)
+    if stream.is_capturing:
+        raise RuntimeError(CAPTURE_ERROR)
+    if context._releases:
+        context.collect()
+    if stream.cuda_stream not in pipeline._streams:
+        pipeline._forget_idle_streams()
+    storage.use(stream)
+    args = (pipeline._native, stream.cuda_stream, storage.data.ptr, pipeline._params_size, pipeline._sbt, *size)
+    device = context.device
+    # OptiX launches into the current CUDA context; switch only when another one is current.
+    if _warp_context.runtime.core.wp_cuda_context_get_current() == device.context:
+        native.launch(*args)
+    else:
+        with wp.ScopedDevice(device):
+            native.launch(*args)
     # Remembered so close() can wait for these launches before destroying the native pipeline.
-    pipeline._streams[key] = stream
+    pipeline._streams[stream.cuda_stream] = stream
 
 
 def _split_records(entries) -> tuple[list, list]:
@@ -548,6 +620,15 @@ def _split_records(entries) -> tuple[list, list]:
 
 def _is_struct(value) -> bool:
     return hasattr(getattr(value, "_cls", None), "vars") and hasattr(value, "__ctype__")
+
+
+def _record_arrays(values):
+    """Snapshot array references separately from the mutable record structs."""
+    for value in values:
+        if isinstance(value, wp.array):
+            yield value
+        elif _is_struct(value):
+            yield from _record_arrays(getattr(value, name) for name in value._cls.vars)
 
 
 def _record_stride(section: list) -> int:
@@ -563,9 +644,22 @@ def _pack_record_data(host_records: np.ndarray, data_offsets) -> None:
         host_records[offset : offset + len(packed)] = np.frombuffer(packed, dtype=np.uint8)
 
 
-def _replace_accels(values: tuple) -> tuple[tuple, tuple]:
-    """Replace top-level ``Accel`` objects by their ids; return the values and the objects."""
-    accels = tuple(value for value in values if isinstance(value, Accel))
-    if not accels:
-        return values, ()
-    return tuple(wp.uint64(value.id) if isinstance(value, Accel) else value for value in values), accels
+def _module_name(params, raygen, miss, hit_groups, callables, exception) -> str:
+    """Name the Warp module of a pipeline after its programs and parameters.
+
+    Equal pipelines get equal names, and so equal generated code, which lets
+    Warp's kernel cache and OptiX's module cache serve repeated pipelines.
+    """
+
+    def identity(kernel):
+        return None if kernel is None else (kernel.module.name, kernel.key)
+
+    key = (
+        params.native_name,
+        identity(raygen),
+        [identity(k) for k in miss],
+        [(identity(g.closest_hit), identity(g.any_hit), identity(g.intersection)) for g in hit_groups],
+        [(identity(k), getattr(k, "_optix_kind", ProgramKind.DIRECT_CALLABLE)) for k in callables],
+        identity(exception),
+    )
+    return f"warp_optix_{hashlib.sha256(repr(key).encode()).hexdigest()[:16]}"

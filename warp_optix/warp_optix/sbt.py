@@ -8,8 +8,11 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
+from typing import cast
 
 import warp as wp
+
+from warp_optix.enums import BuildFlags, PrimitiveType
 
 
 @dataclass(frozen=True)
@@ -17,7 +20,8 @@ class HitGroup:
     """Programs run for one geometry type and ray type.
 
     ``builtin`` selects an OptiX built-in intersection (a :class:`PrimitiveType`)
-    for curves. A hit group without programs still occupies its SBT record, which
+    for curves. ``build_flags`` must match the flags used to build those curves.
+    A hit group without programs still occupies its SBT record, which
     is what pipelines that only use ``optix_traverse`` hit objects need.
     ``data`` is a Warp struct instance stored in the record, read on the device
     with ``wp.optix_load_sbt_data()``.
@@ -27,7 +31,24 @@ class HitGroup:
     any_hit: wp.Kernel | None = None
     intersection: wp.Kernel | None = None
     builtin: int | None = None
+    build_flags: int = BuildFlags.PREFER_FAST_TRACE
     data: object | None = None
+
+    def __post_init__(self):
+        if self.builtin is None:
+            return
+        if self.intersection is not None:
+            raise ValueError("HitGroup intersection and builtin cannot be combined")
+        curves = {int(kind) for kind in PrimitiveType if kind.name.startswith(("ROUND_", "FLAT_"))}
+        if int(self.builtin) not in curves:
+            raise ValueError(f"HitGroup.builtin must be a curve PrimitiveType, got {self.builtin!r}")
+
+
+def _ray_type_index(ray_types: Sequence[str], name: str) -> int:
+    try:
+        return ray_types.index(name)
+    except ValueError:
+        raise KeyError(f"Unknown ray type {name!r}; expected one of {ray_types}") from None
 
 
 @dataclass(frozen=True)
@@ -107,10 +128,7 @@ class SbtLayout:
         return len(self.ray_types)
 
     def ray_type_index(self, name: str) -> int:
-        try:
-            return self.ray_types.index(name)
-        except ValueError:
-            raise KeyError(f"Unknown ray type {name!r}; expected one of {self.ray_types}") from None
+        return _ray_type_index(self.ray_types, name)
 
     def get_sbt_offset(self, name: str) -> int:
         """Return the instance SBT offset, in records, of hit group ``name``."""
@@ -122,13 +140,16 @@ class SbtLayout:
     def describe(self) -> str:
         """Return a printable table of miss and hit records and their shaders."""
         rows = [("section", "record", "group", "ray type", "programs")]
-        for index, (ray, entry) in enumerate(self.miss.items()):
+        # __post_init__ normalizes the constructor's shorthand to mappings.
+        miss = cast(Mapping[str, wp.Kernel | Record | None], self.miss)
+        hit_groups = cast(Mapping[str, Mapping[str, HitGroup]], self.hit_groups)
+        for index, (ray, entry) in enumerate(miss.items()):
             program = entry.program if isinstance(entry, Record) else entry
             rows.append(("miss", str(index), "-", ray, "(none)" if program is None else program.key))
-        for group_index, (name, per_ray) in enumerate(self.hit_groups.items()):
+        for group_index, (name, per_ray) in enumerate(hit_groups.items()):
             for index, (ray, group) in enumerate(per_ray.items()):
                 programs = [
-                    f"{label}={entry.key if isinstance(entry, wp.Kernel) else entry}"
+                    f"{label}={getattr(entry, 'key', entry)}"
                     for label, entry in (
                         ("CH", group.closest_hit),
                         ("AH", group.any_hit),

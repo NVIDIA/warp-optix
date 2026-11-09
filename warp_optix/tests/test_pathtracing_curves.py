@@ -34,6 +34,9 @@ def test_curve_default_topology_and_sbt_slot(
     assert curve.control_point_count == control_points
     assert pwk.SBT.get_sbt_offset(curve.primitive_type) == sbt_offset
     assert curve.geometry_type == geometry_type
+    # Dynamic curves are built with other flags, so they use their own hit groups.
+    dynamic_curve = Curve(points, radii=0.1, basis=basis, dynamic=True)
+    assert pwk.SBT.get_sbt_offset(dynamic_curve.primitive_type + "_dynamic") == sbt_offset + 4
 
 
 def test_curve_accepts_scalar_radius_disjoint_segments_and_per_primitive_materials():

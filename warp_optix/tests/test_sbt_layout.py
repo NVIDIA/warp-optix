@@ -132,6 +132,17 @@ def test_bare_entries_apply_to_every_ray_type():
     assert "(none)" in default.describe()
 
 
+def test_callable_kind_is_part_of_compiled_module_identity(monkeypatch):
+    from warp_optix.pipeline import _module_name
+    from warp_optix.program import params_struct
+
+    params = params_struct(raygen)
+    direct = _module_name(params, raygen, [], [], [radiance_miss], None)
+    monkeypatch.setattr(radiance_miss, "_optix_kind", wo.ProgramKind.CONTINUATION_CALLABLE, raising=False)
+    continuation = _module_name(params, raygen, [], [], [radiance_miss], None)
+    assert continuation != direct
+
+
 def test_missing_and_incompatible_entries():
     for names in ([], [""], ["a", "a"], [None], [str(i) for i in range(16)]):
         with pytest.raises(ValueError):
