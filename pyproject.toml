@@ -2,6 +2,8 @@
 requires = [
     "scikit-build-core>=0.12",
     "pybind11>=3.0,<4",
+    # Supplies cuda.h for the build only. The extension links no CUDA library.
+    "nvidia-cuda-runtime-cu12==12.9.79",
 ]
 build-backend = "scikit_build_core.build"
 
@@ -27,9 +29,10 @@ classifiers = [
     "Topic :: Multimedia :: Graphics :: 3D Rendering",
     "Topic :: Scientific/Engineering :: Visualization",
     "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
 ]
 
-dependencies = ["pyoptix==9.1.0", "warp-lang>=1.17", "numpy>=1.20"]
+dependencies = ["pyoptix==9.1.1", "warp-lang>=1.17", "numpy>=1.20"]
 
 [project.optional-dependencies]
 training = ["warp-nn>=0.3.1"]
@@ -67,6 +70,28 @@ sdist.exclude = [
     ".claude", ".agents", ".codex", ".aws", ".venv", "env", "build", "dist",
     "third_party", "*.bmp", "**/*.egg-info", "**/.pytest_cache",
 ]
+
+# Wheels are built by .github/workflows/gpu-platform.yml.
+[tool.cibuildwheel]
+# Keep in sync with requires-python.
+build = ["cp312-*"]
+# The NVIDIA driver and PyOptiX do not support musl.
+skip = ["*-musllinux_*"]
+build-verbosity = 1
+
+[tool.cibuildwheel.linux]
+archs = ["x86_64"]
+# PyOptiX publishes manylinux_2_28 wheels.
+manylinux-x86_64-image = "manylinux_2_28"
+# The extension loads the NVIDIA driver at runtime and links no CUDA library.
+# Never bundle the driver of the build machine should a link to it be added.
+repair-wheel-command = "auditwheel repair --exclude libcuda.so.1 -w {dest_dir} {wheel}"
+
+[tool.cibuildwheel.windows]
+archs = ["AMD64"]
+# Bundle nothing: the NVIDIA driver and the Visual C++ Redistributable come
+# from the user's machine.
+repair-wheel-command = ""
 
 [tool.pytest.ini_options]
 testpaths = ["warp_optix/tests"]
@@ -121,6 +146,8 @@ docstring-code-format = true
 
 [tool.pyright]
 include = ["warp_optix/warp_optix", "warp_optix_pathtracing/warp_optix_pathtracing"]
+executionEnvironments = [{ root = "warp_optix", extraPaths = ["warp_optix_pathtracing"] }, { root = "warp_optix_pathtracing", extraPaths = ["warp_optix"] }]
+executionEnvironments = [{ root = "warp_optix", extraPaths = ["warp_optix_pathtracing"] }, { root = "warp_optix_pathtracing", extraPaths = ["warp_optix"] }]
 pythonVersion = "3.12"
 # CI runs pyright without installing warp, pyoptix or the optional extras.
 reportMissingImports = false
@@ -131,31 +158,8 @@ reportOptionalSubscript = false
 # existing type errors. Remove entries as they are cleaned up so that pyright
 # gates more of the package over time.
 exclude = [
-    "warp_optix/warp_optix/__init__.py",
-    "warp_optix/warp_optix/_backend.py",
-    "warp_optix/warp_optix/accel.py",
-    "warp_optix/warp_optix/addon.py",
-    "warp_optix/warp_optix/constants.py",
-    "warp_optix/warp_optix/context.py",
-    "warp_optix/warp_optix/denoiser.py",
-    "warp_optix/warp_optix/pipeline.py",
-    "warp_optix/warp_optix/program.py",
-    "warp_optix/warp_optix/rays.py",
-    "warp_optix/warp_optix/sbt.py",
-    "warp_optix_pathtracing/warp_optix_pathtracing/arrows.py",
-    "warp_optix_pathtracing/warp_optix_pathtracing/asset_loaders.py",
-    "warp_optix_pathtracing/warp_optix_pathtracing/environment_map.py",
-    "warp_optix_pathtracing/warp_optix_pathtracing/func_common.py",
-    "warp_optix_pathtracing/warp_optix_pathtracing/gl/line_overlay.py",
-    "warp_optix_pathtracing/warp_optix_pathtracing/pathtracer_api.py",
-    "warp_optix_pathtracing/warp_optix_pathtracing/pathtracing_viewer.py",
-    "warp_optix_pathtracing/warp_optix_pathtracing/pathtracing_warp_kernels.py",
-    "warp_optix_pathtracing/warp_optix_pathtracing/scene.py",
-    "warp_optix_pathtracing/warp_optix_pathtracing/sky_lut.py",
-    "warp_optix_pathtracing/warp_optix_pathtracing/tonemap.py",
-    "warp_optix_pathtracing/warp_optix_pathtracing/usd_loader.py",
-    "warp_optix_pathtracing/warp_optix_pathtracing/viewer.py",
-    "warp_optix_pathtracing/warp_optix_pathtracing/volume_composite.py",
+    ".claude", ".agents", ".codex", ".aws", ".venv", "env", "build", "dist",
+    "third_party", "*.bmp", "**/*.egg-info", "**/.pytest_cache",
 ]
 
 [tool.typos.files]

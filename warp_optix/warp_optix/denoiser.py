@@ -8,7 +8,7 @@ from __future__ import annotations
 import warp as wp
 
 from warp_optix import native
-from warp_optix.context import resolve
+from warp_optix.context import CAPTURE_ERROR, resolve
 
 
 @wp.kernel(enable_backward=False)
@@ -51,6 +51,9 @@ class Denoiser:
         scale = 2 if upscale else 1
         self.output_width, self.output_height = self.width * scale, self.height * scale
         self._history_valid = False
+        self._bindings = [None, None]
+        self._parity = 0
+        self._stream_handle = int(self.stream.cuda_stream)
         model = native.DENOISER_MODEL_KIND_TEMPORAL_UPSCALE2X if upscale else native.DENOISER_MODEL_KIND_TEMPORAL_AOV
         options = native.DenoiserOptions()
         options.guideAlbedo = 1
@@ -65,6 +68,8 @@ class Denoiser:
                 # 2x upscaling from 1080p needs over 2 GiB of scratch, more elements than a uint8 array can hold.
                 self._scratch = wp.empty((self._scratch_size + 7) // 8, dtype=wp.uint64, device=device)
                 self._average_color = wp.empty(3, dtype=wp.float32, device=device)
+                self._params = native.DenoiserParams()
+                self._params.hdrAverageColor = self._average_color.ptr
                 self._flow = wp.empty((self.height, self.width), dtype=wp.vec2, device=device)
                 shape = (self.output_height, self.output_width)
                 self._output = wp.zeros(shape, dtype=wp.vec4, device=device)
@@ -120,6 +125,13 @@ class Denoiser:
         """
         if self._denoiser is None:
             raise RuntimeError("Denoiser is closed")
+        if self.stream.is_capturing:
+            raise RuntimeError(CAPTURE_ERROR)
+        # Native calls and recorded Warp launches must restore the caller's CUDA context.
+        with wp.ScopedDevice(self.device):
+            return self._apply(color, albedo, normal, motion, reset=reset)
+
+    def _bind(self, color, albedo, normal, motion):
         for name, array, dtypes in (
             ("color", color, (wp.vec4,)),
             ("albedo", albedo, (wp.vec3, wp.vec4)),
@@ -131,74 +143,95 @@ class Denoiser:
                 raise ValueError(f"{name} must be a {types} array of shape {(self.height, self.width)}")
             if array.device != self.device or not array.is_contiguous:
                 raise ValueError(f"{name} must be contiguous on {self.device}")
-        stream = int(self.stream.cuda_stream)
-        with wp.ScopedStream(self.stream):
-            if reset or not self._history_valid:
+        guides = native.DenoiserGuideLayer()
+        guides.albedo = self._image(albedo, native.PIXEL_FORMAT_FLOAT3)
+        guides.normal = self._image(normal, native.PIXEL_FORMAT_FLOAT3)
+        guides.flow = self._image(self._flow, native.PIXEL_FORMAT_FLOAT2)
+        for field, buffer in (
+            ("previousOutputInternalGuideLayer", self._previous_guide),
+            ("outputInternalGuideLayer", self._output_guide),
+        ):
+            setattr(
+                guides,
+                field,
+                self._image(
+                    buffer,
+                    native.PIXEL_FORMAT_INTERNAL_GUIDE_LAYER,
+                    pixel_stride=self._guide_pixel_size,
+                    width=self.output_width,
+                    height=self.output_height,
+                ),
+            )
+        layer = native.DenoiserLayer()
+        layer.input = self._image(color, native.PIXEL_FORMAT_FLOAT4)
+        layer.output = self._image(
+            self._output,
+            native.PIXEL_FORMAT_FLOAT4,
+            width=self.output_width,
+            height=self.output_height,
+        )
+        layer.previousOutput = self._image(
+            self._previous_output,
+            native.PIXEL_FORMAT_FLOAT4,
+            width=self.output_width,
+            height=self.output_height,
+        )
+        flow = wp.launch(
+            _prepare_flow,
+            dim=(self.height, self.width),
+            inputs=[motion, self._flow],
+            device=self.stream.device,
+            record_cmd=True,
+        )
+        key = (color, normal, albedo, motion)
+        return key, guides, layer, flow
+
+    def _apply(self, color, albedo, normal, motion, *, reset):
+        # Output and history buffers swap every call, so each parity keeps its own native bindings.
+        binding = self._bindings[self._parity]
+        if (
+            binding is None
+            or binding[0][0] is not color
+            or binding[0][1] is not normal
+            or binding[0][2] is not albedo
+            or binding[0][3] is not motion
+        ):
+            binding = self._bindings[self._parity] = self._bind(color, albedo, normal, motion)
+        _, guides, layer, flow = binding
+        stream = self._stream_handle
+        if reset or not self._history_valid:
+            with wp.ScopedStream(self.stream):
                 self._previous_guide.zero_()
                 self._previous_output.zero_()
-                self._history_valid = False
-            wp.launch(_prepare_flow, dim=(self.height, self.width), inputs=[motion, self._flow])
-            guides = native.DenoiserGuideLayer()
-            guides.albedo = self._image(albedo, native.PIXEL_FORMAT_FLOAT3)
-            guides.normal = self._image(normal, native.PIXEL_FORMAT_FLOAT3)
-            guides.flow = self._image(self._flow, native.PIXEL_FORMAT_FLOAT2)
-            for field, buffer in (
-                ("previousOutputInternalGuideLayer", self._previous_guide),
-                ("outputInternalGuideLayer", self._output_guide),
-            ):
-                setattr(
-                    guides,
-                    field,
-                    self._image(
-                        buffer,
-                        native.PIXEL_FORMAT_INTERNAL_GUIDE_LAYER,
-                        pixel_stride=self._guide_pixel_size,
-                        width=self.output_width,
-                        height=self.output_height,
-                    ),
-                )
-            layer = native.DenoiserLayer()
-            layer.input = self._image(color, native.PIXEL_FORMAT_FLOAT4)
-            layer.output = self._image(
-                self._output,
-                native.PIXEL_FORMAT_FLOAT4,
-                width=self.output_width,
-                height=self.output_height,
-            )
-            layer.previousOutput = self._image(
-                self._previous_output,
-                native.PIXEL_FORMAT_FLOAT4,
-                width=self.output_width,
-                height=self.output_height,
-            )
-            params = native.DenoiserParams()
-            params.hdrAverageColor = self._average_color.ptr
-            params.temporalModeUsePreviousLayers = int(self._history_valid)
-            self._denoiser.computeAverageColor(
-                stream,
-                layer.input,
-                self._average_color.ptr,
-                self._scratch.ptr,
-                self._scratch_size,
-            )
-            self._denoiser.invoke(
-                stream,
-                params,
-                self._state.ptr,
-                self._state.size,
-                guides,
-                layer,
-                1,
-                0,
-                0,
-                self._scratch.ptr,
-                self._scratch_size,
-            )
-            result = self._output
-            self._output, self._previous_output = self._previous_output, self._output
-            self._output_guide, self._previous_guide = self._previous_guide, self._output_guide
-            self._history_valid = True
-            return result
+            self._history_valid = False
+        flow.launch(self.stream)
+        self._params.temporalModeUsePreviousLayers = int(self._history_valid)
+        self._denoiser.computeAverageColor(
+            stream,
+            layer.input,
+            self._average_color.ptr,
+            self._scratch.ptr,
+            self._scratch_size,
+        )
+        self._denoiser.invoke(
+            stream,
+            self._params,
+            self._state.ptr,
+            self._state.size,
+            guides,
+            layer,
+            1,
+            0,
+            0,
+            self._scratch.ptr,
+            self._scratch_size,
+        )
+        result = self._output
+        self._output, self._previous_output = self._previous_output, self._output
+        self._output_guide, self._previous_guide = self._previous_guide, self._output_guide
+        self._parity ^= 1
+        self._history_valid = True
+        return result
 
     def close(self) -> None:
         """Make the denoiser unusable and release it; the native denoiser outlives work already submitted."""
@@ -206,6 +239,7 @@ class Denoiser:
             return
         denoiser, self._denoiser = self._denoiser, None
         self._history_valid = False
+        self._bindings = [None, None]
         self._state = self._scratch = self._average_color = self._flow = None
         self._output = self._previous_output = self._previous_guide = self._output_guide = None
         self._context.release(denoiser.destroy, (self.stream,))

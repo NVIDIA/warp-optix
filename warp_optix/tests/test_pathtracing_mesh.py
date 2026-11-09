@@ -41,7 +41,7 @@ def test_generated_sphere_winding_matches_outward_normals():
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not wp.is_cuda_available(), reason="device mesh access requires CUDA")
-def test_dynamic_mesh_exposes_writable_vec3_device_buffers():
+def test_dynamic_geometry_device_buffers_are_the_shader_buffers():
     vertices = np.array(
         [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
         dtype=np.float32,
@@ -50,18 +50,26 @@ def test_dynamic_mesh_exposes_writable_vec3_device_buffers():
     scene = Scene()
     api = PathTracer.__new__(PathTracer)
     api._viewer = SimpleNamespace(_scene=scene)
+    # Static geometry first, so the dynamic geometry sits at a nonzero offset in each packed buffer.
+    api.create_mesh(vertices, indices)
+    api.create_curve(vertices, 0.1)
     geometry_id = api.create_mesh(vertices, indices, dynamic=True)
-    mesh = scene._meshes[geometry_id]
+    curve_id = api.create_curve(vertices, 0.2, dynamic=True)
+    curve = scene._meshes[curve_id]
     scene._upload_geometry()
 
     device_vertices = api.get_mesh_vertices_device(geometry_id)
     device_normals = api.get_mesh_normals_device(geometry_id)
+    assert device_vertices.dtype == device_normals.dtype == wp.vec3
+    assert device_vertices.ptr == scene._meshes[geometry_id].d_vertices.ptr
 
-    assert device_vertices.dtype == wp.vec3
-    assert device_normals.dtype == wp.vec3
-    assert device_vertices.ptr == mesh.d_vertices.ptr
-    assert device_normals.ptr == mesh.d_normals.ptr
-    moved = vertices.copy()
-    moved[:, 2] = 2.0
+    # Writes to a geometry's device arrays are what the shaders read; refits copy nothing.
+    moved = vertices + 2.0
     device_vertices.assign(moved)
-    np.testing.assert_array_equal(mesh.d_vertices.numpy().reshape(-1, 3), moved)
+    device_normals.assign(-moved)
+    curve.d_vertices.assign(moved.reshape(-1))
+    curve.d_widths.fill_(0.5)
+    np.testing.assert_array_equal(scene._meshes[geometry_id].d_vertices.numpy().reshape(-1, 3), moved)
+    np.testing.assert_array_equal(scene._packed_normals.numpy()[9:], -moved.reshape(-1))
+    np.testing.assert_array_equal(scene._packed_positions.numpy()[9:], moved.reshape(-1))
+    np.testing.assert_array_equal(scene._packed_radii.numpy()[3:], 0.5)

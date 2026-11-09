@@ -18,6 +18,8 @@ from typing import Any
 import numpy as np
 import warp as wp
 
+from .camera import cross3
+from .camera import cross3
 from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH
 from .gl import GLInteropViewer
 from .pathtracer_api import PathTracer
@@ -32,7 +34,7 @@ def _pack_display_rgba8(
     width: int,
     height: int,
 ):
-    x, y = wp.tid()
+    y, x = wp.tid()
     if x >= width or y >= height:
         return
 
@@ -157,6 +159,7 @@ class ViewerBackend:
         self._transforms_dirty = False
         self._materials_dirty = False
         self._last_wall_time = time.perf_counter()
+        self._pack_launch = None
         self._warned_texture = False
         self._warned_transform_vbo = False
         self.model = getattr(self, "model", None)
@@ -409,8 +412,7 @@ class ViewerBackend:
     def _ensure_initialized(self):
         if self._initialized:
             return
-        if not self._api.initialize():
-            raise RuntimeError("Failed to initialize the OptiX path tracer")
+        self._api.initialize()
 
         # Keep the neutral lighting defaults used by the reference path-tracing example.
         self._api.set_use_procedural_sky(True)
@@ -860,17 +862,19 @@ class ViewerBackend:
 
     def _render_to_mapped_buffer(self, mapped_image: wp.array, _frame_index: int, _elapsed: float):
         self._api.render_frame()
-        wp.launch(
-            _pack_display_rgba8,
-            dim=(self.width, self.height),
-            inputs=[
-                self._api.viewer.tonemapped_output,
-                mapped_image,
-                self.width,
-                self.height,
-            ],
-            device=self.device,
-        )
+        source = self._api.viewer.tonemapped_output
+        # GL may map the pixel buffer at a different address, so its pointer is part of the key.
+        key = (id(source), mapped_image.ptr, self.width, self.height)
+        if self._pack_launch is None or self._pack_launch[0] != key:
+            command = wp.launch(
+                _pack_display_rgba8,
+                dim=(self.height, self.width),
+                inputs=[source, mapped_image, self.width, self.height],
+                device=self.device,
+                record_cmd=True,
+            )
+            self._pack_launch = (key, command)
+        self._pack_launch[1].launch()
 
     def end_frame(self):
         if self._closed:
@@ -1106,7 +1110,7 @@ class ViewerBackend:
         front = self._physics_camera_front()
         up = np.zeros(3, dtype=np.float32)
         up[self._up_axis] = 1.0
-        right = np.cross(front, up)
+        right = cross3(front, up)
         norm = float(np.linalg.norm(right))
         if norm > 1.0e-6:
             right /= norm
@@ -1228,9 +1232,9 @@ class ViewerBackend:
         front /= max(float(np.linalg.norm(front)), 1.0e-8)
         world_up = np.zeros(3, dtype=np.float32)
         world_up[self._up_axis] = 1.0
-        right = np.cross(front, world_up)
+        right = cross3(front, world_up)
         right /= max(float(np.linalg.norm(right)), 1.0e-8)
-        camera_up = np.cross(right, front)
+        camera_up = cross3(right, front)
         camera_up /= max(float(np.linalg.norm(camera_up)), 1.0e-8)
 
         half_height = math.tan(math.radians(self._camera_fov) * 0.5)

@@ -72,6 +72,7 @@ def test_triangle_material_groups_preserve_authored_order():
 
 
 def test_texture_budget_proportionally_downscales_large_atlas():
+    pytest.importorskip("PIL")
     textures = [
         np.zeros((16, 16, 4), dtype=np.uint8),
         np.zeros((16, 16, 4), dtype=np.uint8),
@@ -89,6 +90,7 @@ def test_texture_budget_proportionally_downscales_large_atlas():
 @pytest.mark.parametrize("free_memory", [8192, 1024])
 def test_texture_budget_keeps_gpu_headroom(monkeypatch, free_memory):
     """Keep source textures when free VRAM leaves headroom; otherwise downscale."""
+    pytest.importorskip("PIL")
     textures = [np.zeros((16, 16, 4), dtype=np.uint8) for _ in range(2)]
     monkeypatch.setattr(wp, "get_device", lambda _alias: SimpleNamespace(free_memory=free_memory))
     monkeypatch.setattr(usd_loader, "_MIN_TEXTURE_MEMORY_BUDGET_BYTES", 256)
@@ -118,6 +120,7 @@ def test_missing_texture_rebases_to_stage_local_texture_tree(tmp_path):
 @pytest.mark.usd
 def test_referenced_mdl_udim_resolves_from_authoring_layer(tmp_path):
     pytest.importorskip("pxr")
+    Image = pytest.importorskip("PIL.Image")
     from pxr import Gf, Sdf, Usd, UsdGeom, UsdShade
 
     texture_dir = tmp_path / "textures"
@@ -358,6 +361,7 @@ def test_authored_mdl_inputs_infer_common_texture_parameter_names(monkeypatch, t
 
 
 def test_separate_roughness_map_is_packed_with_metallic_constant(tmp_path):
+    Image = pytest.importorskip("PIL.Image")
     roughness_path = tmp_path / "roughness.png"
     Image.fromarray(np.asarray([[[64, 64, 64, 255]]], dtype=np.uint8), mode="RGBA").save(roughness_path)
     spec = (
@@ -582,6 +586,7 @@ def test_collected_translucent_wrapper_packs_authored_opacity(monkeypatch, tmp_p
 
 def test_packed_base_opacity_evaluates_mdl_graph(tmp_path):
     """Evaluate the collected OmniUe4 opacity graph into base alpha."""
+    Image = pytest.importorskip("PIL.Image")
     Image.new("RGBA", (1, 1), (128, 64, 32, 255)).save(tmp_path / "base.png")
     Image.new("RGBA", (1, 1), (128, 0, 0, 255)).save(tmp_path / "opacity.png")
     Image.new("RGBA", (1, 1), (0, 128, 0, 255)).save(tmp_path / "orm.png")
@@ -812,6 +817,7 @@ def test_omnipbr_honors_disabled_orm_and_surface_controls(monkeypatch, tmp_path)
 
 
 def test_udim_tiles_decode_to_horizontal_atlas_with_per_tile_size_limit(tmp_path):
+    Image = pytest.importorskip("PIL.Image")
     paths = []
     for tile, color in ((1001, (255, 0, 0, 255)), (1002, (0, 255, 0, 255)), (1003, (0, 0, 255, 255))):
         tile_path = tmp_path / f"color.{tile}.png"

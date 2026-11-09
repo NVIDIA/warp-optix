@@ -24,18 +24,11 @@ def _entry_name(entry):
     return "(none)" if entry is None else entry.key
 
 
-class _RayTypes:
-    ray_types: tuple[str, ...]
-
-    @property
-    def trace_stride(self) -> int:
-        return len(self.ray_types)
-
-    def ray_type_index(self, name: str) -> int:
-        try:
-            return self.ray_types.index(name)
-        except ValueError:
-            raise KeyError(f"Unknown ray type {name!r}; expected one of {self.ray_types}") from None
+def _ray_type_index(ray_types: tuple[str, ...], name: str) -> int:
+    try:
+        return ray_types.index(name)
+    except ValueError:
+        raise KeyError(f"Unknown ray type {name!r}; expected one of {ray_types}") from None
 
 
 @dataclass(frozen=True)
@@ -52,7 +45,7 @@ class HitGroupHandle:
 
 
 @dataclass(frozen=True)
-class SbtLayout(_RayTypes):
+class SbtLayout:
     """Immutable pipeline layout in group-major, ray-type-minor record order.
 
     ``ray_type_index(name)`` supplies both the trace SBT offset and miss index.
@@ -64,6 +57,13 @@ class SbtLayout(_RayTypes):
     hit_groups: tuple[HitGroupHandle, ...]
     _miss_entries: tuple[wp.Kernel | None, ...] = field(repr=False)
     _hit_kernels: tuple[tuple[HitGroup, ...], ...] = field(repr=False)
+
+    @property
+    def trace_stride(self) -> int:
+        return len(self.ray_types)
+
+    def ray_type_index(self, name: str) -> int:
+        return _ray_type_index(self.ray_types, name)
 
     def get_sbt_offset(self, handle: HitGroupHandle) -> int:
         if not isinstance(handle, HitGroupHandle) or not any(handle is h for h in self.hit_groups):
@@ -78,7 +78,7 @@ class SbtLayout(_RayTypes):
         for handle, kernels in zip(self.hit_groups, self._hit_kernels):
             for index, (ray, kernel) in enumerate(zip(self.ray_types, kernels)):
                 programs = [
-                    f"{label}={entry.key if isinstance(entry, wp.Kernel) else entry}"
+                    f"{label}={getattr(entry, 'key', entry)}"
                     for label, entry in (
                         ("CH", kernel.closest_hit),
                         ("AH", kernel.any_hit),
@@ -108,7 +108,7 @@ class SbtLayout(_RayTypes):
         return f"Trace stride: {self.trace_stride} records (ray index = trace offset = miss index)\n{table}"
 
 
-class SbtBuilder(_RayTypes):
+class SbtBuilder:
     """Build an SBT description without allocating native or device resources.
 
     Create with ``SbtBuilder(ray_types=("radiance", "shadow"))``. Assign each
@@ -138,6 +138,13 @@ class SbtBuilder(_RayTypes):
     def ray_types(self) -> tuple[str, ...]:
         return self._ray_types
 
+    @property
+    def trace_stride(self) -> int:
+        return len(self.ray_types)
+
+    def ray_type_index(self, name: str) -> int:
+        return _ray_type_index(self.ray_types, name)
+
     def set_miss(self, ray_type: str, kernel: wp.Kernel | None) -> None:
         self.ray_type_index(ray_type)
         try:
@@ -166,8 +173,6 @@ class SbtBuilder(_RayTypes):
             label = f"Hit group {name!r}, ray type {ray!r}"
             if not isinstance(kernel, HitGroup):
                 raise TypeError(f"{label}: expected a warp_optix.HitGroup")
-            if kernel.intersection is not None and kernel.builtin is not None:
-                raise ValueError(f"{label}: custom and built-in intersection programs cannot be combined")
             try:
                 for entry in (kernel.closest_hit, kernel.any_hit, kernel.intersection):
                     _validate_entry(entry)

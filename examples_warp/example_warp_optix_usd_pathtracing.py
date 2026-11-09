@@ -290,8 +290,7 @@ def main():
         enable_set=not args.no_set,
         backface_culling=not args.no_backface_culling,
     )
-    if not api.initialize():
-        raise RuntimeError("Failed to initialize pathtracing API.")
+    api.initialize()
     # Match Newton's ViewerOptix display defaults.
     api.tonemap_exposure = args.exposure
     api.tonemap_contrast = args.contrast
@@ -365,7 +364,7 @@ def main():
         api.render_frame()
         wp.launch(
             _pack_display_rgba8,
-            dim=(render_width, render_height),
+            dim=(render_height, render_width),
             inputs=[api.viewer.tonemapped_output, mapped_image, render_width, render_height],
             device="cuda",
         )

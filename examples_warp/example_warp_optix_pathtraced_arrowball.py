@@ -126,8 +126,7 @@ def main():
         enable_cuda_graphs=not args.no_cuda_graphs,
         enable_set=not args.no_set,
     )
-    if not api.initialize():
-        raise RuntimeError("Failed to initialize pathtracing API.")
+    api.initialize()
     api.tonemap_exposure = args.exposure
     api.tonemap_contrast = args.contrast
     api.tonemap_saturation = args.saturation
@@ -175,7 +174,7 @@ def main():
         api.render_frame()
         wp.launch(
             _pack_display_rgba8,
-            dim=(render_width, render_height),
+            dim=(render_height, render_width),
             inputs=[
                 api.viewer.tonemapped_output,
                 mapped_image,

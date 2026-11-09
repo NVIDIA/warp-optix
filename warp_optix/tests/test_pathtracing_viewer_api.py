@@ -510,6 +510,7 @@ def test_debug_and_bridge_transform_compatibility():
 
 
 def test_screenshot_exports_display_orientation(tmp_path):
+    Image = pytest.importorskip("PIL.Image")
     api = _FakePathTracer()
     frame = np.zeros((2, 3, 4), dtype=np.uint8)
     frame[0, :, 0] = 255
@@ -601,7 +602,6 @@ def test_volume_composite_launches_only_when_bound(monkeypatch):
     viewer._color_buffer = object()
     viewer._accum_buffer = object()
     viewer._launch_params = object()
-    viewer._volume_params = None
     viewer._render_stream = object()
     viewer._update_launch_params = lambda **kwargs: None
     viewer._launch_optix = lambda: None
@@ -610,43 +610,22 @@ def test_volume_composite_launches_only_when_bound(monkeypatch):
         "launch",
         lambda kernel, **kwargs: launches.append(kernel),
     )
-    matrix = np.eye(4, dtype=np.float32)
 
-    viewer._volume = None
+    viewer._volume_params = None
+    frame = viewer._launch_samples(
+        1,
+        False,
+        camera=None,
+    )
+    assert launches == [] and frame is viewer._color_buffer
+
+    viewer._volume_params = object()
     viewer._launch_samples(
         1,
         False,
-        view=matrix,
-        proj=matrix,
-        view_inv=matrix,
-        proj_inv=matrix,
+        camera=None,
     )
-    assert launches == [viewer_module._accumulate_sample]
-
-    viewer._volume = SimpleNamespace(id=1)
-    viewer._volume_min = (0.0, 0.0, 0.0)
-    viewer._volume_max = (1.0, 1.0, 1.0)
-    viewer._volume_density_scale = 1.0
-    viewer._volume_step_size = 0.1
-    viewer._volume_cool_colors = ((0.0, 0.0, 0.0),) * 3
-    viewer._volume_warm_colors = ((0.0, 0.0, 0.0),) * 3
-    viewer._volume_emission = 0.0
-    viewer._volume_anisotropy = 0.0
-    viewer._volume_transfer_table = None
-    viewer._volume_density_feature = False
-    viewer._launch_samples(
-        1,
-        False,
-        view=matrix,
-        proj=matrix,
-        view_inv=matrix,
-        proj_inv=matrix,
-    )
-    assert launches == [
-        viewer_module._accumulate_sample,
-        viewer_module.composite_volume,
-        viewer_module._accumulate_sample,
-    ]
+    assert launches == [viewer_module.composite_volume]
 
 
 def test_tlas_refit_keeps_but_scene_rebuild_resets_temporal_history():
