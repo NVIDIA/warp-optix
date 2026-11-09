@@ -76,7 +76,6 @@ def _load_backend():
     # Missing enum values must use the dependency's existing enum types so
     # they remain accepted by upstream constructors and field setters.
     for prefix, enum in (
-        ("DEVICE_PROPERTY_COOP_VEC", upstream.DeviceProperty),
         ("PRIMITIVE_TYPE_FLAGS_", upstream.PmitiveTypeFlags),
         ("PRIMITIVE_TYPE_", upstream.PrimitiveType),
         ("PIXEL_FORMAT_", upstream.PixelFormat),

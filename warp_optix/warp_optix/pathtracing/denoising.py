@@ -91,16 +91,14 @@ class OptixDenoiser:
         self._bindings = [None, None]
         self._parity = 0
         self._stream_handle = int(self.stream.cuda_stream)
-        model_name = "DENOISER_MODEL_KIND_TEMPORAL_UPSCALE2X" if upscale else "DENOISER_MODEL_KIND_TEMPORAL_AOV"
-        if not hasattr(native, model_name):
-            raise RuntimeError("OptiX temporal denoising requires updated PyOptiX denoiser bindings")
+        model = native.DENOISER_MODEL_KIND_TEMPORAL_UPSCALE2X if upscale else native.DENOISER_MODEL_KIND_TEMPORAL_AOV
         options = native.DenoiserOptions()
         options.guideAlbedo = 1
         options.guideNormal = 1
         device = self.stream.device
         with wp.ScopedStream(self.stream):
             try:
-                self._denoiser = context.native.denoiserCreate(getattr(native, model_name), options)
+                self._denoiser = context.native.denoiserCreate(model, options)
                 sizes = self._denoiser.computeMemoryResources(self.width, self.height)
                 average_color_size, guide_pixel_size = _ext.denoiser_temporal_sizes(sizes)
                 self._state = wp.empty(sizes.stateSizeInBytes, dtype=wp.uint8, device=device)

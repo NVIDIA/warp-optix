@@ -304,7 +304,6 @@ PYBIND11_MODULE(_ext, m) {
         .def_readwrite("rowColumnStrideInBytes", &OptixCoopVecMatrixDescription::rowColumnStrideInBytes)
         .def_readwrite("sizeInBytes", &OptixCoopVecMatrixDescription::sizeInBytes);
 
-    m.attr("DEVICE_PROPERTY_COOP_VEC") = py::int_(static_cast<unsigned int>(OPTIX_DEVICE_PROPERTY_COOP_VEC));
     m.attr("PRIMITIVE_TYPE_ROUND_CATMULLROM") =
         py::int_(static_cast<unsigned int>(OPTIX_PRIMITIVE_TYPE_ROUND_CATMULLROM));
     m.attr("PRIMITIVE_TYPE_FLAT_QUADRATIC_BSPLINE") =
