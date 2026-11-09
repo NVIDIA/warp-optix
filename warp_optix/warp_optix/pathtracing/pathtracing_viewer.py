@@ -32,7 +32,6 @@ import numpy as np
 import warp as wp
 
 import warp_optix as wo
-from warp_optix import native
 
 from . import pathtracing_warp_kernels as pwk
 from .camera import Camera, cross3
@@ -228,8 +227,7 @@ class Renderer:
         self.output_mode = self.OUTPUT_FINAL
 
         # OptiX state (initialized in build())
-        self._optix = None
-        self._ctx = None
+        self._device = None
         self._pipeline = None
 
         # Scene
@@ -340,7 +338,7 @@ class Renderer:
             return
         previous = self.denoiser, self.optix_upscale, self._denoiser_explicit
         self.denoiser, self.optix_upscale, self._denoiser_explicit = mode, upscale, True
-        if self._ctx is None:
+        if self._device is None:
             return
         wp.synchronize_stream(self._render_stream)
         try:
@@ -368,7 +366,7 @@ class Renderer:
         self._optix_graph_warmed = False
         self._prev_instance_transforms_valid = False
         self._sync_prev_camera_matrices_to_current()
-        if self._optix is None:
+        if self._device is None:
             self._set_render_resolution(self.width, self.height)
             return
         if self.denoiser in ("optix", "auto"):
@@ -562,20 +560,19 @@ class Renderer:
         """Build the OptiX pipeline and scene."""
         logger.info("Initializing OptiX path tracing viewer.")
 
-        if self._ctx is not None:
+        if self._device is not None:
             self.close()
-        self._optix = native
-        self._ctx = wo.get_context("cuda")
+        self._device = wo.get_context("cuda").device
         try:
             self._set_active = False
 
             # Create scene
-            self._scene = Scene(enable_texture_mipmaps=self.enable_texture_mipmaps, device=self._ctx.device)
+            self._scene = Scene(enable_texture_mipmaps=self.enable_texture_mipmaps, device=self._device)
             if self._scene_setup is not None:
                 self._scene_setup(self._scene)
             else:
                 self._scene.create_cornell_box()
-            self._scene.build(native)
+            self._scene.build()
 
             # Create output buffers
             self._create_buffers()
@@ -719,7 +716,7 @@ class Renderer:
         """
         curve_groups = []
         for flags in (STATIC_BUILD_FLAGS, DYNAMIC_BUILD_FLAGS):
-            for builtin in (native.PRIMITIVE_TYPE_ROUND_LINEAR, native.PRIMITIVE_TYPE_ROUND_CUBIC_BEZIER):
+            for builtin in (wo.PrimitiveType.ROUND_LINEAR, wo.PrimitiveType.ROUND_CUBIC_BEZIER):
                 curve_groups += [
                     wo.HitGroup(pwk.curve_primary_closest_hit, pwk.primary_any_hit, builtin=builtin, build_flags=flags),
                     wo.HitGroup(pwk.secondary_closest_hit, pwk.secondary_any_hit, builtin=builtin, build_flags=flags),
@@ -735,7 +732,7 @@ class Renderer:
             ray_types=2,
             payload_words=19,
             graph_flags=wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
-            device=self._ctx.device,
+            device=self._device,
         )
 
     @staticmethod
@@ -1216,7 +1213,7 @@ class Renderer:
             self._pipeline.close()
         if self._scene is not None:
             self._scene.close()
-        self._ctx = None
+        self._device = None
         self._pipeline = None
         self._scene = None
 

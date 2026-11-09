@@ -198,7 +198,7 @@ def triangles(
     points: wp.array | Sequence[wp.array],
     indices: wp.array,
     *,
-    flags: int = GeometryFlags.DISABLE_ANYHIT,
+    flags: GeometryFlags = GeometryFlags.DISABLE_ANYHIT,
     validate: bool = True,
 ) -> BuildInput:
     """Triangle build input from ``vec3``/``float32[N, 3]`` points and int32/uint32 index triplets.
@@ -244,7 +244,7 @@ def aabbs(
     uppers: wp.array | None = None,
     *,
     bounds: wp.array | None = None,
-    flags: int | Sequence[int] = GeometryFlags.DISABLE_ANYHIT,
+    flags: GeometryFlags | Sequence[GeometryFlags] = GeometryFlags.DISABLE_ANYHIT,
     sbt_indices: wp.array | None = None,
 ) -> BuildInput:
     """Custom-primitive build input, like ``wp.Bvh(lowers, uppers)``.
@@ -326,8 +326,8 @@ def curves(
     widths: wp.array | Sequence[wp.array],
     indices: wp.array,
     *,
-    curve_type: int = PrimitiveType.ROUND_LINEAR,
-    flags: int = GeometryFlags.DISABLE_ANYHIT,
+    curve_type: PrimitiveType = PrimitiveType.ROUND_LINEAR,
+    flags: GeometryFlags = GeometryFlags.DISABLE_ANYHIT,
     validate: bool = True,
 ) -> BuildInput:
     """Curve build input; ``indices`` holds the first control point of each segment.
@@ -410,9 +410,9 @@ class Accel:
         self,
         inputs: Sequence[BuildInput],
         *,
-        flags: int = BuildFlags.PREFER_FAST_TRACE,
+        flags: BuildFlags = BuildFlags.PREFER_FAST_TRACE,
         compact: bool = False,
-        motion: object | None = None,
+        motion: native.MotionOptions | None = None,
         device: wp.DeviceLike = None,
         stream: wp.Stream | None = None,
     ):
