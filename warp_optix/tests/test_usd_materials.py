@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import warp as wp
-from PIL import Image
 from warp_optix_pathtracing.scene import Scene
 from warp_optix_pathtracing.usd_loader import (
     _MIP_CHAIN_MEMORY_FACTOR,

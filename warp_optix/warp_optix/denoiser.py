@@ -12,10 +12,16 @@ from warp_optix.context import CAPTURE_ERROR, resolve
 
 
 @wp.kernel(enable_backward=False)
-def _prepare_flow(motion: wp.array2d(dtype=wp.vec2), flow: wp.array2d(dtype=wp.vec2)):
+def _prepare_flow(motion: wp.array2d(dtype=wp.vec2), limit: float, flow: wp.array2d(dtype=wp.vec2)):
     y, x = wp.tid()
-    # OptiX expects previous-to-current flow; motion is current-to-previous.
-    flow[y, x] = -motion[y, x]
+    # OptiX expects previous-to-current flow, whereas the renderer uses
+    # current-to-previous reprojection offsets.
+    m = motion[y, x]
+    if not (wp.isfinite(m[0]) and wp.isfinite(m[1])):
+        m = wp.vec2(0.0)
+    # Flow beyond half-float range permanently corrupts the denoiser's history,
+    # and flow that leaves the image means the same at any length.
+    flow[y, x] = -wp.vec2(wp.clamp(m[0], -limit, limit), wp.clamp(m[1], -limit, limit))
 
 
 class Denoiser:
@@ -125,10 +131,10 @@ class Denoiser:
         """
         if self._denoiser is None:
             raise RuntimeError("Denoiser is closed")
-        if self.stream.is_capturing:
-            raise RuntimeError(CAPTURE_ERROR)
-        # Native calls and recorded Warp launches must restore the caller's CUDA context.
+        # The capture query, native calls, and recorded launches must restore the caller's CUDA context.
         with wp.ScopedDevice(self.device):
+            if self.stream.is_capturing:
+                raise RuntimeError(CAPTURE_ERROR)
             return self._apply(color, albedo, normal, motion, reset=reset)
 
     def _bind(self, color, albedo, normal, motion):
@@ -179,7 +185,7 @@ class Denoiser:
         flow = wp.launch(
             _prepare_flow,
             dim=(self.height, self.width),
-            inputs=[motion, self._flow],
+            inputs=[motion, float(max(self.width, self.height)), self._flow],
             device=self.stream.device,
             record_cmd=True,
         )

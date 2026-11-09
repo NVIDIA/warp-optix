@@ -45,6 +45,14 @@ def test_denoises_and_resets_history(upscale):
         denoiser.apply(color, **inputs)
         reset = denoiser.apply(color, **inputs, reset=True).numpy()
         np.testing.assert_allclose(reset, first, rtol=1e-5, atol=1e-5)
+        extreme = np.full((48, 64, 2), 1.0e9, dtype=np.float32)
+        extreme[0, 0] = np.nan
+        jump = {**inputs, "motion": wp.array(extreme, dtype=wp.vec2, device="cuda")}
+        for frame_inputs in (jump, inputs, jump, inputs):
+            output = denoiser.apply(color, **frame_inputs).numpy()
+            assert np.isfinite(output).all()
+            assert np.mean((output[..., :3] - 1.0) ** 2) < np.mean((noisy[..., :3] - 1.0) ** 2) * 0.5
+
     assert denoiser.closed
 
 
@@ -133,3 +141,42 @@ def test_optix_gpu_apply_preserves_cuda_context(upscale, other_context):
             assert cuda.cuCtxDestroy_v2(caller_context) == 0
         assert cuda.cuCtxSetCurrent(original_context) == 0
 
+
+def test_apply_refuses_capture_before_changing_history():
+    _, inputs = _inputs()
+    stream = wp.Stream("cuda")
+    with wo.Denoiser(64, 48, stream=stream) as denoiser:
+        denoiser.apply(**inputs)
+        parity = denoiser._parity
+        with wp.ScopedCapture(stream=stream) as capture:
+            with pytest.raises(RuntimeError, match="cannot be recorded into CUDA graphs"):
+                denoiser.apply(**inputs, reset=True)
+        assert denoiser._history_valid
+        assert denoiser._parity == parity
+        wp.capture_launch(capture.graph, stream=stream)
+        assert np.isfinite(denoiser.apply(**inputs).numpy()).all()
+
+
+def test_close_releases_cached_inputs_without_synchronizing(monkeypatch):
+    import gc
+    import weakref
+
+    _, inputs = _inputs()
+    stream = wp.Stream("cuda")
+    denoiser = wo.Denoiser(64, 48, stream=stream)
+    result = denoiser.apply(**inputs)
+    refs = [weakref.ref(array) for array in inputs.values()]
+    del inputs
+    gc.collect()
+    assert all(ref() is not None for ref in refs)
+
+    def unexpected_sync(*args, **kwargs):
+        raise AssertionError("close must not synchronize the host")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(wp, "synchronize_stream", unexpected_sync)
+        denoiser.close()
+    gc.collect()
+    assert all(ref() is None for ref in refs)
+    with wp.ScopedStream(stream):
+        assert np.isfinite(result.numpy()).all()

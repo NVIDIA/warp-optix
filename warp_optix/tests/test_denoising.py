@@ -95,9 +95,14 @@ def test_renderer_gpu_optix_samples_motion_switch_and_resize():
     api = _cornell_api(width=64, height=48, denoiser="optix", optix_upscale=True, enable_cuda_graphs=True)
     try:
         scene = api.scene
+        # A camera placed before the first frame produces no motion on that frame.
+        start = api.viewer.camera.position.copy()
+        api.set_camera_look_at(start + (0.0, 0.5, 0.0), api.viewer.camera.target)
         frames = []
         for _ in range(3):
             api.render_frame()
+            if not frames:
+                assert np.abs(api.viewer._motion_buffer.numpy()).max() < 1.0e-3
             frames.append(api.viewer._color_buffer.numpy().copy())
         assert api.viewer.sample_index == 3
         assert not api.cuda_graph_active

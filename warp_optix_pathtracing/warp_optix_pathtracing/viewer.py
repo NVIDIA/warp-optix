@@ -19,7 +19,6 @@ import numpy as np
 import warp as wp
 
 from .camera import cross3
-from .camera import cross3
 from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH
 from .gl import GLInteropViewer
 from .pathtracer_api import PathTracer

@@ -1141,6 +1141,9 @@ class Renderer:
         self._update_device_camera()
 
         camera = self._camera_matrices()
+        if self.sample_index == 0:
+            # A reset frame has no previous frame: measure motion from this camera, not one set before it.
+            self._prev_mvp = camera.view_proj
         use_external_accum = (
             self.accumulate_samples and self._optix_denoiser is None and self._device_camera_state is None
         )

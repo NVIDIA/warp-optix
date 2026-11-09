@@ -147,7 +147,6 @@ docstring-code-format = true
 [tool.pyright]
 include = ["warp_optix/warp_optix", "warp_optix_pathtracing/warp_optix_pathtracing"]
 executionEnvironments = [{ root = "warp_optix", extraPaths = ["warp_optix_pathtracing"] }, { root = "warp_optix_pathtracing", extraPaths = ["warp_optix"] }]
-executionEnvironments = [{ root = "warp_optix", extraPaths = ["warp_optix_pathtracing"] }, { root = "warp_optix_pathtracing", extraPaths = ["warp_optix"] }]
 pythonVersion = "3.12"
 # CI runs pyright without installing warp, pyoptix or the optional extras.
 reportMissingImports = false
@@ -158,8 +157,23 @@ reportOptionalSubscript = false
 # existing type errors. Remove entries as they are cleaned up so that pyright
 # gates more of the package over time.
 exclude = [
-    ".claude", ".agents", ".codex", ".aws", ".venv", "env", "build", "dist",
-    "third_party", "*.bmp", "**/*.egg-info", "**/.pytest_cache",
+    "warp_optix/warp_optix/_backend.py",
+    "warp_optix/warp_optix/accel.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/gl/line_overlay.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/arrows.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/asset_loaders.py",
+    "warp_optix/warp_optix/denoiser.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/environment_map.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/func_common.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/pathtracer_api.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/pathtracing_viewer.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/pathtracing_warp_kernels.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/scene.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/sky_lut.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/tonemap.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/usd_loader.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/viewer.py",
+    "warp_optix_pathtracing/warp_optix_pathtracing/volume_composite.py",
 ]
 
 [tool.typos.files]
