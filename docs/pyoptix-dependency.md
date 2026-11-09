@@ -58,6 +58,6 @@ OptiX SDK 9.1.0 headers are fetched for compilation and installed unmodified
 under `warp_optix/include`, together with the upstream SDK license, in every
 wheel. Runtime lookup uses the package directory or, for editable
 installs, the native extension's directory. No separate SDK install is required.
-Before public release, obtain written confirmation for redistribution of the
-source headers from the OptiX owner and legal review. The SDK terms remain
-separate from the Apache-2.0 and BSD-3-Clause source licenses.
+Redistribution of these unmodified headers in the public warp-optix pip package
+has been approved. The SDK terms remain separate from the Apache-2.0 and
+BSD-3-Clause source licenses.
