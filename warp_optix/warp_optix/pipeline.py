@@ -8,6 +8,7 @@ from __future__ import annotations
 import ctypes
 import itertools
 import logging
+import operator
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -19,7 +20,7 @@ from warp_optix import native
 from warp_optix.accel import Accel
 from warp_optix.addon import build_options
 from warp_optix.context import CAPTURE_ERROR, native_objects, resolve
-from warp_optix.enums import ExceptionFlags, TraversableGraphFlags
+from warp_optix.enums import ExceptionFlags, PrimitiveType, TraversableGraphFlags
 from warp_optix.program import ProgramKind, as_program, params_struct
 from warp_optix.sbt import SbtBuilder, SbtLayout
 
@@ -32,6 +33,11 @@ _BUILTIN_PRIMITIVE_FLAGS = {
     int(native.PRIMITIVE_TYPE_ROUND_CATMULLROM): int(native.PRIMITIVE_TYPE_FLAGS_ROUND_CATMULLROM),
     int(native.PRIMITIVE_TYPE_ROUND_CUBIC_BEZIER): int(native.PRIMITIVE_TYPE_FLAGS_ROUND_CUBIC_BEZIER),
     int(native.PRIMITIVE_TYPE_FLAT_QUADRATIC_BSPLINE): int(native.PRIMITIVE_TYPE_FLAGS_FLAT_QUADRATIC_BSPLINE),
+    # Not exposed by PyOptiX 9.1; flag values from optix_types.h.
+    PrimitiveType.ROUND_QUADRATIC_BSPLINE_ROCAPS: 1 << 8,
+    PrimitiveType.ROUND_CUBIC_BSPLINE_ROCAPS: 1 << 9,
+    PrimitiveType.ROUND_CATMULLROM_ROCAPS: 1 << 10,
+    PrimitiveType.ROUND_CUBIC_BEZIER_ROCAPS: 1 << 11,
 }
 
 
@@ -49,6 +55,14 @@ class HitGroup:
     intersection: wp.Kernel | None = None
     builtin: int | None = None
 
+    def __post_init__(self):
+        if self.builtin is None:
+            return
+        if self.intersection is not None:
+            raise ValueError("HitGroup intersection and builtin cannot be combined")
+        if int(self.builtin) not in _BUILTIN_PRIMITIVE_FLAGS:
+            raise ValueError(f"HitGroup.builtin must be a curve PrimitiveType, got {self.builtin!r}")
+
 
 class Pipeline:
     """Warp kernels compiled into a linked OptiX pipeline with its shader binding table.
@@ -63,6 +77,8 @@ class Pipeline:
 
     The hit record of geometry ``g`` and ray type ``r`` is
     ``hit_groups[g * ray_types + r]``; trace with ``sbt_stride=ray_types``.
+    Direct and continuation callables share one SBT section: ``callables[k]``
+    is index ``k`` and ``continuation_callables[k]`` is index ``len(callables) + k``.
 
     Pass ``sbt=SbtBuilder(...)`` or a snapshot for named ray types and hit
     groups. This cannot be combined with ``miss``, ``hit_groups``, or
@@ -115,6 +131,8 @@ class Pipeline:
             raise ValueError("ray_types must be an integer between 1 and 15")
         if len(hit_groups) % ray_types:
             raise ValueError("hit_groups must contain one group per geometry type and ray type")
+        if not miss:
+            raise ValueError("miss must contain at least one entry (None for a record without a program)")
         if params_type is not None and not all(hasattr(params_type, name) for name in ("vars", "ctype")):
             raise TypeError("params_type must be a Warp struct type")
         context, _ = resolve(device)
@@ -296,6 +314,7 @@ class Pipeline:
         self._sbt = sbt_table
         self._records = records
         self._params_size = ctypes.sizeof(params.ctype)
+        self._tid_ndim = raygen_program._wo_tid_ndim
         self._writer = writer
         self._params_type = params
         self._explicit_params = params_type is not None
@@ -447,8 +466,10 @@ class LaunchParams:
         """Write a params-struct instance, or the raygen arguments as a sequence.
 
         Waits on prior uses of this object on other streams on the GPU, never on
-        the host. Arrays and acceleration structures in ``values`` stay referenced
-        until replaced or until this object is released.
+        the host. Arrays in ``values``, and ``wo.Accel`` objects passed directly
+        as raygen arguments, stay referenced until replaced or until this object
+        is released. An accel id stored in a params struct does not keep its
+        structure alive.
         """
         storage = self._open_storage()
         pipeline = self.pipeline
@@ -480,15 +501,18 @@ def launch(
     pipeline: Pipeline,
     dim: int | Sequence[int],
     inputs: Sequence | None = None,
+    outputs: Sequence | None = None,
+    *,
     device: wp.DeviceLike = None,
     stream: wp.Stream | None = None,
-    *,
     params: LaunchParams | None = None,
 ) -> None:
     """Launch an OptiX pipeline, mirroring ``wp.launch``.
 
-    Pass the raygen arguments as ``inputs`` (or ``inputs=[struct]`` with an
-    explicit ``params_type``), or preset :class:`LaunchParams` as ``params``.
+    Pass the raygen arguments as ``inputs`` and ``outputs``, which are
+    concatenated as in ``wp.launch`` (or ``inputs=[struct]`` with an explicit
+    ``params_type``), or preset :class:`LaunchParams` as ``params``. A raygen
+    that calls ``wp.tid()`` must unpack as many indices as ``dim`` has entries.
     ``wo.Accel`` objects in ``inputs`` are passed as their ``id``. As with
     ``wp.launch``, keep resources alive while submitted work may use them.
     ``device`` defaults to the pipeline's device; a different device is
@@ -501,12 +525,16 @@ def launch(
     if device is not None and wp.get_device(device) != pipeline.device:
         raise ValueError("Device and pipeline must be the same CUDA device")
     context, stream = resolve(pipeline.device, stream)
-    dim = (dim,) if isinstance(dim, int) else tuple(dim)
-    if not 1 <= len(dim) <= 3 or any(not isinstance(n, int) or n <= 0 for n in dim):
-        raise ValueError("dim must contain one to three positive integers")
-    if (inputs is None) == (params is None):
-        raise ValueError("Provide exactly one of inputs or params")
+    dim = _launch_dim(dim)
+    if pipeline._tid_ndim and pipeline._tid_ndim != len(dim):
+        raise ValueError(
+            f"The raygen program unpacks {pipeline._tid_ndim} wp.tid() indices, but dim has {len(dim)} entries"
+        )
+    if params is not None and (inputs is not None or outputs is not None):
+        raise ValueError("Provide either inputs/outputs or params, not both")
     key = stream.cuda_stream
+    if key not in pipeline._streams:
+        pipeline._forget_idle_streams()
     if params is not None:
         if not isinstance(params, LaunchParams) or params.pipeline is not pipeline:
             raise ValueError("params must be LaunchParams of this pipeline")
@@ -514,10 +542,9 @@ def launch(
         if not storage.initialized:
             raise ValueError("Assign launch parameters before launching with them")
     else:
-        inputs = tuple(inputs)
+        inputs = (*(inputs or ()), *(outputs or ()))
         storage = pipeline._buffers.get(key)
         if storage is None:
-            pipeline._forget_idle_streams()
             storage = pipeline._buffers[key] = _ParamsStorage(pipeline.params_type, context.device)
         if pipeline._explicit_params:
             if len(inputs) != 1:
@@ -540,6 +567,16 @@ def launch(
         )
     # Remembered so close() can wait for these launches before destroying the native pipeline.
     pipeline._streams[key] = stream
+
+
+def _launch_dim(dim) -> tuple[int, ...]:
+    try:
+        dim = (operator.index(dim),) if not isinstance(dim, Sequence) else tuple(operator.index(n) for n in dim)
+    except TypeError:
+        raise ValueError("dim must contain one to three positive integers") from None
+    if not 1 <= len(dim) <= 3 or any(n <= 0 for n in dim):
+        raise ValueError("dim must contain one to three positive integers")
+    return dim
 
 
 def _replace_accels(values: tuple) -> tuple[tuple, tuple]:
