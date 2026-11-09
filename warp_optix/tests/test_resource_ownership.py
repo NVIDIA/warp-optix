@@ -9,9 +9,9 @@ import weakref
 import numpy as np
 import pytest
 import warp as wp
+from warp_optix._src import context as context_module
 
 import warp_optix as wo
-from warp_optix import context as context_module
 from warp_optix import native
 
 pytestmark = [pytest.mark.gpu, pytest.mark.skipif(not wp.is_cuda_available(), reason="CUDA unavailable")]

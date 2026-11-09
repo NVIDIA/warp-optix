@@ -6,13 +6,13 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import warp as wp
+from warp_optix._src.pathtracing import pathtracing_viewer as viewer_module
+from warp_optix._src.pathtracing.scene import Scene
 from warp_optix.pathtracing import (
     PathTracer,
     Renderer,
     ViewerBackend,
 )
-from warp_optix.pathtracing import pathtracing_viewer as viewer_module
-from warp_optix.pathtracing.scene import Scene
 
 
 class _FakeScene:

@@ -4,8 +4,8 @@
 import numpy as np
 import pytest
 import warp as wp
-from warp_optix.pathtracing import tonemap
-from warp_optix.pathtracing.tonemap import Tonemapper, _adapt_auto_exposure
+from warp_optix._src.pathtracing import tonemap
+from warp_optix._src.pathtracing.tonemap import Tonemapper, _adapt_auto_exposure
 
 requires_gpu = pytest.mark.skipif(not wp.is_cuda_available(), reason="requires a CUDA device")
 

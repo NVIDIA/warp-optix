@@ -22,13 +22,13 @@ def test_packaged_optix_headers_are_all_kernels_need(monkeypatch):
     for name in ("optix.h", "optix_device.h", "OptiX_LICENSE.txt"):
         assert (include / name).is_file(), name
     # No separate OptiX SDK and no CUDA Toolkit headers: every GPU test compiles with only these.
-    from warp_optix.addon import _HEADER_DIR, build_options
+    from warp_optix._src.addon import _HEADER_DIR, build_options
 
     assert build_options().extra_cuda_include_dirs == [str(_HEADER_DIR), str(include)]
 
 
 def test_optix_header_lookup_falls_back_to_the_installed_package(monkeypatch, tmp_path):
-    backend = import_module("warp_optix._backend")
+    backend = import_module("warp_optix._src.backend")
     monkeypatch.setattr(backend, "_package_dir", tmp_path / "source")
     monkeypatch.setattr(backend, "_get_package_dir", lambda: tmp_path / "installed")
     include = tmp_path / "installed" / "include"
@@ -91,7 +91,7 @@ def test_native_validator_rejects_other_abi_and_sdk():
 
 
 def test_loading_rejects_other_dependency_version_and_sdk_before_validating(monkeypatch):
-    backend = import_module("warp_optix._backend")
+    backend = import_module("warp_optix._src.backend")
     monkeypatch.setattr(backend, "version", lambda name: "9.2.0")
     with pytest.raises(ImportError, match="requires pyoptix==9.1.1"):
         backend._load_backend()

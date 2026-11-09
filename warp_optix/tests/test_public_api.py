@@ -75,7 +75,13 @@ def test_public_surface():
         "make_instance",
         "triangles",
     }
-    assert all(hasattr(wo, name) for name in wo.__all__)
+    # Each public module exports exactly its __all__; everything else lives in warp_optix._src.
+    import warp_optix.gl
+    import warp_optix.pathtracing
+
+    for module in (wo, warp_optix.gl, warp_optix.pathtracing):
+        names = {name for name in vars(module) if not name.startswith("_")} - {"gl", "native", "pathtracing"}
+        assert names == set(module.__all__), module.__name__
 
 
 def test_enums_match_native():

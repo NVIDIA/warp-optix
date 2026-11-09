@@ -13,7 +13,7 @@ from importlib.metadata import version
 from pathlib import Path
 from types import ModuleType
 
-_package_dir = Path(__file__).resolve().parent
+_package_dir = Path(__file__).resolve().parents[1]
 
 
 def _get_package_dir():

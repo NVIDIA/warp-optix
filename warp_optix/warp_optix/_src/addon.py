@@ -11,9 +11,9 @@ from pathlib import Path
 import warp as wp
 
 from warp_optix import native
-from warp_optix.builtins import register_addon_builtins
+from warp_optix._src.builtins import register_addon_builtins
 
-_HEADER_DIR = Path(__file__).resolve().parent / "_native" / "include"
+_HEADER_DIR = Path(__file__).resolve().parents[1] / "_native" / "include"
 
 # Warp's generated source defines function-like ``float`` and ``int`` macros
 # before addon preambles. CUDA's half headers declare conversion operators with

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import warp as wp
 
 from warp_optix import _ext, native
-from warp_optix.context import resolve
+from warp_optix._src.context import resolve
 
 
 @dataclass(frozen=True)

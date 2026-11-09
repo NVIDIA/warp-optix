@@ -9,7 +9,7 @@ pass ``accel.id`` to kernels, and update it with :meth:`Accel.refit` or
 structures keep the children listed in :func:`instances` alive and never read
 their GPU-written records back (unless ``config.verify_instances``). Only
 compaction synchronizes (once per :func:`compact` batch). See
-:mod:`warp_optix.context` for the lifetime contract.
+:mod:`warp_optix._src.context` for the lifetime contract.
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ import warp as wp
 from warp._src import context as _warp_context
 
 from warp_optix import config, native
-from warp_optix.context import CAPTURE_ERROR, resolve
-from warp_optix.enums import BuildFlags, GeometryFlags, PrimitiveType
+from warp_optix._src.context import CAPTURE_ERROR, resolve
+from warp_optix._src.enums import BuildFlags, GeometryFlags, PrimitiveType
 
 # ---------------------------------------------------------------------------
 # Instances

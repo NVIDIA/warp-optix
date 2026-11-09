@@ -7,7 +7,7 @@ Native objects use the binding API's explicit destroy/deinit conventions.
 Handles borrowed from the owned API must not be destroyed by the caller.
 """
 
-from ._backend import get_backend as _get_backend
+from warp_optix._src.backend import get_backend as _get_backend
 
 
 def __getattr__(name):

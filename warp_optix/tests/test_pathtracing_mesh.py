@@ -6,8 +6,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import warp as wp
+from warp_optix._src.pathtracing.scene import Mesh
 from warp_optix.pathtracing import PathTracer, Scene
-from warp_optix.pathtracing.scene import Mesh
 
 
 def test_mesh_generates_normals_and_fallback_tangents_without_authored_attributes():

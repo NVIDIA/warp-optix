@@ -11,9 +11,9 @@ from typing import Any
 import numpy as np
 import pytest
 import warp as wp
+from warp_optix._src import pipeline as pipeline_module
 
 import warp_optix as wo
-from warp_optix import pipeline as pipeline_module
 
 pytestmark = [pytest.mark.gpu, pytest.mark.skipif(not wp.is_cuda_available(), reason="CUDA unavailable")]
 

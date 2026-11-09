@@ -21,7 +21,7 @@ from __future__ import annotations
 import warp as wp
 
 import warp_optix as wo
-from warp_optix.enums import RayFlags
+from warp_optix._src.enums import RayFlags
 
 from .func_common import Mat16f, Vec6f
 

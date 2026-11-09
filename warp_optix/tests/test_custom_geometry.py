@@ -31,7 +31,7 @@ def test_custom_primitive_builtins_register_all_attribute_arities():
     fake_warp.types = SimpleNamespace(matrix=lambda *, shape, dtype: type(f"mat{shape[0]}{shape[1]}", (), {}))
 
     module_name = "warp_optix_builtins_under_test"
-    builtins_path = Path(__file__).parents[1] / "warp_optix" / "builtins.py"
+    builtins_path = Path(__file__).parents[1] / "warp_optix" / "_src" / "builtins.py"
     spec = importlib.util.spec_from_file_location(module_name, builtins_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

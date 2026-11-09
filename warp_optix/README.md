@@ -735,20 +735,27 @@ when direct registration is unavailable.
 
 ## Layout
 
-- `warp_optix/__init__.py` — public API.
-- `warp_optix/context.py` — implicit per-device contexts (`get_context`), device/stream resolution, and native-object release.
-- `warp_optix/config.py` — global settings (`validation`, `log_level`, `verify_instances`).
-- `warp_optix/accel.py` — build inputs, `Accel`, and `Instance`/`make_instance`.
-- `warp_optix/pipeline.py` — `Pipeline`, `HitGroup`, `Launch`, and `launch`.
-- `warp_optix/program.py` — rewrites Warp kernels into OptiX programs (`ProgramKind`, `kernel`).
-- `warp_optix/rays.py` — `accel_query_ray`, `accel_query_ray_anyhit`, and `AccelQueryRay`.
-- `warp_optix/enums.py` — flag and primitive-type enums, usable on the host and in kernels.
-- `warp_optix/builtins.py` — OptiX builtin registrations.
-- `warp_optix/_native/include/warp_optix_builtins.h` — device-side C++ wrappers.
-- `warp_optix/native.py` — PyOptiX plus the supplemental bindings (`_backend.py`, `_ext`).
-- `warp_optix/addon.py` — registers the builtins and provides the OptiX module build options.
-- `warp_optix/gl/` — optional OpenGL interop viewer and line overlay.
-- `warp_optix/pathtracing/` — the path tracer.
+The public API is what these modules export; everything under `warp_optix/_src/` is implementation
+and may change without notice, as in Warp and Newton.
+
+- `warp_optix/__init__.py`: the core API (`wo.Accel`, `wo.Pipeline`, `wo.launch`, ...).
+- `warp_optix/config.py`: global settings (`validation`, `log_level`, `verify_instances`).
+- `warp_optix/native.py`: PyOptiX plus the supplemental bindings.
+- `warp_optix/pathtracing.py`: the path tracer (`PathTracer`, `Viewer`, ...).
+- `warp_optix/gl.py`: the OpenGL interop viewer and line overlay.
+
+Under `warp_optix/_src/`:
+
+- `context.py`: implicit per-device contexts, device/stream resolution, and native-object release.
+- `accel.py`: build inputs, `Accel`, and `Instance`/`make_instance`.
+- `pipeline.py`, `program.py`, `sbt.py`: pipelines and launches, Warp kernels as OptiX programs,
+  and SBT layouts.
+- `rays.py`: `accel_query_ray`, `accel_query_ray_anyhit`, and `AccelQueryRay`.
+- `enums.py`: flag and primitive-type enums, usable on the host and in kernels.
+- `builtins.py` and `addon.py`: OptiX builtin registrations and the OptiX module build options;
+  the device-side C++ wrappers are in `warp_optix/_native/include/warp_optix_builtins.h`.
+- `backend.py`: composes PyOptiX with the supplemental extension `warp_optix._ext`.
+- `gl/` and `pathtracing/`: the implementations behind `warp_optix.gl` and `warp_optix.pathtracing`.
 
 See [`examples/`](../examples/README.md) for complete programs: `example_minimal.py` (minimal pipeline),
 `example_curves.py` (built-in curves), `example_mixed_geometry.py` (triangles, curves, and

@@ -3,7 +3,7 @@
 
 import numpy as np
 import pytest
-from warp_optix.pathtracing.environment_map import _build_alias_table
+from warp_optix._src.pathtracing.environment_map import _build_alias_table
 
 
 @pytest.mark.parametrize("size", [7, 4096])

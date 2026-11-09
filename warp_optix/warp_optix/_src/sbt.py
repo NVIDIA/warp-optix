@@ -12,7 +12,7 @@ from typing import cast
 
 import warp as wp
 
-from warp_optix.enums import BuildFlags, PrimitiveType
+from warp_optix._src.enums import BuildFlags, PrimitiveType
 
 _CURVE_TYPES = frozenset(int(kind) for kind in PrimitiveType if kind.name.startswith(("ROUND_", "FLAT_")))
 
