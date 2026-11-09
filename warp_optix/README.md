@@ -193,11 +193,15 @@ that raygen does not declare. Launch with `inputs=[my_params_instance]`.
 The schema is the parameter block itself; to use a single `params: MyParams`
 argument in every shader, keep the default inferred schema instead.
 
-An optional `@wo.kernel(kind=wo.ProgramKind.RAYGEN, module="unique")`
+An optional `@wo.kernel(kind=wo.ProgramKind.RAYGEN)`
 decorator replaces `@wp.kernel` when a shader should declare its intended stage.
-It also accepts an existing Warp kernel. Pipeline construction rejects a declared
-stage that disagrees with its slot. Undecorated Warp kernels continue to get their
-stage from their pipeline slot.
+It defaults to `module="unique"`, because a kernel using `wp.optix_*` builtins
+cannot compile as part of an ordinary Warp module and would break `wp.launch` of the
+other kernels in it; an explicit `module=` is honored. It also accepts an existing
+Warp kernel, which keeps the module chosen by its `@wp.kernel`; a kernel in its Python module's
+default Warp module is rejected for the same reason. Pipeline construction
+rejects a declared stage that disagrees with its slot. Undecorated Warp kernels
+continue to get their stage from their pipeline slot.
 
 Compare `examples_warp/example_warp_optix_kernels.py` with
 `examples_warp/example_warp_optix_explicit_params.py`: both compute the same
