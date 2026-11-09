@@ -26,6 +26,13 @@ from warp_optix.sbt import HitGroup, SbtLayout
 
 from .func_common import Mat16f, Vec6f
 
+# Ray types of the path tracer's SBT, in record order. Traces use these indices as their SBT
+# offset and miss index, and the count as their SBT stride.
+RAY_TYPES = ("primary", "secondary")
+PRIMARY_RAY = wp.constant(wp.uint32(RAY_TYPES.index("primary")))
+SECONDARY_RAY = wp.constant(wp.uint32(RAY_TYPES.index("secondary")))
+RAY_STRIDE = wp.constant(wp.uint32(len(RAY_TYPES)))
+
 
 @wp.struct
 class PrimaryPayload:
@@ -2548,9 +2555,9 @@ def _sample_sphere_light_contribution(
         0.0,
         wp.uint32(255),
         wp.uint32(RayFlags.TERMINATE_ON_FIRST_HIT | RayFlags.DISABLE_CLOSESTHIT),
-        wp.uint32(1),
-        wp.uint32(2),
-        wp.uint32(1),
+        SECONDARY_RAY,
+        RAY_STRIDE,
+        SECONDARY_RAY,
     )
     if shadow.visible == wp.uint32(1):
         bsdf = evaluated.bsdf_diffuse + evaluated.bsdf_glossy
@@ -2812,9 +2819,9 @@ def primary_raygen(params: PathtraceLaunchParams):
         0.0,
         wp.uint32(255),
         ray_flags,
-        wp.uint32(0),
-        wp.uint32(2),
-        wp.uint32(0),
+        PRIMARY_RAY,
+        RAY_STRIDE,
+        PRIMARY_RAY,
     )
 
     hitT = _payload_get_hitT(payload)
@@ -2961,9 +2968,9 @@ def primary_raygen(params: PathtraceLaunchParams):
             0.0,
             wp.uint32(255),
             ray_flags,
-            wp.uint32(0),
-            wp.uint32(2),
-            wp.uint32(0),
+            PRIMARY_RAY,
+            RAY_STRIDE,
+            PRIMARY_RAY,
         )
 
     # Virtual origin for PSR depth computation (matches C++ reference).
@@ -3134,9 +3141,9 @@ def primary_raygen(params: PathtraceLaunchParams):
                     wp.uint32(RayFlags.TERMINATE_ON_FIRST_HIT | RayFlags.DISABLE_CLOSESTHIT)
                     | _backface_culling_ray_flag(params)
                 ),
-                wp.uint32(1),
-                wp.uint32(2),
-                wp.uint32(1),
+                SECONDARY_RAY,
+                RAY_STRIDE,
+                SECONDARY_RAY,
             )
             if shadow.visible == wp.uint32(1):
                 mis_weight = _power_heuristic(ls.pdf, bsdf_eval.pdf)
@@ -3242,9 +3249,9 @@ def primary_raygen(params: PathtraceLaunchParams):
             0.0,
             wp.uint32(255),
             wp.uint32(0) if (sec_event_type & BSDF_EVENT_TRANSMISSION) != 0 else ray_flags,
-            wp.uint32(0),
-            wp.uint32(2),
-            wp.uint32(0),
+            PRIMARY_RAY,
+            RAY_STRIDE,
+            PRIMARY_RAY,
         )
 
         t_sec = _payload_get_hitT(sec_payload)
@@ -3357,9 +3364,9 @@ def primary_raygen(params: PathtraceLaunchParams):
                         wp.uint32(RayFlags.TERMINATE_ON_FIRST_HIT | RayFlags.DISABLE_CLOSESTHIT)
                         | _backface_culling_ray_flag(params)
                     ),
-                    wp.uint32(1),
-                    wp.uint32(2),
-                    wp.uint32(1),
+                    SECONDARY_RAY,
+                    RAY_STRIDE,
+                    SECONDARY_RAY,
                 )
                 if sec_shadow.visible == wp.uint32(1):
                     sec_mis = _power_heuristic(sec_ls.pdf, sec_bsdf_eval.pdf)
@@ -4009,10 +4016,9 @@ def _hit_groups(primary_closest_hit, builtin=None, build_flags=wo.BuildFlags.PRE
     }
 
 
-# Raygen traces with ray index 0/1 and stride 2; hit groups are named by the
-# scene geometry's primitive_type.
+# Hit groups are named by the scene geometry's hit_group.
 SBT = SbtLayout(
-    ray_types=("primary", "secondary"),
+    ray_types=RAY_TYPES,
     miss={"primary": primary_miss, "secondary": secondary_miss},
     hit_groups={
         "triangles": _hit_groups(primary_closest_hit),

@@ -265,6 +265,8 @@ class Mesh:
     """Represents a mesh with vertices, indices, and GPU buffers."""
 
     primitive_type = "triangles"
+    # Its hit group in the path tracer's SBT layout.
+    hit_group = "triangles"
 
     def __init__(
         self,
@@ -498,6 +500,8 @@ class Curve:
 
         self.basis = basis
         self.primitive_type = primitive_type
+        # Dynamic curves are built with other flags, which their built-in intersector must match.
+        self.hit_group = primitive_type + ("_dynamic" if dynamic else "")
         self.control_point_count = control_point_count
         self.geometry_type = geometry_type
         self.vertices = np.ascontiguousarray(vertices, dtype=np.float32)
@@ -1681,14 +1685,7 @@ class Scene:
                     )
             handles = np.array([gas.id for gas in self._gas], dtype=np.uint64)
             sbt_offsets = np.array(
-                [
-                    pwk.SBT.get_sbt_offset(
-                        geometry.primitive_type
-                        + ("_dynamic" if geometry.dynamic and geometry.primitive_type != "triangles" else "")
-                    )
-                    for geometry in self._meshes
-                ],
-                dtype=np.uint32,
+                [pwk.SBT.get_sbt_offset(geometry.hit_group) for geometry in self._meshes], dtype=np.uint32
             )
             self._instance_traversables = wp.array(handles[mesh_indices], dtype=wp.uint64, device=self.device)
             self._instance_sbt_offsets = wp.array(sbt_offsets[mesh_indices], dtype=wp.uint32, device=self.device)
