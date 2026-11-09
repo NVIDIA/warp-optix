@@ -91,6 +91,9 @@ def test_declared_programs_default_to_their_own_module():
     np.testing.assert_array_equal(output.numpy(), np.full(64, 5))
     named = wo.kernel(trace.func, kind=wo.ProgramKind.RAYGEN, module="wo_test_named")
     assert named.module.name == "wo_test_named" and fill.module is not trace.module
+    # Declaring a kernel of the default module would put OptiX builtins in it.
+    with pytest.raises(TypeError, match="default Warp module"):
+        wo.kernel(fill, kind=wo.ProgramKind.RAYGEN)
 
 
 def test_launches_across_streams_use_their_own_parameters():

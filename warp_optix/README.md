@@ -197,7 +197,8 @@ decorator replaces `@wp.kernel` when a shader should declare its intended stage.
 It defaults to `module="unique"`, because a kernel using `wp.optix_*` builtins
 cannot compile as part of an ordinary Warp module and would break `wp.launch` of the
 other kernels in it; an explicit `module=` is honored. It also accepts an existing
-Warp kernel, which keeps the module chosen by its `@wp.kernel`. Pipeline construction
+Warp kernel, which keeps the module chosen by its `@wp.kernel`; a kernel in its Python module's
+default Warp module is rejected for the same reason. Pipeline construction
 rejects a declared stage that disagrees with its slot. Undecorated Warp kernels
 continue to get their stage from their pipeline slot.
 
