@@ -37,10 +37,6 @@ from .materials import ALPHA_OPAQUE, MaterialManager
 
 logger = logging.getLogger(__name__)
 
-# Build flags of static and dynamic geometry. Curve hit groups must declare the same flags, since
-# OptiX specializes its built-in curve intersection on them.
-STATIC_BUILD_FLAGS = pwk.STATIC_BUILD_FLAGS
-DYNAMIC_BUILD_FLAGS = pwk.DYNAMIC_BUILD_FLAGS
 _MAX_TEXTURE_BUILD_WORKERS = 8
 NO_MATERIAL_OVERRIDE = np.uint32(np.iinfo(np.uint32).max)
 
@@ -1575,7 +1571,7 @@ class Scene:
                     flags=geometry_flags,
                     validate=False,
                 )
-            build_flags = DYNAMIC_BUILD_FLAGS if geometry.dynamic else STATIC_BUILD_FLAGS
+            build_flags = pwk.DYNAMIC_BUILD_FLAGS if geometry.dynamic else pwk.STATIC_BUILD_FLAGS
             gas = wo.Accel([build_input], flags=build_flags, stream=streams[index % len(streams)])
             self._gas.append(gas)
             if not geometry.dynamic:

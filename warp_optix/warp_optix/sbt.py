@@ -14,6 +14,8 @@ import warp as wp
 
 from warp_optix.enums import BuildFlags, PrimitiveType
 
+_CURVE_TYPES = frozenset(int(kind) for kind in PrimitiveType if kind.name.startswith(("ROUND_", "FLAT_")))
+
 
 @dataclass(frozen=True)
 class HitGroup:
@@ -39,8 +41,7 @@ class HitGroup:
             return
         if self.intersection is not None:
             raise ValueError("HitGroup intersection and builtin cannot be combined")
-        curves = {int(kind) for kind in PrimitiveType if kind.name.startswith(("ROUND_", "FLAT_"))}
-        if int(self.builtin) not in curves:
+        if int(self.builtin) not in _CURVE_TYPES:
             raise ValueError(f"HitGroup.builtin must be a curve PrimitiveType, got {self.builtin!r}")
 
 

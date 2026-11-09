@@ -21,8 +21,7 @@ from __future__ import annotations
 import warp as wp
 
 import warp_optix as wo
-from warp_optix.enums import PrimitiveType, RayFlags
-from warp_optix.sbt import HitGroup, SbtLayout
+from warp_optix.enums import RayFlags
 
 from .func_common import Mat16f, Vec6f
 
@@ -4001,6 +4000,8 @@ def secondary_any_hit(params: PathtraceLaunchParams):
     wp.optix_terminate_ray()
 
 
+# Build flags of static and dynamic scene geometry. Curve hit groups declare the same flags, since
+# OptiX specializes its built-in curve intersection on them.
 STATIC_BUILD_FLAGS = (
     wo.BuildFlags.ALLOW_RANDOM_VERTEX_ACCESS | wo.BuildFlags.PREFER_FAST_TRACE | wo.BuildFlags.ALLOW_COMPACTION
 )
@@ -4011,24 +4012,26 @@ DYNAMIC_BUILD_FLAGS = (
 
 def _hit_groups(primary_closest_hit, builtin=None, build_flags=wo.BuildFlags.PREFER_FAST_TRACE):
     return {
-        "primary": HitGroup(primary_closest_hit, primary_any_hit, builtin=builtin, build_flags=build_flags),
-        "secondary": HitGroup(secondary_closest_hit, secondary_any_hit, builtin=builtin, build_flags=build_flags),
+        "primary": wo.HitGroup(primary_closest_hit, primary_any_hit, builtin=builtin, build_flags=build_flags),
+        "secondary": wo.HitGroup(secondary_closest_hit, secondary_any_hit, builtin=builtin, build_flags=build_flags),
     }
 
 
 # Hit groups are named by the scene geometry's hit_group.
-SBT = SbtLayout(
+SBT = wo.SbtLayout(
     ray_types=RAY_TYPES,
     miss={"primary": primary_miss, "secondary": secondary_miss},
     hit_groups={
         "triangles": _hit_groups(primary_closest_hit),
-        "round_linear": _hit_groups(curve_primary_closest_hit, PrimitiveType.ROUND_LINEAR, STATIC_BUILD_FLAGS),
+        "round_linear": _hit_groups(curve_primary_closest_hit, wo.PrimitiveType.ROUND_LINEAR, STATIC_BUILD_FLAGS),
         "round_cubic_bezier": _hit_groups(
-            curve_primary_closest_hit, PrimitiveType.ROUND_CUBIC_BEZIER, STATIC_BUILD_FLAGS
+            curve_primary_closest_hit, wo.PrimitiveType.ROUND_CUBIC_BEZIER, STATIC_BUILD_FLAGS
         ),
-        "round_linear_dynamic": _hit_groups(curve_primary_closest_hit, PrimitiveType.ROUND_LINEAR, DYNAMIC_BUILD_FLAGS),
+        "round_linear_dynamic": _hit_groups(
+            curve_primary_closest_hit, wo.PrimitiveType.ROUND_LINEAR, DYNAMIC_BUILD_FLAGS
+        ),
         "round_cubic_bezier_dynamic": _hit_groups(
-            curve_primary_closest_hit, PrimitiveType.ROUND_CUBIC_BEZIER, DYNAMIC_BUILD_FLAGS
+            curve_primary_closest_hit, wo.PrimitiveType.ROUND_CUBIC_BEZIER, DYNAMIC_BUILD_FLAGS
         ),
     },
 )
