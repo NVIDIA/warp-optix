@@ -38,7 +38,7 @@ def _pack_display_rgba8(
     width: int,
     height: int,
 ):
-    x, y = wp.tid()
+    y, x = wp.tid()
     if x >= width or y >= height:
         return
 
@@ -302,7 +302,7 @@ def main():
         api.render_frame()
         wp.launch(
             _pack_display_rgba8,
-            dim=(render_width, render_height),
+            dim=(render_height, render_width),
             inputs=[api.viewer.tonemapped_output, mapped_image, render_width, render_height],
             device="cuda",
         )

@@ -226,7 +226,7 @@ def main():
         api.render_frame()
         wp.launch(
             _pack_display_rgba8,
-            dim=(render_width, render_height),
+            dim=(render_height, render_width),
             inputs=[
                 api.viewer.tonemapped_output,
                 mapped_image,

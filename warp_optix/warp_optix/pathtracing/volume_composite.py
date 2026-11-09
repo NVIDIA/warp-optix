@@ -149,7 +149,7 @@ def _integrate_volume(
 
 @wp.kernel(enable_backward=False)
 def composite_volume(params: PathtraceLaunchParams, volume_params: VolumeParams):
-    x, y = wp.tid()
+    y, x = wp.tid()
     if x >= int(params.width) or y >= int(params.height):
         return
     origin = _compute_ray_origin(params)

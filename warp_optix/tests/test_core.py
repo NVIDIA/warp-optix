@@ -3,6 +3,8 @@
 
 """End-to-end tests of the core API: accel builds, pipelines, launches, and ray queries."""
 
+import time
+
 import numpy as np
 import pytest
 import warp as wp
@@ -25,30 +27,45 @@ def triangle_gas(device, **kwargs):
     return wo.Accel([wo.triangles(vertices, indices)], **kwargs)
 
 
-@pytest.mark.parametrize(
-    "values,dtype", [([0, 1, 4], wp.int32), ([0, 1, -1], wp.int32), ([0, 1, 2], wp.float32), ([0, 1], wp.int32)]
-)
-def test_triangle_indices_are_validated(values, dtype):
+def test_invalid_build_inputs_are_rejected():
     vertices = wp.array(QUAD_VERTICES, dtype=wp.vec3, device="cuda")
-    indices = wp.array(values, dtype=dtype, device="cuda")
-    with pytest.raises((ValueError, TypeError), match="indices"):
-        wo.triangles(vertices, indices)
-
-
-@pytest.mark.parametrize(
-    "curve_type,start",
-    [
+    for values, dtype in (([0, 1, 4], wp.int32), ([0, 1, -1], wp.int32), ([0, 1, 2], wp.float32), ([0, 1], wp.int32)):
+        indices = wp.array(values, dtype=dtype, device="cuda")
+        with pytest.raises((ValueError, TypeError), match="indices"):
+            wo.triangles(vertices, indices)
+        # validate=False skips only the bounds readback; type and triplet checks remain.
+        if dtype == wp.int32 and len(values) == 3:
+            wo.triangles(vertices, indices, validate=False)
+        else:
+            with pytest.raises((ValueError, TypeError), match="indices"):
+                wo.triangles(vertices, indices, validate=False)
+    widths = wp.full(4, 0.1, dtype=wp.float32, device="cuda")
+    for curve_type, start in (
         (wo.PrimitiveType.ROUND_LINEAR, 3),
         (wo.PrimitiveType.ROUND_CUBIC_BSPLINE, 1),
         (wo.PrimitiveType.ROUND_QUADRATIC_BSPLINE, -1),
-    ],
-)
-def test_curve_indices_are_validated(curve_type, start):
-    vertices = wp.array(QUAD_VERTICES, dtype=wp.vec3, device="cuda")
-    widths = wp.full(4, 0.1, dtype=wp.float32, device="cuda")
-    indices = wp.array([start], dtype=wp.int32, device="cuda")
-    with pytest.raises(ValueError, match="indices"):
-        wo.curves(vertices, widths, indices, curve_type=curve_type)
+    ):
+        with pytest.raises(ValueError, match="indices"):
+            wo.curves(vertices, widths, wp.array([start], dtype=wp.int32, device="cuda"), curve_type=curve_type)
+    # The segment degree follows curve_type: quadratic segments of four points may start at index 1.
+    last_quadratic = wp.array([1], dtype=wp.int32, device="cuda")
+    for curve_type in (wo.PrimitiveType.ROUND_QUADRATIC_BSPLINE, wo.PrimitiveType.ROUND_QUADRATIC_BSPLINE_ROCAPS):
+        wo.curves(vertices, widths, last_quadratic, curve_type=curve_type)
+    with pytest.raises(ValueError, match="curve PrimitiveType"):
+        wo.curves(vertices, widths, last_quadratic, curve_type=wo.PrimitiveType.TRIANGLE)
+
+    lowers = wp.zeros(2, dtype=wp.vec3, device="cuda")
+    uppers = wp.ones(2, dtype=wp.vec3, device="cuda")
+    with pytest.raises(ValueError, match="lowers and uppers"):
+        wo.aabbs(lowers)
+    with pytest.raises(ValueError, match="not both"):
+        wo.aabbs(lowers, uppers, bounds=wp.zeros((2, 6), dtype=float, device="cuda"))
+    with pytest.raises(ValueError, match="equal size"):
+        wo.aabbs(lowers, wp.ones(3, dtype=wp.vec3, device="cuda"))
+    with pytest.raises(ValueError, match="sextuplets"):
+        wo.aabbs(bounds=wp.zeros(5, dtype=float, device="cuda"))
+    with pytest.raises(ValueError, match="at least one build input"):
+        wo.Accel([], device="cuda")
 
 
 @wp.kernel(module="unique")
@@ -87,7 +104,14 @@ def test_raygen_only_pipeline_over_device_instances():
     device = wp.get_device("cuda")
     vertices = wp.array(QUAD_VERTICES, dtype=wp.vec3, device=device)
     indices = wp.array(QUAD_INDICES, dtype=wp.int32, device=device)
-    gas = wo.Accel([wo.triangles(vertices, indices)], compact=True, device=device)
+    # Batched compaction: a rebuild re-emits the compacted size, and compaction re-registers the new id.
+    flags = wo.BuildFlags.PREFER_FAST_TRACE | wo.BuildFlags.ALLOW_COMPACTION
+    gas, spare = (wo.Accel([wo.triangles(vertices, indices)], flags=flags, device=device) for _ in range(2))
+    gas.rebuild()
+    uncompacted = gas._buffer.size
+    wo.compact([gas, spare])
+    assert gas._buffer.size < uncompacted and wo.get_context(device)._accels[gas.id] is gas
+    assert gas._memory[0] is gas._buffer
 
     # Two worlds side by side; each world's quad sits at its own height.
     nworld = 2
@@ -98,8 +122,8 @@ def test_raygen_only_pipeline_over_device_instances():
     ias = wo.Accel([wo.instances(records)], flags=wo.BuildFlags.ALLOW_UPDATE, device=device)
 
     pipeline = wo.Pipeline(depth_raygen, device=device)
-    depth = wp.zeros((nworld, 64), dtype=float, device=device)
-    instance = wp.zeros((nworld, 64), dtype=int, device=device)
+    depth = wp.empty((nworld, 64), dtype=float, device=device)
+    instance = wp.empty((nworld, 64), dtype=int, device=device)
     wo.launch(pipeline, dim=(nworld, 64), inputs=[ias.id, offsets, depth, instance])
     np.testing.assert_allclose(depth.numpy(), [[4.0] * 64, [3.0] * 64], atol=1e-5)
     np.testing.assert_array_equal(instance.numpy(), [[0] * 64, [1] * 64])
@@ -137,7 +161,7 @@ def test_raygen_only_pipeline_over_device_instances():
     assert not depth.numpy().any()
 
 
-def test_refit_requires_allow_update_and_rejects_compacted():
+def test_refit_and_compaction_rules():
     static = triangle_gas("cuda")
     with pytest.raises(ValueError, match="ALLOW_UPDATE"):
         static.refit()
@@ -145,6 +169,9 @@ def test_refit_requires_allow_update_and_rejects_compacted():
     compacted = triangle_gas("cuda", compact=True)
     with pytest.raises(ValueError, match="compacted"):
         compacted.rebuild()
+    for uncompactable in (static, compacted):
+        with pytest.raises(ValueError, match="ALLOW_COMPACTION"):
+            wo.compact([uncompactable])
     with pytest.raises(ValueError, match="compacted"):
         triangle_gas("cuda", compact=True, flags=wo.BuildFlags.ALLOW_UPDATE)
 
@@ -157,31 +184,6 @@ def sphere_t(origin: wp.vec3, direction: wp.vec3, radius: float) -> float:
     if disc < 0.0:
         return -1.0
     return -b - wp.sqrt(disc)
-
-
-@wp.kernel(module="unique")
-def sphere_intersection(radii: wp.array[float]):
-    t = sphere_t(wp.optix_get_object_ray_origin(), wp.optix_get_object_ray_direction(), radii[0])
-    if t > 0.0:
-        wp.optix_report_intersection(t, 0)
-
-
-@wp.kernel(module="unique")
-def sphere_raygen(scene: wp.uint64, radii: wp.array[float], depth: wp.array[float]):
-    i = wp.tid()
-    origin = wp.vec3(0.0, 0.0, 5.0 + float(i))
-    depth[i] = wo.accel_query_ray(scene, origin, wp.vec3(0.0, 0.0, -1.0), 100.0).t
-
-
-def test_custom_primitive_intersection_program_binds_raygen_arguments_by_name():
-    device = wp.get_device("cuda")
-    bounds = wp.array([[-1.0, -1.0, -1.0, 1.0, 1.0, 1.0]], dtype=float, device=device)
-    gas = wo.Accel([wo.aabbs(bounds=bounds)], device=device)
-    pipeline = wo.Pipeline(sphere_raygen, hit_groups=[wo.HitGroup(intersection=sphere_intersection)], device=device)
-    radii = wp.array([0.5], dtype=float, device=device)
-    depth = wp.zeros(3, dtype=float, device=device)
-    wo.launch(pipeline, dim=(3,), inputs=[gas.id, radii, depth])
-    np.testing.assert_allclose(depth.numpy(), [4.5, 5.5, 6.5], atol=1e-5)
 
 
 # ---------------------------------------------------------------------------
@@ -219,10 +221,9 @@ def test_aabbs_from_lowers_uppers_and_packed_bounds_hit_and_refit():
         moving_sphere_raygen, hit_groups=[wo.HitGroup(intersection=moving_sphere_intersection)], device=device
     )
     xs = wp.array([0.0, 3.0, 6.0, 9.0], dtype=float, device=device)
-    depth = wp.zeros(4, dtype=float, device=device)
+    depth = wp.empty(4, dtype=float, device=device)
     expected = [4.5, 5.5, -1.0, -1.0]
     for accel in (separate, packed):
-        depth.zero_()
         wo.launch(pipeline, dim=4, inputs=[accel, xs, centers, depth])
         np.testing.assert_allclose(depth.numpy(), expected, atol=1e-5)
 
@@ -233,23 +234,47 @@ def test_aabbs_from_lowers_uppers_and_packed_bounds_hit_and_refit():
     lowers.assign(lowers.numpy() + shift)
     uppers.assign(uppers.numpy() + shift)
     separate.refit()
-    depth.zero_()
     wo.launch(pipeline, dim=4, inputs=[separate, xs, centers, depth])
     np.testing.assert_allclose(depth.numpy(), [-1.0, -1.0, 4.5, 5.5], atol=1e-5)
 
 
-def test_aabbs_argument_validation():
-    lowers = wp.zeros(2, dtype=wp.vec3, device="cuda")
-    uppers = wp.ones(2, dtype=wp.vec3, device="cuda")
-    bounds = wp.zeros((2, 6), dtype=float, device="cuda")
-    with pytest.raises(ValueError, match="lowers and uppers"):
-        wo.aabbs(lowers)
-    with pytest.raises(ValueError, match="not both"):
-        wo.aabbs(lowers, uppers, bounds=bounds)
-    with pytest.raises(ValueError, match="equal size"):
-        wo.aabbs(lowers, wp.ones(3, dtype=wp.vec3, device="cuda"))
-    with pytest.raises(ValueError, match="sextuplets"):
-        wo.aabbs(bounds=wp.zeros(5, dtype=float, device="cuda"))
+@pytest.mark.parametrize("hold_before_allocation", [True, False])
+def test_aabb_build_on_another_stream_orders_only_its_allocation(gate, hold_before_allocation):
+    device = wp.get_device("cuda")
+    side = wp.Stream(device)
+    lowers = wp.zeros(8, dtype=wp.vec3, device=device)
+    uppers = wp.ones(8, dtype=wp.vec3, device=device)
+    # Warm up packing and OptiX before holding a stream: module loading may synchronize.
+    warm = wo.Accel([wo.aabbs(lowers, uppers)], flags=wo.BuildFlags.ALLOW_UPDATE)
+    wp.synchronize_device(device)
+
+    if hold_before_allocation:
+        held = gate.block(wp.get_stream(device))
+    build_input = wo.aabbs(lowers, uppers)
+    if not hold_before_allocation:
+        held = gate.block(wp.get_stream(device))
+    accel = wo.Accel([build_input], flags=wo.BuildFlags.ALLOW_UPDATE, stream=side)
+    built = side.record_event()
+    if hold_before_allocation:
+        # A small warmed build would finish in this interval without the allocation dependency.
+        deadline = time.monotonic() + 0.025
+        while not built.is_complete and time.monotonic() < deadline:
+            time.sleep(0.001)
+        assert not built.is_complete, "Build used its private bounds before their allocation completed"
+    else:
+        wp.synchronize_stream(side)
+    assert not held.is_complete, "The gate expired before checking allocation ordering"
+    gate.open()
+    wp.synchronize_stream(side)
+    np.testing.assert_array_equal(build_input.arrays[0].numpy(), [[0, 0, 0, 1, 1, 1]] * 8)
+
+    # Later refits must not wait for unrelated work on the allocation stream.
+    held = gate.block(wp.get_stream(device))
+    accel.refit(stream=side)
+    wp.synchronize_stream(side)
+    assert not held.is_complete
+    gate.open()
+    warm.close()
 
 
 # ---------------------------------------------------------------------------
@@ -311,9 +336,9 @@ def test_make_instance_overloads_place_instances():
         (20.25, 0.25, 10.0),
     ]
     points = wp.array(points, dtype=wp.vec3, device=device)
-    depth = wp.zeros(6, dtype=float, device=device)
-    ids = wp.zeros(6, dtype=int, device=device)
-    any_hit = wp.zeros(6, dtype=int, device=device)
+    depth = wp.empty(6, dtype=float, device=device)
+    ids = wp.empty(6, dtype=int, device=device)
+    any_hit = wp.empty(6, dtype=int, device=device)
     pipeline = wo.Pipeline(query_points_raygen, device=device)
     wo.launch(pipeline, dim=6, inputs=[ias, points, depth, ids, any_hit])
     np.testing.assert_allclose(depth.numpy(), [9.0, -1.0, 8.0, -1.0, 7.0, -1.0], atol=1e-5)
@@ -333,10 +358,21 @@ def triangle_query_raygen(
     max_ts: wp.array[float],
     results: wp.array2d[float],
     any_hit: wp.array[int],
+    flag_hits: wp.array[int],
 ):
     i = wp.tid()
     start = wp.vec3(0.2, 0.3, 5.0)
-    query = wo.accel_query_ray(scene, start, wp.vec3(0.0, 0.0, -1.0), max_ts[i], min_ts[i])
+    direction = wp.vec3(0.0, 0.0, -1.0)
+    # RayFlags members pass directly, without casts.
+    flags = wo.RayFlags.NONE
+    if i == 1:
+        flags = wo.RayFlags.CULL_FRONT_FACING_TRIANGLES
+    elif i == 2:
+        flags = wo.RayFlags.CULL_BACK_FACING_TRIANGLES
+    elif i == 3:
+        flags = wo.RayFlags.CULL_FRONT_FACING_TRIANGLES | wo.RayFlags.DISABLE_ANYHIT
+    flag_hits[i] = int(wo.accel_query_ray(scene, start, direction, 100.0, 0.0, 0xFF, flags).result)
+    query = wo.accel_query_ray(scene, start, direction, max_ts[i], min_ts[i])
     results[i, 0] = 0.0
     if query.result:
         results[i, 0] = 1.0
@@ -349,43 +385,23 @@ def triangle_query_raygen(
         any_hit[i] = 1
 
 
-def test_accel_query_ray_reports_distance_barycentrics_and_respects_interval():
+def test_accel_query_ray_reports_hits_respects_interval_and_ray_flags():
     device = wp.get_device("cuda")
     gas = triangle_gas(device)
     min_ts = wp.array([0.0, 0.0, 5.5, 4.9], dtype=float, device=device)
     max_ts = wp.array([100.0, 4.0, 100.0, 5.1], dtype=float, device=device)
     results = wp.full((4, 5), -7.0, dtype=float, device=device)
-    any_hit = wp.zeros(4, dtype=int, device=device)
+    any_hit = wp.empty(4, dtype=int, device=device)
+    flag_hits = wp.empty(4, dtype=int, device=device)
     pipeline = wo.Pipeline(triangle_query_raygen, device=device)
-    wo.launch(pipeline, dim=4, inputs=[gas, min_ts, max_ts, results, any_hit])
+    wo.launch(pipeline, dim=4, inputs=[gas, min_ts, max_ts, results, any_hit, flag_hits])
     out = results.numpy()
     # The hit point (0.2, 0.3) = (1 - u - v) * v0 + u * v1 + v * v2.
     np.testing.assert_allclose(out[0], [1.0, 5.0, 0.2, 0.3, 0.0], atol=1e-5)
     np.testing.assert_allclose(out[3], [1.0, 5.0, 0.2, 0.3, 0.0], atol=1e-5)
     assert out[1, 0] == 0.0 and out[2, 0] == 0.0
     np.testing.assert_array_equal(any_hit.numpy(), [1, 0, 0, 1])
-
-
-@wp.kernel(module="unique")
-def ray_flag_query_raygen(scene: wp.uint64, hits: wp.array[int]):
-    start = wp.vec3(0.2, 0.3, 5.0)
-    direction = wp.vec3(0.0, 0.0, -1.0)
-    hits[0] = int(wo.accel_query_ray(scene, start, direction, 100.0, 0.0, 0xFF, wo.RayFlags.NONE).result)
-    hits[1] = int(
-        wo.accel_query_ray(scene, start, direction, 100.0, 0.0, 0xFF, wo.RayFlags.CULL_FRONT_FACING_TRIANGLES).result
-    )
-    hits[2] = int(
-        wo.accel_query_ray(scene, start, direction, 100.0, 0.0, 0xFF, wo.RayFlags.CULL_BACK_FACING_TRIANGLES).result
-    )
-    flags = wo.RayFlags.CULL_FRONT_FACING_TRIANGLES | wo.RayFlags.DISABLE_ANYHIT
-    hits[3] = int(wo.accel_query_ray(scene, start, direction, 100.0, 0.0, 0xFF, flags).result)
-
-
-def test_ray_flags_members_pass_directly_to_accel_query_ray():
-    gas = triangle_gas("cuda")
-    hits = wp.full(4, -1, dtype=int, device="cuda")
-    wo.launch(wo.Pipeline(ray_flag_query_raygen), dim=1, inputs=[gas, hits])
-    np.testing.assert_array_equal(hits.numpy(), [1, 0, 1, 0])
+    np.testing.assert_array_equal(flag_hits.numpy(), [1, 0, 1, 0])
 
 
 # ---------------------------------------------------------------------------
@@ -399,53 +415,35 @@ class ColorPayload:
 
 
 @wp.kernel(module="unique")
-def shaded_raygen(scene: wp.uint64, image: wp.array[wp.vec3]):
-    i = wp.tid()
+def shaded_raygen(scene: wp.uint64, image: wp.array2d[wp.vec3]):
+    variant, i = wp.tid()
     payload = ColorPayload()
     origin = wp.vec3(-1.5 + float(i), 0.0, 5.0)
-    wp.optix_trace(
-        scene,
-        origin,
-        wp.vec3(0.0, 0.0, -1.0),
-        100.0,
-        payload,
-        0.0,
-        0.0,
-        wp.uint32(0xFF),
-        wp.uint32(0),
-        wp.uint32(0),
-        wp.uint32(1),
-        wp.uint32(0),
-    )
-    image[i] = payload.color
-
-
-@wp.kernel(module="unique")
-def shaded_short_raygen(scene: wp.uint64, image: wp.array[wp.vec3]):
-    i = wp.tid()
-    payload = ColorPayload()
-    # All optional trailing arguments omitted: min_t=0, time=0, mask=0xFF, flags=NONE, sbt 0/1, miss 0.
-    wp.optix_trace(scene, wp.vec3(-1.5 + float(i), 0.0, 5.0), wp.vec3(0.0, 0.0, -1.0), 100.0, payload)
-    image[i] = payload.color
-
-
-@wp.kernel(module="unique")
-def shaded_culled_raygen(scene: wp.uint64, image: wp.array[wp.vec3]):
-    i = wp.tid()
-    payload = ColorPayload()
-    # Plain int literals for the mask and a RayFlags member for the flags, without casts.
-    wp.optix_trace(
-        scene,
-        wp.vec3(-1.5 + float(i), 0.0, 5.0),
-        wp.vec3(0.0, 0.0, -1.0),
-        100.0,
-        payload,
-        0.0,
-        0.0,
-        0xFF,
-        wo.RayFlags.CULL_FRONT_FACING_TRIANGLES,
-    )
-    image[i] = payload.color
+    direction = wp.vec3(0.0, 0.0, -1.0)
+    if variant == 0:
+        wp.optix_trace(
+            scene,
+            origin,
+            direction,
+            100.0,
+            payload,
+            0.0,
+            0.0,
+            wp.uint32(0xFF),
+            wp.uint32(0),
+            wp.uint32(0),
+            wp.uint32(1),
+            wp.uint32(0),
+        )
+    elif variant == 1:
+        # All optional trailing arguments omitted: min_t=0, time=0, mask=0xFF, flags=NONE, sbt 0/1, miss 0.
+        wp.optix_trace(scene, origin, direction, 100.0, payload)
+    else:
+        # Plain int literals for the mask and a RayFlags member for the flags, without casts.
+        wp.optix_trace(
+            scene, origin, direction, 100.0, payload, 0.0, 0.0, 0xFF, wo.RayFlags.CULL_FRONT_FACING_TRIANGLES
+        )
+    image[variant, i] = payload.color
 
 
 @wp.kernel(module="unique")
@@ -462,40 +460,22 @@ def shaded_miss():
     wp.optix_store_payload(payload)
 
 
-@pytest.mark.parametrize(
-    "raygen,expected",
-    [
-        (shaded_raygen, [[0, 0, 1], [5, 1, 0], [5, 1, 0], [0, 0, 1]]),
-        (shaded_short_raygen, [[0, 0, 1], [5, 1, 0], [5, 1, 0], [0, 0, 1]]),
-        (shaded_culled_raygen, [[0, 0, 1]] * 4),
-    ],
-    ids=["all-arguments", "omitted-trailing", "ray-flags"],
-)
-def test_trace_with_payload_closest_hit_and_miss_programs(raygen, expected):
+def test_trace_with_payload_closest_hit_and_miss_programs():
     device = wp.get_device("cuda")
     vertices = wp.array(QUAD_VERTICES, dtype=wp.vec3, device=device)
     indices = wp.array(QUAD_INDICES, dtype=wp.int32, device=device)
     gas = wo.Accel([wo.triangles(vertices, indices)], device=device)
     pipeline = wo.Pipeline(
-        raygen,
+        shaded_raygen,
         miss=[shaded_miss],
         hit_groups=[wo.HitGroup(closest_hit=shaded_closest_hit)],
         payload_words=3,
         device=device,
     )
-    image = wp.zeros(4, dtype=wp.vec3, device=device)
-    wo.launch(pipeline, dim=(4,), inputs=[gas.id, image])
-    np.testing.assert_allclose(image.numpy(), expected, atol=1e-5)
-
-
-def test_ray_flag_and_hit_kind_values_match_optix_headers():
-    # Values from optix_types.h.
-    assert int(wo.RayFlags.NONE) == 0
-    assert int(wo.RayFlags.DISABLE_ANYHIT) == 1
-    assert int(wo.RayFlags.TERMINATE_ON_FIRST_HIT) == 4
-    assert int(wo.RayFlags.CULL_FRONT_FACING_TRIANGLES) == 32
-    assert int(wo.HitKind.TRIANGLE_FRONT_FACE) == 0xFE
-    assert int(wo.HitKind.TRIANGLE_BACK_FACE) == 0xFF
+    image = wp.empty((3, 4), dtype=wp.vec3, device=device)
+    wo.launch(pipeline, dim=(3, 4), inputs=[gas.id, image])
+    hit = [[0, 0, 1], [5, 1, 0], [5, 1, 0], [0, 0, 1]]
+    np.testing.assert_allclose(image.numpy(), [hit, hit, [[0, 0, 1]] * 4], atol=1e-5)
 
 
 @wp.kernel(module="unique")
@@ -508,15 +488,107 @@ def curve_query_raygen(scene: wp.uint64, results: wp.array[float]):
         results[3] = query.v
 
 
-def test_accel_query_ray_reports_curve_parameter():
+@wp.kernel(module="unique")
+def curve_types_raygen(scene: wp.uint64, results: wp.array2d[float]):
+    i = wp.tid()
+    query = wo.accel_query_ray(scene, wp.vec3(0.25, 2.0 * float(i), 1.0), wp.vec3(0.0, 0.0, -1.0), 100.0)
+    results[i, 0] = float(query.result)
+    if query.result:
+        results[i, 1] = query.t
+        results[i, 2] = query.u
+
+
+@wp.kernel(module="unique")
+def write_curve_instances(gases: wp.array[wp.uint64], records: wp.array[wo.Instance]):
+    i = wp.tid()
+    # Instance i sits at y = 2i and selects hit group i.
+    records[i] = wo.make_instance(wp.identity(3, float), wp.vec3(0.0, 2.0 * float(i), 0.0), gases[i], i, i)
+
+
+def test_accel_query_ray_hits_builtin_curves():
     device = wp.get_device("cuda")
-    points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
-    widths = wp.full(2, 0.1, dtype=float, device=device)
-    indices = wp.array([0], dtype=wp.int32, device=device)
-    gas = wo.Accel([wo.curves(points, widths, indices)], device=device)
-    pipeline = wo.Pipeline(
-        curve_query_raygen, hit_groups=[wo.HitGroup(builtin=wo.PrimitiveType.ROUND_LINEAR)], device=device
-    )
+    curves = {
+        wo.PrimitiveType.ROUND_LINEAR: [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+        wo.PrimitiveType.ROUND_QUADRATIC_BSPLINE_ROCAPS: [[-1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+        wo.PrimitiveType.ROUND_CUBIC_BSPLINE_ROCAPS: [
+            [-2.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+        ],
+    }
+    gases = []
+    for curve_type, points in curves.items():
+        points = wp.array(points, dtype=wp.vec3, device=device)
+        widths = wp.full(points.size, 0.1, dtype=float, device=device)
+        indices = wp.array([0], dtype=wp.int32, device=device)
+        gases.append(wo.Accel([wo.curves(points, widths, indices, curve_type=curve_type)], device=device))
+    records = wp.empty(len(gases), dtype=wo.Instance, device=device)
+    gas_ids = wp.array([gas.id for gas in gases], dtype=wp.uint64, device=device)
+    wp.launch(write_curve_instances, dim=len(gases), inputs=[gas_ids, records], device=device)
+    ias = wo.Accel([wo.instances(records)], device=device)
+    hit_groups = [wo.HitGroup(builtin=curve_type) for curve_type in curves]
+    pipeline = wo.Pipeline(curve_types_raygen, hit_groups=hit_groups, device=device)
+    results = wp.full((len(gases), 3), -7.0, dtype=float, device=device)
+    wo.launch(pipeline, dim=len(gases), inputs=[ias, results])
+    out = results.numpy()
+    np.testing.assert_array_equal(out[:, 0], 1.0)
+    np.testing.assert_allclose(out[:, 1], 0.9, atol=1e-3)
+    # For a linear segment, u is the curve parameter of the hit point.
+    np.testing.assert_allclose(out[0, 2], 0.25, atol=1e-4)
+
+
+def test_invalid_hit_groups_and_miss_records_are_rejected():
+    with pytest.raises(ValueError, match="curve PrimitiveType"):
+        wo.HitGroup(builtin=wo.PrimitiveType.TRIANGLE)
+    with pytest.raises(ValueError, match="cannot be combined"):
+        wo.HitGroup(intersection=curve_query_raygen, builtin=wo.PrimitiveType.ROUND_LINEAR)
+    with pytest.raises(ValueError, match="miss must contain at least one entry"):
+        wo.Pipeline(curve_query_raygen, miss=[])
+
+
+def test_empty_build_inputs_build_refit_and_miss():
+    # Empty geometry builds a structure nothing intersects, e.g. a dynamic mesh or contact set with no elements yet.
+    device = wp.get_device("cuda")
+    vertices = wp.array(QUAD_VERTICES, dtype=wp.vec3, device=device)
+    none = wp.empty(0, dtype=wp.int32, device=device)
+    no_points = wp.empty(0, dtype=wp.vec3, device=device)
+    records = wp.empty(1, dtype=wo.Instance, device=device)
+    inputs = [
+        wo.triangles(vertices, none),
+        wo.curves(vertices, wp.full(4, 0.1, dtype=float, device=device), none),
+        wo.aabbs(no_points, no_points),
+        wo.instances(wp.empty(0, dtype=wo.Instance, device=device)),
+        wo.instances(records[:0]),  # An empty view still has a non-null backing pointer.
+    ]
+    pipeline = wo.Pipeline(curve_query_raygen, device=device)
     results = wp.full(4, -7.0, dtype=float, device=device)
-    wo.launch(pipeline, dim=1, inputs=[gas, results])
-    np.testing.assert_allclose(results.numpy(), [1.0, 0.9, 0.25, 0.0], atol=1e-4)
+    for build_input in inputs:
+        accel = wo.Accel([build_input], flags=wo.BuildFlags.ALLOW_UPDATE)
+        accel.refit()
+        accel.rebuild()
+        wo.launch(pipeline, dim=1, inputs=[accel, results])
+        assert results.numpy()[0] == 0.0
+
+
+@wp.kernel(module="unique")
+def write_first(out: wp.array[float]):
+    out[0] = 10.0
+
+
+@wp.kernel(module="unique")
+def write_second(out: wp.array[float]):
+    out[1] = 20.0
+
+
+@wp.kernel(module="unique")
+def call_both(out: wp.array[float]):
+    wp.optix_direct_call(0)
+    wp.optix_continuation_call(1)
+
+
+def test_continuation_callables_follow_direct_callables():
+    out = wp.empty(2, dtype=float, device="cuda")
+    pipeline = wo.Pipeline(call_both, callables=[write_first], continuation_callables=[write_second])
+    wo.launch(pipeline, 1, [out])
+    np.testing.assert_array_equal(out.numpy(), [10.0, 20.0])

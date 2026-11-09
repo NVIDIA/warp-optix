@@ -6,19 +6,17 @@
 Like Warp's CUDA context, the OptiX device context is implicit: each CUDA
 device gets one, created on first use with the settings in
 :mod:`warp_optix.config` and destroyed at interpreter exit. Resources
-(:class:`~warp_optix.Accel`, :class:`~warp_optix.Pipeline`,
-:class:`~warp_optix.LaunchParams`) hold a reference to their context.
+(:class:`~warp_optix.Accel`, :class:`~warp_optix.Pipeline`) hold a reference
+to their context.
 
 Lifetime contract (the same as ``wp.Mesh`` and ``wp.array``):
 
-* Builds, refits, and launches hold no references to their inputs beyond
-  what the resources themselves keep. Instance builds record one event, after
-  copying their child ids to the host.
+* Builds, refits, and launches record no events and hold no references to
+  their inputs beyond what the resources themselves keep.
 * ``close()`` (also called by ``with``, and when the last reference is dropped)
   makes a resource unusable at once and releases its device memory right away.
   Device memory is ``wp.array`` storage, whose release is stream-ordered by
-  Warp, so work already submitted can still read it. It blocks the host only
-  to wait for the child-id copy of an instance build that has not finished.
+  Warp, so work already submitted can still read it. It never blocks the host.
 * Native OptiX objects of a pipeline (pipeline, module, program groups) are
   destroyed under the device's CUDA context once the launches submitted before
   the close have finished; while a graph capture is running on the device,
@@ -33,6 +31,7 @@ Lifetime contract (the same as ``wp.Mesh`` and ``wp.array``):
 from __future__ import annotations
 
 import atexit
+import functools
 import logging
 import threading
 import weakref
@@ -65,10 +64,6 @@ class Context:
         self._destroyed = False
         # Live acceleration structures by id, for validating instance children.
         self._accels: weakref.WeakValueDictionary = weakref.WeakValueDictionary()
-        # Weak references to instance structures whose child ids are still being copied to the host, oldest first.
-        self._unresolved: list[weakref.ref] = []
-        # Idle pinned host buffers for those copies.
-        self._child_id_buffers: list[wp.array] = []
         # Native destroys waiting for (events, streams, callback); events are recorded outside graph capture.
         self._releases: list[tuple[list[wp.Event] | None, tuple, object]] = []
         owner = weakref.ref(self)
@@ -134,9 +129,27 @@ class Context:
         self._releases[:0] = waiting
 
     def check_arrays(self, values) -> None:
-        for value in _arrays(values):
-            if value.device != self.device:
+        """Check that arrays in ``values`` (including nested sequences and struct fields) are on this device."""
+        for value in values:
+            if isinstance(value, wp.array):
+                if value.device != self.device:
+                    raise ValueError("Array and OptiX resource must use the same CUDA device")
+            elif isinstance(value, (tuple, list)):
+                self.check_arrays(value)
+            elif wp.types.is_struct(value):
+                self._check_struct(value)
+
+    def _check_struct(self, instance) -> None:
+        arrays, structs = _struct_fields(instance._cls)
+        device = self.device
+        for name in arrays:
+            value = getattr(instance, name)
+            if value is not None and value.device != device:
                 raise ValueError("Array and OptiX resource must use the same CUDA device")
+        for name in structs:
+            value = getattr(instance, name)
+            if value is not None:
+                self._check_struct(value)
 
     def _shutdown(self) -> None:
         with wp.ScopedDevice(self.device):
@@ -146,7 +159,6 @@ class Context:
                 for _, _, callback in pending:
                     _run(callback)
             self._accels.clear()
-            self._unresolved.clear()
             self._native.destroy()
             self._destroyed = True
 
@@ -210,14 +222,12 @@ def native_objects(context: Context):
             raise
 
 
-def _arrays(values):
-    for value in values:
-        if isinstance(value, wp.array):
-            yield value
-        elif isinstance(value, (tuple, list)):
-            yield from _arrays(value)
-        elif hasattr(value, "_cls") and hasattr(value._cls, "vars"):
-            yield from _arrays([getattr(value, name) for name in value._cls.vars])
+@functools.cache
+def _struct_fields(cls) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Names of the array fields and the struct fields of a Warp struct type."""
+    arrays = tuple(name for name, var in cls.vars.items() if wp.types.is_array(var.type))
+    structs = tuple(name for name, var in cls.vars.items() if isinstance(var.type, type(cls)))
+    return arrays, structs
 
 
 def _run(callback) -> None:
