@@ -45,7 +45,7 @@ def _require_coop_vec():
     if not wp.is_cuda_available():
         pytest.skip("CUDA unavailable")
     with wp.ScopedDevice("cuda:0"):
-        if not wo.get_context("cuda:0").native.getProperty(native.DEVICE_PROPERTY_COOP_VEC):
+        if not native.getCoopVecProperty(wo.get_context("cuda:0").native):
             pytest.skip("cooperative vectors unsupported")
 
 

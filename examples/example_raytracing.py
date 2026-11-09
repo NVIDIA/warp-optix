@@ -491,8 +491,7 @@ def cornell(args) -> np.ndarray | None:
     )
     pipeline = wo.Pipeline(
         cornell_raygen,
-        miss=[cornell_miss],
-        hit_groups=[wo.HitGroup(closest_hit=cornell_closest_hit)],
+        sbt=wo.SbtLayout(miss=cornell_miss, hit_groups={"triangles": wo.HitGroup(closest_hit=cornell_closest_hit)}),
         payload_words=6,
     )
     seed = wp.uint32(1337)

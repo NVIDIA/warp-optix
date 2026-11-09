@@ -135,8 +135,7 @@ def main() -> None:
 
         pipeline = wo.Pipeline(
             raygen,
-            miss=[miss],
-            hit_groups=[wo.HitGroup(closest_hit=closest_hit)],
+            sbt=wo.SbtLayout(miss=miss, hit_groups={"triangles": wo.HitGroup(closest_hit=closest_hit)}),
             payload_words=3,
             motion_blur=True,
         )

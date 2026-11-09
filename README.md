@@ -74,13 +74,16 @@ the OptiX context is implicit (one per device, configured through `wo.config`).
 reference is dropped, or explicitly with `close()`/`with`. As with `wp.Mesh` and
 `wp.array`, device memory is freed in stream order; a pipeline's native OptiX objects
 are destroyed once its submitted launches have finished. Instances are written
-with `wo.make_instance()` and refit with `accel.refit()`. Initial instance builds
-validate child ids with a host readback; compaction also synchronizes (once per
-`wo.compact` batch). Refits and
-launches remain asynchronous on the selected Warp stream.
+with `wo.make_instance()`, listed with their child structures in
+`wo.instances(records, children)`, and refit with `accel.refit()`. Builds, refits,
+and launches are asynchronous on the selected Warp stream; only compaction
+synchronizes (once per `wo.compact` batch).
 
-SBT records are built automatically. For named ray types and explicit hit-group
-layouts, pass a `wo.SbtBuilder` to `wo.Pipeline(..., sbt=builder)`.
+Miss records and hit groups are described by one `wo.SbtLayout` of named ray types
+and hit groups, passed as `wo.Pipeline(..., sbt=layout)`; it also gives the instance
+SBT offsets. Hit groups, miss, and callable records can carry a `@wp.struct` instance
+(`wo.HitGroup(..., data=material)`), read on the device with
+`wp.optix_load_sbt_data(material)`.
 
 See the [API guide](warp_optix/README.md) and runnable [examples](examples/README.md).
 
@@ -95,19 +98,26 @@ objects use explicit destruction. `wo.get_context(device).native` provides
 borrowed access to a device's PyOptiX `DeviceContext`. Do not destroy that
 borrowed handle separately.
 Standard objects are the dependency's actual `optix` types; both packages can
-be imported in either order. The supplement adds methods and fields to those
-types and repairs module-metadata and continuation-callable handling. Keep
-objects on their owning OptiX/CUDA context and obey their lifetimes.
+be imported in either order, and importing warp-optix leaves the `optix` module
+unmodified. Supplemental operations are module functions that take the context
+first: `native.coopVecMatrixComputeSize(context, ...)`,
+`native.coopVecMatrixConvert(context, ...)`, and
+`native.getCoopVecProperty(context)`. `native.moduleCreate(context, ...)` and
+`native.builtinISModuleGet(context, ...)` forward module compile metadata
+(`boundValues`, `payloadTypes`) that the PyOptiX 9.1.1 methods ignore. PyOptiX
+9.1.1 also ignores the `callablesModuleCC` argument of `ProgramGroupDesc`; set
+the attribute after construction. Keep objects on their owning OptiX/CUDA
+context and obey their lifetimes.
 
 PyOptiX 9.1.1 has no public native-handle API. The extension therefore uses a
 small, version-pinned pybind11 bridge and checks shared type identities and
 sizes before accessing them. Builds reject OptiX headers that differ from the
 PyOptiX dependency pin; imports reject mismatched compiled SDK versions before
-attaching bindings. Both extensions must use a compatible pybind11
+using upstream objects. Both extensions must use a compatible pybind11
 major version and C++ ABI. If the import reports an ABI mismatch, rebuild both
 packages with pybind11 3.x. See [dependency maintenance](docs/pyoptix-dependency.md).
 
-The distribution version is 0.2.0; the PyOptiX version is 9.1.1 (OptiX SDK 9.1.0).
+The PyOptiX version is 9.1.1 (OptiX SDK 9.1.0).
 
 ## Tests and dependency maintenance
 

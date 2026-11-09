@@ -4,7 +4,8 @@
 """Compose PyOptiX with the small extension shipped by warp-optix.
 
 PyOptiX owns every standard OptiX object and its destruction. The extension
-adds missing operations to those types; it never registers a second copy.
+adds missing operations as functions; it never modifies the `optix` module or
+registers a second copy of its types.
 """
 
 from importlib import import_module
@@ -44,55 +45,37 @@ def _load_backend():
             + ".".join(map(str, extension_sdk))
             + ". Both must use OptiX 9.1.0; reinstall or rebuild with matching headers."
         )
-    _extensions.install_pyoptix_extensions(upstream)
+    _extensions.validate_pyoptix_bindings(upstream)
 
-    # These two upstream defects can be repaired while retaining upstream's
-    # real objects, compiler, program groups, and ownership conventions.
-    if not getattr(upstream, "_warp_optix_extensions_installed", False):
-        for name in ("moduleCreate", "builtinISModuleGet"):
-            original = getattr(upstream.DeviceContext, name)
+    # PyOptiX 9.1.1 ignores module compile metadata. Repair it in these
+    # wrappers instead of patching the shared `optix` module.
+    def module_create(context, moduleCompileOptions, pipelineCompileOptions, *args):
+        _extensions.sync_module_options(moduleCompileOptions)
+        return context.moduleCreate(moduleCompileOptions, pipelineCompileOptions, *args)
 
-            def compile_module(self, moduleCompileOptions, pipelineCompileOptions, *args, _original=original, **kwargs):
-                _extensions.sync_module_options(moduleCompileOptions)
-                return _original(self, moduleCompileOptions, pipelineCompileOptions, *args, **kwargs)
-
-            setattr(upstream.DeviceContext, name, compile_module)
-
-        original_get_property = upstream.DeviceContext.getProperty
-
-        def get_property(self, property):
-            if int(property) == int(_extensions.DEVICE_PROPERTY_COOP_VEC):
-                return _extensions.coop_vec_property(self)
-            return original_get_property(self, property)
-
-        upstream.DeviceContext.getProperty = get_property
-        original_descriptor_init = upstream.ProgramGroupDesc.__init__
-
-        def init_descriptor(self, *args, **kwargs):
-            original_descriptor_init(self, *args, **kwargs)
-            continuation = kwargs.get("callablesModuleCC", args[10] if len(args) > 10 else None)
-            if continuation is not None:
-                self.callablesModuleCC = continuation
-
-        upstream.ProgramGroupDesc.__init__ = init_descriptor
-        upstream._warp_optix_extensions_installed = True
+    def builtin_is_module_get(context, moduleCompileOptions, pipelineCompileOptions, *args):
+        _extensions.sync_module_options(moduleCompileOptions)
+        return context.builtinISModuleGet(moduleCompileOptions, pipelineCompileOptions, *args)
 
     backend = ModuleType("warp_optix._backend_api")
     backend.__file__ = _extensions.__file__
     for module in (upstream, _extensions):
         for name in dir(module):
             if not name.startswith("_") and name not in (
-                "install_pyoptix_extensions",
+                "validate_pyoptix_bindings",
                 "sync_module_options",
-                "coop_vec_property",
+                "set_internal_guide_layers",
+                "set_temporal_mode_use_previous_layers",
+                "denoiser_temporal_sizes",
                 "optix_version",
             ):
                 setattr(backend, name, getattr(module, name))
+    backend.moduleCreate = module_create
+    backend.builtinISModuleGet = builtin_is_module_get
 
     # Missing enum values must use the dependency's existing enum types so
     # they remain accepted by upstream constructors and field setters.
     for prefix, enum in (
-        ("DEVICE_PROPERTY_COOP_VEC", upstream.DeviceProperty),
         ("PRIMITIVE_TYPE_FLAGS_", upstream.PmitiveTypeFlags),
         ("PRIMITIVE_TYPE_", upstream.PrimitiveType),
         ("PIXEL_FORMAT_", upstream.PixelFormat),
@@ -102,10 +85,7 @@ def _load_backend():
             if prefix == "PRIMITIVE_TYPE_" and name.startswith("PRIMITIVE_TYPE_FLAGS_"):
                 continue
             if name.startswith(prefix) and isinstance(getattr(_extensions, name), int):
-                value = enum(getattr(_extensions, name))
-                setattr(backend, name, value)
-                if not hasattr(enum, name):
-                    setattr(enum, name, value)
+                setattr(backend, name, enum(getattr(_extensions, name)))
 
     backend.get_optix_include_dir = _get_optix_include_dir
     return backend

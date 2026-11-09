@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import warp as wp
 
-from warp_optix import native
+from warp_optix import _ext, native
 from warp_optix.context import resolve
 
 
@@ -91,19 +91,18 @@ class OptixDenoiser:
         self._bindings = [None, None]
         self._parity = 0
         self._stream_handle = int(self.stream.cuda_stream)
-        model_name = "DENOISER_MODEL_KIND_TEMPORAL_UPSCALE2X" if upscale else "DENOISER_MODEL_KIND_TEMPORAL_AOV"
-        if not hasattr(native, model_name) or not hasattr(native.DenoiserParams(), "temporalModeUsePreviousLayers"):
-            raise RuntimeError("OptiX temporal denoising requires updated PyOptiX denoiser bindings")
+        model = native.DENOISER_MODEL_KIND_TEMPORAL_UPSCALE2X if upscale else native.DENOISER_MODEL_KIND_TEMPORAL_AOV
         options = native.DenoiserOptions()
         options.guideAlbedo = 1
         options.guideNormal = 1
         device = self.stream.device
         with wp.ScopedStream(self.stream):
             try:
-                self._denoiser = context.native.denoiserCreate(getattr(native, model_name), options)
+                self._denoiser = context.native.denoiserCreate(model, options)
                 sizes = self._denoiser.computeMemoryResources(self.width, self.height)
+                average_color_size, guide_pixel_size = _ext.denoiser_temporal_sizes(sizes)
                 self._state = wp.empty(sizes.stateSizeInBytes, dtype=wp.uint8, device=device)
-                self._scratch_size = max(sizes.withoutOverlapScratchSizeInBytes, sizes.computeAverageColorSizeInBytes)
+                self._scratch_size = max(sizes.withoutOverlapScratchSizeInBytes, average_color_size)
                 # 2x upscaling from 1080p needs over 2 GiB of scratch, more elements than a uint8 array can hold.
                 self._scratch = wp.empty((self._scratch_size + 7) // 8, dtype=wp.uint64, device=device)
                 self._average_color = wp.empty(3, dtype=wp.float32, device=device)
@@ -118,7 +117,7 @@ class OptixDenoiser:
                     if (target_height, target_width) != shape
                     else None
                 )
-                self._guide_pixel_size = int(sizes.internalGuideLayerPixelSizeInBytes)
+                self._guide_pixel_size = int(guide_pixel_size)
                 guide_size = self.output_width * self.output_height * self._guide_pixel_size
                 self._previous_guide = wp.zeros(guide_size, dtype=wp.uint8, device=device)
                 self._output_guide = wp.zeros(guide_size, dtype=wp.uint8, device=device)
@@ -161,21 +160,19 @@ class OptixDenoiser:
         guides.albedo = self._image(inputs.albedo, native.PIXEL_FORMAT_FLOAT3)
         guides.normal = self._image(inputs.normal, native.PIXEL_FORMAT_FLOAT3)
         guides.flow = self._image(self._flow, native.PIXEL_FORMAT_FLOAT2)
-        for field, buffer in (
-            ("previousOutputInternalGuideLayer", self._previous_guide),
-            ("outputInternalGuideLayer", self._output_guide),
-        ):
-            setattr(
-                guides,
-                field,
+        _ext.set_internal_guide_layers(
+            guides,
+            *(
                 self._image(
                     buffer,
                     native.PIXEL_FORMAT_INTERNAL_GUIDE_LAYER,
                     pixel_stride=self._guide_pixel_size,
                     width=self.output_width,
                     height=self.output_height,
-                ),
-            )
+                )
+                for buffer in (self._previous_guide, self._output_guide)
+            ),
+        )
         layer = native.DenoiserLayer()
         layer.input = self._image(inputs.color, native.PIXEL_FORMAT_FLOAT4)
         layer.output = self._image(
@@ -237,7 +234,7 @@ class OptixDenoiser:
                 self._previous_output.zero_()
             self._history_valid = False
         flow.launch(self.stream)
-        self._params.temporalModeUsePreviousLayers = int(self._history_valid)
+        _ext.set_temporal_mode_use_previous_layers(self._params, int(self._history_valid))
         self._denoiser.computeAverageColor(
             stream,
             layer.input,

@@ -131,8 +131,9 @@ def main() -> None:
 
         pipeline = wo.Pipeline(
             raygen,
-            miss=[miss],
-            hit_groups=[wo.HitGroup(closest_hit=curve_closest_hit, builtin=curve_type)],
+            sbt=wo.SbtLayout(
+                miss=miss, hit_groups={"curves": wo.HitGroup(closest_hit=curve_closest_hit, builtin=curve_type)}
+            ),
             payload_words=3,
             attribute_words=1,
         )
