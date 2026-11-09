@@ -2,12 +2,21 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #pragma once
 
-// PyOptiX 9.1.1 does not export native handles or a C API. These four
+// PyOptiX 9.1.1 does not export native handles or a C API. These
 // upstream wrapper definitions provide a deliberately version-pinned pybind11
 // bridge. No PyOptiX types are registered by our extension. At import we verify
 // the registered type identities, sizes, and binding ABI before accessing them.
 // Replace this bridge with upstream capsules when they become available.
 namespace pyoptix {
+struct Pipeline {
+    OptixPipeline pipeline = 0;
+};
+
+// Layout only: PyOptiX constructs it; we read the packed table.
+struct ShaderBindingTable {
+    OptixShaderBindingTable sbt{};
+};
+
 struct DeviceContext {
     OptixDeviceContext deviceContext = 0;
     py::object logCallbackFunction;

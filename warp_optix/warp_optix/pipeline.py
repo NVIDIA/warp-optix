@@ -298,7 +298,8 @@ class Pipeline:
         self._context = context
         self._native = pipeline
         self._owned = tuple(owned)
-        self._sbt = sbt_table
+        self._sbt = sbt_table  # also keeps the table at _launch_handles[1] alive
+        self._launch_handles = (native.pipeline_handle(pipeline), native.sbt_address(sbt_table))
         self._records = records
         self._params_size = ctypes.sizeof(params.ctype)
         self._param_names = tuple(arg.label for arg in raygen.adj.args)
@@ -492,6 +493,9 @@ class Launch:
         self._context = context
         self._storage = _ParamsStorage(pipeline.params_type, context.device)
         self._fields = tuple(pipeline.params_type.vars)
+        # The stream of the last launch and its native arguments, for replays that change nothing.
+        self._replay_stream: wp.Stream | None = None
+        self._replay_args: tuple = ()
         self.set_dim(dim)
         self.set_params(inputs)
 
@@ -499,6 +503,7 @@ class Launch:
         """Set the launch dimensions, as in :func:`launch`."""
         self.dim = _launch_dim(dim, self.pipeline)
         self._size = [*reversed(self.dim), 1, 1][:3]
+        self._replay_stream = None
 
     def set_params(self, values: Sequence) -> None:
         """Set all parameters: the ``inputs`` of :func:`launch`."""
@@ -516,7 +521,27 @@ class Launch:
 
     def launch(self, stream: wp.Stream | None = None) -> None:
         """Launch on ``stream`` (default: the device's current stream)."""
-        _launch(self.pipeline, self._context, self._storage, self._size, stream)
+        context = self._context
+        device = context.device
+        if stream is None:
+            stream = device.stream
+        pipeline = self.pipeline
+        # Replay with the arguments of the last launch when it changed nothing that
+        # _launch checks or updates: same stream, still tracked by the open pipeline,
+        # parameters uploaded, no pending releases. launch_replay itself requires the
+        # device's context to be current and the stream not to be capturing. Anything
+        # else takes the full path, which also raises the errors.
+        if (
+            stream is self._replay_stream
+            and not self._storage.dirty
+            and not context._releases
+            and pipeline._streams.get(stream.cuda_stream) is stream
+            and native.launch_replay(device.context, *self._replay_args)
+        ):
+            return
+        self._replay_stream = None
+        self._replay_args = _launch(pipeline, context, self._storage, self._size, stream)
+        self._replay_stream = stream
 
 
 def launch(
@@ -586,8 +611,8 @@ def _stream(context, stream: wp.Stream | None) -> wp.Stream:
     return stream
 
 
-def _launch(pipeline: Pipeline, context, storage: _ParamsStorage, size, stream: wp.Stream | None) -> None:
-    """Upload changed parameters and launch: the path every launch shares."""
+def _launch(pipeline: Pipeline, context, storage: _ParamsStorage, size, stream: wp.Stream | None) -> tuple:
+    """Upload changed parameters and launch: the path every launch shares. Returns the native arguments."""
     pipeline._check_open()
     stream = _stream(context, stream)
     if stream.is_capturing:
@@ -597,16 +622,18 @@ def _launch(pipeline: Pipeline, context, storage: _ParamsStorage, size, stream: 
     if stream.cuda_stream not in pipeline._streams:
         pipeline._forget_idle_streams()
     storage.use(stream)
-    args = (pipeline._native, stream.cuda_stream, storage.data.ptr, pipeline._params_size, pipeline._sbt, *size)
+    handle, sbt = pipeline._launch_handles
+    args = (handle, stream.cuda_stream, storage.data.ptr, pipeline._params_size, sbt, *size)
     device = context.device
     # OptiX launches into the current CUDA context; switch only when another one is current.
     if _warp_context.runtime.core.wp_cuda_context_get_current() == device.context:
-        native.launch(*args)
+        native.launch_raw(*args)
     else:
         with wp.ScopedDevice(device):
-            native.launch(*args)
+            native.launch_raw(*args)
     # Remembered so close() can wait for these launches before destroying the native pipeline.
     pipeline._streams[stream.cuda_stream] = stream
+    return args
 
 
 def _module_name(params, raygen, miss, hit_groups, callables, continuation_callables, exception) -> str:

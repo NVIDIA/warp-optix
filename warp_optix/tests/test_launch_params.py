@@ -323,3 +323,77 @@ def test_launch_matches_wp_launch_conventions():
 
     # A raygen that ignores wp.tid() accepts any dimensions, and one without arguments needs no inputs.
     wo.launch(wo.Pipeline(no_arguments), (2, 2))
+
+
+def test_recorded_launch_replays_recheck_what_they_skip(monkeypatch):
+    pipeline = wo.Pipeline(write)
+    device = pipeline.device
+    stream = wp.Stream(device)
+    output = wp.zeros(8, dtype=wp.uint32, device=device)
+    full_launches = []
+    original = pipeline_module._launch
+
+    def counted(*args):
+        full_launches.append(args)
+        return original(*args)
+
+    monkeypatch.setattr(pipeline_module, "_launch", counted)
+    recorded = wo.launch(pipeline, (4,), [1, output], record_cmd=True)
+
+    def replay(expected_full, *args, **kwargs):
+        full_launches.clear()
+        recorded.launch(*args, **kwargs)
+        assert len(full_launches) == expected_full
+
+    # Repeating an unchanged launch on the same stream replays the native arguments.
+    replay(1, stream=stream)
+    replay(0, stream=stream)
+    # New parameters, dimensions, or another stream take the full path once.
+    recorded.set_param_at_index(0, 2)
+    replay(1, stream=stream)
+    recorded.set_dim(8)
+    replay(1, stream=stream)
+    replay(1)
+    replay(0)
+    replay(1, stream=stream)
+    wp.synchronize_device(device)
+    np.testing.assert_array_equal(output.numpy(), np.full(8, 2))
+
+    # A stream the pipeline forgot is tracked again, so close() waits for the replay.
+    wp.synchronize_device(device)
+    wo.launch(pipeline, (8,), [3, output], stream=wp.Stream(device))
+    assert stream.cuda_stream not in pipeline._streams
+    replay(1, stream=stream)
+    assert pipeline._streams[stream.cuda_stream] is stream
+    replay(0, stream=stream)
+
+    # Without its CUDA context current, a replay takes the full path, which makes it current.
+    recorded.set_param_at_index(0, 4)
+    replay(1, stream=stream)
+    output.zero_()
+    wp.synchronize_device(device)
+    core = pipeline_module._warp_context.runtime.core
+    stack = []  # Setting no context pops one entry off the thread's context stack.
+    while context := core.wp_cuda_context_get_current():
+        stack.append(context)
+        core.wp_cuda_context_set_current(None)
+    try:
+        replay(1, stream=stream)
+    finally:
+        core.wp_cuda_context_set_current(None)
+        for context in reversed(stack):
+            core.wp_cuda_context_push_current(context)
+    wp.synchronize_stream(stream)
+    np.testing.assert_array_equal(output.numpy(), np.full(8, 4))
+
+    # Capture and close are rejected even when the previous launch could be replayed.
+    replay(0, stream=stream)
+    # OptiX itself does not reject capture: a captured launch faults when the graph runs.
+    with wp.ScopedCapture(stream=stream) as capture:
+        with pytest.raises(RuntimeError, match="CUDA graphs"):
+            recorded.launch(stream=stream)
+    wp.capture_launch(capture.graph, stream=stream)
+    replay(1, stream=stream)  # A rejected launch is not replayed.
+    pipeline.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        recorded.launch(stream=stream)
