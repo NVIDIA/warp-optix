@@ -33,11 +33,16 @@ class DenoiserInputs:
 
 
 @wp.kernel(enable_backward=False)
-def _prepare_flow(motion: wp.array2d(dtype=wp.vec2), flow: wp.array2d(dtype=wp.vec2)):
+def _prepare_flow(motion: wp.array2d(dtype=wp.vec2), limit: float, flow: wp.array2d(dtype=wp.vec2)):
     y, x = wp.tid()
     # OptiX expects previous-to-current flow, whereas the renderer uses
     # current-to-previous reprojection offsets.
-    flow[y, x] = -motion[y, x]
+    m = motion[y, x]
+    if not (wp.isfinite(m[0]) and wp.isfinite(m[1])):
+        m = wp.vec2(0.0)
+    # Flow beyond half-float range permanently corrupts the denoiser's history,
+    # and flow that leaves the image means the same at any length.
+    flow[y, x] = -wp.vec2(wp.clamp(m[0], -limit, limit), wp.clamp(m[1], -limit, limit))
 
 
 @wp.kernel(enable_backward=False)
@@ -188,7 +193,7 @@ class OptixDenoiser:
         flow = wp.launch(
             _prepare_flow,
             dim=(self.height, self.width),
-            inputs=[inputs.motion, self._flow],
+            inputs=[inputs.motion, float(max(self.width, self.height)), self._flow],
             device=self.stream.device,
             record_cmd=True,
         )
