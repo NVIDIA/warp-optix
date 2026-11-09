@@ -731,6 +731,7 @@ class Renderer:
             ray_types=2,
             payload_words=19,
             graph_flags=wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
+            module_options={"fast_math": True},
             device=self._device,
         )
 
