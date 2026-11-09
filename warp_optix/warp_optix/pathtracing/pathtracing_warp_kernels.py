@@ -2776,7 +2776,9 @@ def _evaluate_material_from_payload(
     return out
 
 
-@wp.kernel(module="unique")
+# The pipeline compiles every program with the raygen's module options. Fast math avoids the
+# precise sin/cos range reduction, which spills to local memory and uses fp64 instructions.
+@wp.kernel(module="unique", module_options={"fast_math": True})
 def primary_raygen(params: PathtraceLaunchParams):
     launch_idx = wp.optix_get_launch_index()
     x = int(launch_idx[0])

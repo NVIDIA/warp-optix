@@ -119,3 +119,21 @@ def test_auto_exposure_adaptation(measured_luminance, min_ev, expected_ev):
         device="cpu",
     )
     np.testing.assert_allclose(exposure_ev.numpy(), [expected_ev], rtol=1.0e-6)
+
+
+@requires_gpu
+@pytest.mark.parametrize(("height", "width"), [(9, 17), (1080, 1920)])
+def test_auto_exposure_meter_matches_reference(height, width):
+    image = np.random.default_rng(3).uniform(0.0, 8.0, (height, width, 4)).astype(np.float32)
+    mapper = Tonemapper(width, height)
+    mapper.configure_auto_exposure(True)
+    mapper.process(wp.array(image, dtype=wp.vec4, device="cuda"))
+
+    ys, xs = np.meshgrid(np.arange(2, height, 4), np.arange(2, width, 4), indexing="ij")
+    rgb = image[ys, xs, :3]
+    luminance = np.clip(rgb @ np.array([0.2126, 0.7152, 0.0722]), 2.0**-12, 2.0**16)
+    nx = (xs + 0.5) / width * 2.0 - 1.0
+    ny = (ys + 0.5) / height * 2.0 - 1.0
+    weight = 1.0 / (1.0 + 4.0 * (nx * nx + ny * ny))
+    expected = [np.sum(np.log2(luminance) * weight), np.sum(weight)]
+    np.testing.assert_allclose(mapper._auto_exposure_stats.numpy(), expected, rtol=1e-4)
