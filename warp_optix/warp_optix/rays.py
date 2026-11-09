@@ -16,10 +16,6 @@ import warp as wp
 
 from warp_optix.enums import PrimitiveType, RayFlags
 
-# OPTIX_PRIMITIVE_TYPE_ROUND_*_ROCAPS (0x2508..0x250B) are round curves without PrimitiveType members.
-_ROCAPS_FIRST = 0x2508
-_ROCAPS_LAST = 0x250B
-
 
 @wp.struct
 class AccelQueryRay:
@@ -83,7 +79,10 @@ def accel_query_ray(
             or primitive == wp.uint32(PrimitiveType.ROUND_CUBIC_BSPLINE)
             or primitive == wp.uint32(PrimitiveType.ROUND_CATMULLROM)
             or primitive == wp.uint32(PrimitiveType.ROUND_CUBIC_BEZIER)
-            or (primitive >= wp.uint32(_ROCAPS_FIRST) and primitive <= wp.uint32(_ROCAPS_LAST))
+            or (
+                primitive >= wp.uint32(PrimitiveType.ROUND_QUADRATIC_BSPLINE_ROCAPS)
+                and primitive <= wp.uint32(PrimitiveType.ROUND_CUBIC_BEZIER_ROCAPS)
+            )
         ):
             query.u = wp.optix_hit_object_get_curve_parameter()
         # Other primitives (e.g. built-in spheres) have no hit parameters; u and v stay 0.
