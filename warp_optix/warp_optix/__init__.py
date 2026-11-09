@@ -28,6 +28,7 @@ from warp_optix.accel import Accel as Accel
 from warp_optix.accel import BuildInput as BuildInput
 from warp_optix.accel import Instance as Instance
 from warp_optix.accel import aabbs as aabbs
+from warp_optix.accel import compact as compact
 from warp_optix.accel import curves as curves
 from warp_optix.accel import instances as instances
 from warp_optix.accel import make_instance as make_instance
@@ -75,6 +76,7 @@ __all__ = [
     "SbtLayout",
     "TraversableGraphFlags",
     "aabbs",
+    "compact",
     "accel_query_ray",
     "accel_query_ray_anyhit",
     "config",

@@ -21,7 +21,7 @@ from warp_optix import native
 from warp_optix.accel import Accel
 from warp_optix.addon import build_options
 from warp_optix.context import CAPTURE_ERROR, native_objects, resolve
-from warp_optix.enums import ExceptionFlags, PrimitiveType, TraversableGraphFlags
+from warp_optix.enums import BuildFlags, ExceptionFlags, PrimitiveType, TraversableGraphFlags
 from warp_optix.program import ProgramKind, as_program, params_struct
 from warp_optix.sbt import SbtBuilder, SbtLayout
 
@@ -46,14 +46,18 @@ class HitGroup:
     """Programs run for one geometry type and ray type.
 
     ``builtin`` selects an OptiX built-in intersection (a :class:`PrimitiveType`)
-    for curves. A hit group without programs still occupies its SBT record, which
-    is what pipelines that only use ``optix_traverse`` hit objects need.
+    for curves. OptiX specializes it on the curve structures' build flags, so
+    ``build_flags`` must match the :class:`BuildFlags` those structures were built
+    with; curves built with different flags need separate hit groups. A hit group
+    without programs still occupies its SBT record, which is what pipelines that
+    only use ``optix_traverse`` hit objects need.
     """
 
     closest_hit: wp.Kernel | None = None
     any_hit: wp.Kernel | None = None
     intersection: wp.Kernel | None = None
     builtin: int | None = None
+    build_flags: int = BuildFlags.PREFER_FAST_TRACE
 
     def __post_init__(self):
         if self.builtin is None:
@@ -201,11 +205,13 @@ class Pipeline:
                 _log.debug("module %s: %s", module_name, log)
             # Built-in intersection modules belong to the device context; they are not destroyed with the pipeline.
             builtin_modules = {
-                group.builtin: context.native.builtinISModuleGet(
+                (group.builtin, group.build_flags): context.native.builtinISModuleGet(
                     module_options,
                     pipeline_options,
                     native.BuiltinISOptions(
-                        builtinISModuleType=native.PrimitiveType(int(group.builtin)), usesMotionBlur=motion_blur
+                        builtinISModuleType=native.PrimitiveType(int(group.builtin)),
+                        usesMotionBlur=motion_blur,
+                        buildFlags=int(group.build_flags),
                     ),
                 )
                 for group in hit_groups
@@ -231,7 +237,7 @@ class Pipeline:
                     **slot("hitgroup", "CH", ch),
                     **slot("hitgroup", "AH", ah),
                     **(
-                        slot("hitgroup", "IS", None, builtin_modules[group.builtin])
+                        slot("hitgroup", "IS", None, builtin_modules[group.builtin, group.build_flags])
                         if group.builtin is not None
                         else slot("hitgroup", "IS", is_)
                     ),

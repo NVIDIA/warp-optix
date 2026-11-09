@@ -273,6 +273,28 @@ def test_authored_normals_are_preserved_in_robust_two_sided_mode(tmp_path):
     assert not strict_scene._instances[0].double_sided
 
 
+@pytest.mark.parametrize("orientation", [UsdGeom.Tokens.rightHanded, UsdGeom.Tokens.leftHanded])
+def test_mesh_arrays_fan_triangulates_polygons_and_skips_holes(orientation):
+    stage = Usd.Stage.CreateInMemory()
+    mesh = UsdGeom.Mesh.Define(stage, "/Mesh")
+    points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (2, 0, 0), (2, 1, 0)]
+    mesh.CreatePointsAttr([Gf.Vec3f(*p) for p in points])
+    # A quad, a hole, a degenerate two-corner face, and a pentagon.
+    mesh.CreateFaceVertexCountsAttr([4, 3, 2, 5])
+    mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3, 1, 4, 5, 0, 1, 1, 4, 5, 2, 3])
+    mesh.CreateHoleIndicesAttr([1])
+    mesh.CreateOrientationAttr(orientation)
+
+    _, normals, _, triangles, _ = _mesh_arrays(mesh, UsdGeom)
+
+    expected = [(0, 1, 2, 0), (0, 2, 3, 0), (9, 10, 11, 3), (9, 11, 12, 3), (9, 12, 13, 3)]
+    if orientation == UsdGeom.Tokens.leftHanded:
+        expected = [(a, c, b, face) for a, b, c, face in expected]
+    np.testing.assert_array_equal(triangles, expected)
+    z = -1.0 if orientation == UsdGeom.Tokens.leftHanded else 1.0
+    np.testing.assert_allclose(normals, [(0, 0, z)] * 4 + [(0, 0, 0)] * 5 + [(0, 0, z)] * 5)
+
+
 def test_left_handed_winding_and_double_sided_are_converted_for_optix(tmp_path):
     path = tmp_path / "left_handed.usda"
     stage = Usd.Stage.CreateNew(str(path))

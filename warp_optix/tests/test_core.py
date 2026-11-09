@@ -30,8 +30,15 @@ def triangle_gas(device, **kwargs):
 def test_invalid_build_inputs_are_rejected():
     vertices = wp.array(QUAD_VERTICES, dtype=wp.vec3, device="cuda")
     for values, dtype in (([0, 1, 4], wp.int32), ([0, 1, -1], wp.int32), ([0, 1, 2], wp.float32), ([0, 1], wp.int32)):
+        indices = wp.array(values, dtype=dtype, device="cuda")
         with pytest.raises((ValueError, TypeError), match="indices"):
-            wo.triangles(vertices, wp.array(values, dtype=dtype, device="cuda"))
+            wo.triangles(vertices, indices)
+        # validate=False skips only the bounds readback; type and triplet checks remain.
+        if dtype == wp.int32 and len(values) == 3:
+            wo.triangles(vertices, indices, validate=False)
+        else:
+            with pytest.raises((ValueError, TypeError), match="indices"):
+                wo.triangles(vertices, indices, validate=False)
     widths = wp.full(4, 0.1, dtype=wp.float32, device="cuda")
     for curve_type, start in (
         (wo.PrimitiveType.ROUND_LINEAR, 3),
@@ -97,7 +104,14 @@ def test_raygen_only_pipeline_over_device_instances():
     device = wp.get_device("cuda")
     vertices = wp.array(QUAD_VERTICES, dtype=wp.vec3, device=device)
     indices = wp.array(QUAD_INDICES, dtype=wp.int32, device=device)
-    gas = wo.Accel([wo.triangles(vertices, indices)], compact=True, device=device)
+    # Batched compaction: a rebuild re-emits the compacted size, and compaction re-registers the new id.
+    flags = wo.BuildFlags.PREFER_FAST_TRACE | wo.BuildFlags.ALLOW_COMPACTION
+    gas, spare = (wo.Accel([wo.triangles(vertices, indices)], flags=flags, device=device) for _ in range(2))
+    gas.rebuild()
+    uncompacted = gas._buffer.size
+    wo.compact([gas, spare])
+    assert gas._buffer.size < uncompacted and wo.get_context(device)._accels[gas.id] is gas
+    assert gas._memory[0] is gas._buffer
 
     # Two worlds side by side; each world's quad sits at its own height.
     nworld = 2
@@ -147,7 +161,7 @@ def test_raygen_only_pipeline_over_device_instances():
     assert not depth.numpy().any()
 
 
-def test_refit_requires_allow_update_and_rejects_compacted():
+def test_refit_and_compaction_rules():
     static = triangle_gas("cuda")
     with pytest.raises(ValueError, match="ALLOW_UPDATE"):
         static.refit()
@@ -155,6 +169,9 @@ def test_refit_requires_allow_update_and_rejects_compacted():
     compacted = triangle_gas("cuda", compact=True)
     with pytest.raises(ValueError, match="compacted"):
         compacted.rebuild()
+    for uncompactable in (static, compacted):
+        with pytest.raises(ValueError, match="ALLOW_COMPACTION"):
+            wo.compact([uncompactable])
     with pytest.raises(ValueError, match="compacted"):
         triangle_gas("cuda", compact=True, flags=wo.BuildFlags.ALLOW_UPDATE)
 

@@ -134,10 +134,12 @@ payload_words, attribute_words, max_trace_depth, max_traversable_depth, graph_fl
 max_registers, device)` compiles all programs into one module and builds the shader binding table:
 
 - `miss` lists one miss program per ray type; `None` is a record without a program.
-- `hit_groups` holds `wo.HitGroup(closest_hit=, any_hit=, intersection=, builtin=)` entries.
+- `hit_groups` holds `wo.HitGroup(closest_hit=, any_hit=, intersection=, builtin=, build_flags=)` entries.
   The hit record for geometry type `g` and ray type `r` is `hit_groups[g * ray_types + r]`;
   trace with `sbt_offset=r` and `sbt_stride=ray_types`, and give instances `sbt_offset=g *
-  ray_types`. `builtin=wo.PrimitiveType.*` selects OptiX's built-in curve intersector; a
+  ray_types`. `builtin=wo.PrimitiveType.*` selects OptiX's built-in curve intersector, which
+  OptiX specializes on build flags: `build_flags` (default `PREFER_FAST_TRACE`, like `wo.Accel`)
+  must match the curve structures' flags, so curves built with other flags need their own group. A
   group with an `intersection` program serves custom primitives. Primitive-type flags are derived
   from the groups.
 - `callables` are direct-callable programs, invoked with `wp.optix_direct_call(index)` in list
@@ -293,14 +295,18 @@ Geometry defaults to `GeometryFlags.DISABLE_ANYHIT`; pass `flags=wo.GeometryFlag
 any-hit program must run. Any build input may be empty (no primitives or records); the structure
 then has nothing to intersect, which suits dynamic geometry that has no elements yet.
 
-`triangles()` and `curves()` read indices back once to validate their bounds.
+`triangles()` and `curves()` read indices back once to validate their bounds; pass
+`validate=False` to skip that synchronization for indices already checked on the host.
 Keep those indices unchanged when reusing a build input; create a new input
 after changing topology. Point-only refits do not repeat this validation.
 
 `wo.Accel(inputs, *, flags=, compact=, motion=, device=, stream=)` builds on a Warp stream and
 exposes `.id` (the `wp.uint64` passed to kernels), `.device`, and `.flags`. Initial instance builds
 read child ids back once to verify that every child is a live structure on the same device.
-`compact=True` also synchronizes to shrink static structures. `accel.refit(stream=)` refits a
+`compact=True` also synchronizes to shrink static structures; `wo.compact(accels, stream=)` compacts
+many structures built with `wo.BuildFlags.ALLOW_COMPACTION`, which keep their scratch buffer until then,
+with a single synchronization. Compaction changes `.id`, so compact children before building instance
+structures over them. `accel.refit(stream=)` refits a
 structure built with `wo.BuildFlags.ALLOW_UPDATE` to its inputs' current contents using the
 retained scratch buffer, so it neither allocates nor synchronizes on success; `accel.rebuild(stream=)`
 rebuilds in place to restore trace quality (structures without `ALLOW_UPDATE` allocate a temporary
