@@ -175,9 +175,6 @@ exclude = [
     "warp_optix/warp_optix/pathtracing/usd_loader.py",
     "warp_optix/warp_optix/pathtracing/viewer.py",
     "warp_optix/warp_optix/pathtracing/volume_composite.py",
-    "warp_optix/warp_optix/pipeline.py",
-    "warp_optix/warp_optix/program.py",
-    "warp_optix/warp_optix/sbt.py",
 ]
 
 [tool.typos.files]

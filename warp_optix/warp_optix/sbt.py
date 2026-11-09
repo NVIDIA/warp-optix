@@ -74,7 +74,7 @@ class SbtLayout:
         for handle, kernels in zip(self.hit_groups, self._hit_kernels):
             for index, (ray, kernel) in enumerate(zip(self.ray_types, kernels)):
                 programs = [
-                    f"{label}={entry.key if isinstance(entry, wp.Kernel) else entry}"
+                    f"{label}={getattr(entry, 'key', entry)}"
                     for label, entry in (
                         ("CH", kernel.closest_hit),
                         ("AH", kernel.any_hit),
