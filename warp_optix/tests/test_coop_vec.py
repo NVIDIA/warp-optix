@@ -47,7 +47,7 @@ def ctx():
         pytest.skip("CUDA device unavailable")
     context = wo.get_context("cuda").native
     with wp.ScopedDevice("cuda"):
-        if not context.getProperty(native.DEVICE_PROPERTY_COOP_VEC):
+        if not native.getCoopVecProperty(context):
             pytest.skip("GPU does not support OptiX cooperative vectors")
     return context
 
@@ -67,11 +67,12 @@ def _identity_matrix(ctx, element_type) -> wp.array:
     row_major = native.COOP_VEC_MATRIX_LAYOUT_ROW_MAJOR
     optimal = native.COOP_VEC_MATRIX_LAYOUT_INFERENCING_OPTIMAL
     with wp.ScopedDevice("cuda"):
-        source_size = ctx.coopVecMatrixComputeSize(N, K, native.COOP_VEC_ELEM_TYPE_FLOAT16, row_major)
-        packed_size = ctx.coopVecMatrixComputeSize(N, K, element_type, optimal)
+        source_size = native.coopVecMatrixComputeSize(ctx, N, K, native.COOP_VEC_ELEM_TYPE_FLOAT16, row_major)
+        packed_size = native.coopVecMatrixComputeSize(ctx, N, K, element_type, optimal)
         source = wp.array(np.eye(N, dtype=np.float16).reshape(-1), device="cuda")
         packed = wp.empty(packed_size, dtype=wp.uint8, device="cuda")
-        ctx.coopVecMatrixConvert(
+        native.coopVecMatrixConvert(
+            ctx,
             wp.get_stream("cuda").cuda_stream,
             [description(native.COOP_VEC_ELEM_TYPE_FLOAT16, row_major, source_size)],
             source.ptr,
@@ -119,8 +120,8 @@ def test_coop_vec_matrix_convert_checks_allocation_bounds(ctx):
 
     row_layout = optix.COOP_VEC_MATRIX_LAYOUT_ROW_MAJOR
     packed_layout = optix.COOP_VEC_MATRIX_LAYOUT_INFERENCING_OPTIMAL
-    row_size = context.coopVecMatrixComputeSize(n, k, optix.COOP_VEC_ELEM_TYPE_FLOAT16, row_layout)
-    packed_size = context.coopVecMatrixComputeSize(n, k, optix.COOP_VEC_ELEM_TYPE_FLOAT16, packed_layout)
+    row_size = native.coopVecMatrixComputeSize(context, n, k, optix.COOP_VEC_ELEM_TYPE_FLOAT16, row_layout)
+    packed_size = native.coopVecMatrixComputeSize(context, n, k, optix.COOP_VEC_ELEM_TYPE_FLOAT16, packed_layout)
     with wp.ScopedDevice(device_name):
         source = wp.zeros(n * k, dtype=wp.float16, device=device_name)
         packed = wp.empty(packed_size, dtype=wp.uint8, device=device_name)
@@ -148,4 +149,4 @@ def test_coop_vec_matrix_convert_checks_allocation_bounds(ctx):
         ]
         for inputs, input_ptr, outputs, output_ptr in cases:
             with pytest.raises(ValueError, match="Networks"):
-                context.coopVecMatrixConvert(0, inputs, input_ptr, outputs, output_ptr)
+                native.coopVecMatrixConvert(context, 0, inputs, input_ptr, outputs, output_ptr)

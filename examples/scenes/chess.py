@@ -828,10 +828,8 @@ def build_chess_scene(api, pieces="wood"):
                 else [(i, 0 if side == 0 else 7) for i, k in enumerate(arrangement) if k == kind]
             )
             for col, row in squares:
-                # Each piece samples a different part of the same timber texture.
-                # Rotate the timber around the piece's up axis before computing
-                # cylindrical UVs, keeping all wooden components in the same cut.
-                # A 2D UV rotation would incorrectly mix radial and axial grain.
+                # Each piece takes its own cut of the timber, rotated about its up axis before the cylindrical
+                # UVs so all its wooden parts share that cut; rotating the UVs would mix radial and axial grain.
                 piece_material = wood_material(2 + side, piece_cuts.random(2).tolist())
                 grain_angle = grain_directions.uniform(-np.pi, np.pi)
                 c, s = np.cos(grain_angle), np.sin(grain_angle)

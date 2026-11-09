@@ -71,16 +71,12 @@ def _background(direction: wp.vec3) -> wp.vec3:
 def save_bmp(path: Path, pixels: np.ndarray) -> None:
     """Write packed RGBA8 pixels with row 0 at the bottom of the image."""
     height, width = pixels.shape
-    bgr = np.stack(((pixels >> 16) & 0xFF, (pixels >> 8) & 0xFF, pixels & 0xFF), axis=-1).astype(np.uint8)
-    row_stride = (width * 3 + 3) & ~3
-    pixel_data_size = row_stride * height
-    padding = b"\x00" * (row_stride - width * 3)
-    with path.open("wb") as output:
-        output.write(struct.pack("<2sIHHI", b"BM", 54 + pixel_data_size, 0, 0, 54))
-        output.write(struct.pack("<IiiHHIIiiII", 40, width, height, 1, 24, 0, pixel_data_size, 0, 0, 0, 0))
-        for row in bgr:
-            output.write(row.tobytes())
-            output.write(padding)
+    rows = np.stack((pixels >> 16, pixels >> 8, pixels), axis=-1).astype(np.uint8).reshape(height, width * 3)
+    rows = np.pad(rows, ((0, 0), (0, -width * 3 % 4)))  # BMP rows are 4-byte aligned
+    header = struct.pack(
+        "<2sIHHIIiiHHIIiiII", b"BM", 54 + rows.size, 0, 0, 54, 40, width, height, 1, 24, 0, rows.size, 0, 0, 0, 0
+    )
+    path.write_bytes(header + rows.tobytes())
 
 
 @wp.struct
@@ -491,8 +487,7 @@ def cornell(args) -> np.ndarray | None:
     )
     pipeline = wo.Pipeline(
         cornell_raygen,
-        miss=[cornell_miss],
-        hit_groups=[wo.HitGroup(closest_hit=cornell_closest_hit)],
+        sbt=wo.SbtLayout(miss=cornell_miss, hit_groups={"triangles": wo.HitGroup(closest_hit=cornell_closest_hit)}),
         payload_words=6,
     )
     seed = wp.uint32(1337)

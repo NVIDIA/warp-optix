@@ -61,7 +61,7 @@ def test_neural_texture_device_inference():
         pytest.skip("CUDA unavailable")
     device = "cuda:0"
     with wp.ScopedDevice(device):
-        if not wo.get_context(device).native.getProperty(native.DEVICE_PROPERTY_COOP_VEC):
+        if not native.getCoopVecProperty(wo.get_context(device).native):
             pytest.skip("cooperative vectors unsupported")
     pipeline = wo.Pipeline(neural_raygen, device=device)
     output = wp.zeros(6, dtype=wp.float32, device=device)

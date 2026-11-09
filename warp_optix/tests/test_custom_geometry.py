@@ -199,17 +199,19 @@ def test_mixed_geometry_selects_hit_records_by_geometry_primitive_and_ray_type()
 
     records = wp.empty(2, dtype=wo.Instance, device=device)
     wp.launch(write_mixed_instances, dim=2, inputs=[triangle_gas.id, sphere_gas.id, records], device=device)
-    ias = wo.Accel([wo.instances(records)], device=device)
+    ias = wo.Accel([wo.instances(records, [triangle_gas, sphere_gas])], device=device)
 
-    triangle = [wo.HitGroup(closest_hit=primary_hit), wo.HitGroup(closest_hit=shadow_hit)]
-    sphere = [
-        wo.HitGroup(closest_hit=primary_hit, intersection=sphere_intersection),
-        wo.HitGroup(closest_hit=shadow_hit, intersection=sphere_intersection),
-    ]
+    triangle = {"primary": wo.HitGroup(closest_hit=primary_hit), "shadow": wo.HitGroup(closest_hit=shadow_hit)}
+    sphere = {
+        "primary": wo.HitGroup(closest_hit=primary_hit, intersection=sphere_intersection),
+        "shadow": wo.HitGroup(closest_hit=shadow_hit, intersection=sphere_intersection),
+    }
     pipeline = wo.Pipeline(
         mixed_raygen,
-        hit_groups=[*triangle, *sphere, *sphere],
-        ray_types=2,
+        sbt=wo.SbtLayout(
+            ray_types=("primary", "shadow"),
+            hit_groups={"triangle": triangle, "sphere 0": sphere, "sphere 1": sphere},
+        ),
         payload_words=1,
         graph_flags=wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
         device=device,
