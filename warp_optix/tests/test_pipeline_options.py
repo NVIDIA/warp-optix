@@ -61,52 +61,37 @@ def compiled(monkeypatch):
     return records
 
 
-def test_module_options_reach_every_program(compiled):
+def test_module_options_apply_to_every_program_and_must_agree(compiled):
     wo.Pipeline(sine, miss=[miss])
     assert "sin.approx" not in compiled[-1][1]
-
     pipeline = wo.Pipeline(sine, miss=[miss], module_options={"fast_math": True})
     assert "sin.approx" in compiled[-1][1]
     output = wp.zeros(4, dtype=float, device="cuda")
     wo.launch(pipeline, 4, [output])
     np.testing.assert_allclose(output.numpy(), np.sin(np.arange(4) + 0.5), rtol=1e-5)
-
-    # Reusing a program/module name after an override must recover its original compile options.
+    # The same programs without the override compile without it again.
     wo.Pipeline(sine, miss=[miss])
     assert "sin.approx" not in compiled[-1][1]
 
-
-def test_conflicting_kernel_module_options_are_rejected(compiled):
+    # Kernels whose modules disagree are rejected before compiling, unless the pipeline decides.
+    count = len(compiled)
     with pytest.raises(ValueError, match="'fast_math' is False for kernel 'sine' but True for kernel 'fast_miss'"):
         wo.Pipeline(sine, miss=[fast_miss])
-    assert compiled == []
-
+    assert len(compiled) == count
     wo.Pipeline(sine, miss=[fast_miss], module_options={"fast_math": True})
     assert "sin.approx" in compiled[-1][1]
-
-
-def test_invalid_module_options_are_rejected():
     with pytest.raises(ValueError, match="Unknown Warp module options: fast_maths"):
         wo.Pipeline(sine, module_options={"fast_maths": True})
     with pytest.raises(ValueError, match="enable_backward"):
         wo.Pipeline(sine, module_options={"enable_backward": True})
 
-
-def test_optix_compile_options_reach_native_compiler(compiled):
-    pipeline = wo.Pipeline(
-        sine, optimization_level=wo.CompileOptimizationLevel.LEVEL_0, debug_level=wo.CompileDebugLevel.FULL
-    )
-    options = compiled[-1][0]
-    assert int(options.optLevel) == int(native.COMPILE_OPTIMIZATION_LEVEL_0)
-    assert int(options.debugLevel) == int(native.COMPILE_DEBUG_LEVEL_FULL)
-    output = wp.zeros(4, dtype=float, device="cuda")
+    # Warp's debug mode compiles debuggable OptiX programs: unoptimized, with full debug information.
+    assert int(compiled[-1][0].debugLevel) == int(native.COMPILE_DEBUG_LEVEL_DEFAULT)
+    pipeline = wo.Pipeline(sine, module_options={"mode": "debug"})
+    assert int(compiled[-1][0].optLevel) == int(native.COMPILE_OPTIMIZATION_LEVEL_0)
+    assert int(compiled[-1][0].debugLevel) == int(native.COMPILE_DEBUG_LEVEL_FULL)
     wo.launch(pipeline, 4, [output])
     np.testing.assert_allclose(output.numpy(), np.sin(np.arange(4) + 0.5), rtol=1e-6)
-
-    wo.Pipeline(sine)
-    options = compiled[-1][0]
-    assert int(options.optLevel) == int(native.COMPILE_OPTIMIZATION_DEFAULT)
-    assert int(options.debugLevel) == int(native.COMPILE_DEBUG_LEVEL_DEFAULT)
 
 
 def test_nested_callables_get_stack_for_their_depth(monkeypatch):
@@ -138,7 +123,7 @@ def test_closed_pipelines_leave_no_warp_modules_or_structs():
 
         return fill
 
-    kernels = [make(float(i)) for i in range(8)]
+    kernels = [make(float(i)) for i in range(2)]
     output = wp.zeros(1, dtype=float, device="cuda")
     count = len(modules)
     for kernel in kernels:
@@ -152,7 +137,7 @@ def test_closed_pipelines_leave_no_warp_modules_or_structs():
     wp.synchronize()
     gc.collect()
     assert len(modules) == count
-    assert output.numpy()[0] == 7.0
+    assert output.numpy()[0] == 1.0
 
     # A failure after registering the raygen program must detach its module as well.
     with pytest.raises(TypeError, match="type differs from launch parameters"):

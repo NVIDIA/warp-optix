@@ -85,24 +85,4 @@ class ExceptionFlags(IntFlag):
     USER = int(_backend.EXCEPTION_FLAG_USER)
 
 
-class CompileOptimizationLevel(IntEnum):
-    """OptiX optimization level of a pipeline's programs."""
-
-    DEFAULT = int(_backend.COMPILE_OPTIMIZATION_DEFAULT)
-    LEVEL_0 = int(_backend.COMPILE_OPTIMIZATION_LEVEL_0)
-    LEVEL_1 = int(_backend.COMPILE_OPTIMIZATION_LEVEL_1)
-    LEVEL_2 = int(_backend.COMPILE_OPTIMIZATION_LEVEL_2)
-    LEVEL_3 = int(_backend.COMPILE_OPTIMIZATION_LEVEL_3)
-
-
-class CompileDebugLevel(IntEnum):
-    """OptiX debug information kept in a pipeline's programs."""
-
-    DEFAULT = int(_backend.COMPILE_DEBUG_LEVEL_DEFAULT)
-    NONE = int(_backend.COMPILE_DEBUG_LEVEL_NONE)
-    MINIMAL = int(_backend.COMPILE_DEBUG_LEVEL_MINIMAL)
-    MODERATE = int(_backend.COMPILE_DEBUG_LEVEL_MODERATE)
-    FULL = int(_backend.COMPILE_DEBUG_LEVEL_FULL)
-
-
 del _backend

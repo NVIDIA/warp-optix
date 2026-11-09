@@ -21,14 +21,7 @@ from warp_optix import native
 from warp_optix.accel import Accel
 from warp_optix.addon import build_options
 from warp_optix.context import CAPTURE_ERROR, native_objects, resolve
-from warp_optix.enums import (
-    BuildFlags,
-    CompileDebugLevel,
-    CompileOptimizationLevel,
-    ExceptionFlags,
-    PrimitiveType,
-    TraversableGraphFlags,
-)
+from warp_optix.enums import BuildFlags, ExceptionFlags, PrimitiveType, TraversableGraphFlags
 from warp_optix.program import ProgramKind, as_program, params_struct
 from warp_optix.sbt import SbtBuilder, SbtLayout
 
@@ -99,7 +92,9 @@ class Pipeline:
 
     All programs compile into one Warp module. ``module_options`` sets its Warp
     module options; any option not given there must be equal in the Warp
-    modules of all the program kernels.
+    modules of all the program kernels. Like Warp's, ``mode="debug"`` (or
+    ``wp.config.mode``) makes the programs debuggable: OptiX then compiles them
+    unoptimized with full debug information.
 
     Release is automatic when the last reference is dropped, or explicit with
     :meth:`close` or ``with``. Device memory is freed in stream order, like
@@ -124,12 +119,10 @@ class Pipeline:
         attribute_words: int = 2,
         max_trace_depth: int = 1,
         max_traversable_depth: int = 2,
-        max_callable_depth: int | None = None,
+        max_callable_depth: int = 1,
         graph_flags: TraversableGraphFlags = TraversableGraphFlags.ALLOW_ANY,
         motion_blur: bool = False,
         max_registers: int = native.COMPILE_DEFAULT_MAX_REGISTER_COUNT,
-        optimization_level: int = CompileOptimizationLevel.DEFAULT,
-        debug_level: int = CompileDebugLevel.DEFAULT,
         module_options: dict | None = None,
         device: wp.DeviceLike = None,
     ):
@@ -137,8 +130,6 @@ class Pipeline:
         layout, miss, hit_groups, ray_types = _sbt_entries(sbt, miss, hit_groups, ray_types)
         if params_type is not None and not all(hasattr(params_type, name) for name in ("vars", "ctype")):
             raise TypeError("params_type must be a Warp struct type")
-        if max_callable_depth is None:
-            max_callable_depth = 1 if callables or continuation_callables else 0
         context, _ = resolve(device)
         device = context.device
 
@@ -178,10 +169,12 @@ class Pipeline:
                 pipelineLaunchParamsVariableName="params",
                 usesPrimitiveTypeFlags=_primitive_flags(hit_groups),
             )
+            # OptiX accepts full debug information only without optimization.
+            debug = (options["mode"] or wp.config.mode) == "debug"
             compile_options = native.ModuleCompileOptions(
                 maxRegisterCount=max_registers,
-                optLevel=native.CompileOptimizationLevel(int(optimization_level)),
-                debugLevel=native.CompileDebugLevel(int(debug_level)),
+                optLevel=native.COMPILE_OPTIMIZATION_LEVEL_0 if debug else native.COMPILE_OPTIMIZATION_DEFAULT,
+                debugLevel=native.COMPILE_DEBUG_LEVEL_FULL if debug else native.COMPILE_DEBUG_LEVEL_DEFAULT,
             )
             optix_module, log = context.native.moduleCreate(compile_options, pipeline_options, ptx)
             owned.append(optix_module)

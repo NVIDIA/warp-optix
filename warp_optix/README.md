@@ -131,7 +131,7 @@ SBT indices, and register indices accept any integer type, so `wo.RayFlags` memb
 
 `wo.Pipeline(raygen, *, miss, hit_groups, ray_types, sbt, callables, continuation_callables, exception, exception_flags,
 payload_words, attribute_words, max_trace_depth, max_traversable_depth, max_callable_depth,
-graph_flags, motion_blur, max_registers, optimization_level, debug_level, module_options, device)`
+graph_flags, motion_blur, max_registers, module_options, device)`
 compiles all programs into one module and builds the shader binding table:
 
 - `miss` lists one miss program per ray type; `None` is a record without a program.
@@ -159,19 +159,17 @@ compiles all programs into one module and builds the shader binding table:
 - `module_options` sets Warp module options (`wp.set_module_options`) for the pipeline's module,
   for example `module_options={"fast_math": True}`. Options not given there come from the Warp
   modules of the programs' kernels, which must agree; a conflict raises `ValueError` naming the
-  option, rather than silently using one kernel's setting.
-- `optimization_level` (`wo.CompileOptimizationLevel`) and `debug_level` (`wo.CompileDebugLevel`)
-  are passed to OptiX's module compile; both default to OptiX's defaults. For source-level debugging
-  in Nsight, use `debug_level=wo.CompileDebugLevel.FULL` with
-  `optimization_level=wo.CompileOptimizationLevel.LEVEL_0`.
+  option, rather than silently using one kernel's setting. As in Warp, `"mode": "debug"` (or
+  `wp.config.mode = "debug"`) makes the programs debuggable: OptiX then compiles them unoptimized
+  with full debug information, for source-level debugging in Nsight.
 - `max_trace_depth` bounds recursive `optix_trace` calls, `max_traversable_depth` the depth of the
-  traversable graph, and `max_callable_depth` how deeply callables call callables (default 1 when
-  the pipeline has callables). They size the pipeline's stack.
+  traversable graph, and `max_callable_depth` how deeply callables call callables (default 1). They
+  size the pipeline's stack.
 
 `wo.launch(pipeline, dim, inputs=None, outputs=None, *, device=None, stream=None, record_cmd=False)`
 mirrors `wp.launch`: `inputs` and `outputs` are concatenated into the raygen arguments, and a raygen
 that calls `wp.tid()` must unpack as many indices as `dim` has entries.
-it packs the launch parameters on the host, copies them to the device on `stream`, and then launches
+It packs the launch parameters on the host, copies them to the device on `stream`, and then launches
 OptiX on the same stream. Neither step synchronizes the host. `wo.Accel` objects in `inputs` are passed as their `id`
 and kept alive for the launch. OptiX does not record its work into CUDA graphs, so `wo.launch`,
 `wo.Accel`, `refit()`/`rebuild()`, and `wo.Pipeline` raise `RuntimeError` during stream capture.

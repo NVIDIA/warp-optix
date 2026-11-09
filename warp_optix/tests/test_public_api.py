@@ -45,8 +45,6 @@ def test_public_surface():
         "AccelQueryRay",
         "BuildFlags",
         "BuildInput",
-        "CompileDebugLevel",
-        "CompileOptimizationLevel",
         "ExceptionFlags",
         "GeometryFlags",
         "HitGroup",
