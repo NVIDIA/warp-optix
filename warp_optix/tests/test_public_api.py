@@ -57,6 +57,7 @@ def test_public_surface():
         "PrimitiveType",
         "ProgramKind",
         "RayFlags",
+        "Record",
         "SbtBuilder",
         "SbtLayout",
         "TraversableGraphFlags",

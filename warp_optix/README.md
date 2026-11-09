@@ -135,7 +135,7 @@ payload_words, attribute_words, max_trace_depth, max_traversable_depth, graph_fl
 max_registers, device)` compiles all programs into one module and builds the shader binding table:
 
 - `miss` lists one miss program per ray type; `None` is a record without a program.
-- `hit_groups` holds `wo.HitGroup(closest_hit=, any_hit=, intersection=, builtin=, build_flags=)` entries.
+- `hit_groups` holds `wo.HitGroup(closest_hit=, any_hit=, intersection=, builtin=, build_flags=, data=)` entries.
   The hit record for geometry type `g` and ray type `r` is `hit_groups[g * ray_types + r]`;
   trace with `sbt_offset=r` and `sbt_stride=ray_types`, and give instances `sbt_offset=g *
   ray_types`. `builtin=wo.PrimitiveType.*` selects OptiX's built-in curve intersector, which
@@ -147,7 +147,8 @@ max_registers, device)` compiles all programs into one module and builds the sha
   order. `continuation_callables` are invoked with `wp.optix_continuation_call(index)`; they
   follow the direct callables in the same SBT section, so `continuation_callables[k]` has index
   `len(callables) + k`. Callables use a no-argument, void interface: they read launch parameters
-  and write referenced Warp arrays.
+  and write referenced Warp arrays. Miss and callable entries may be
+  `wo.Record(kernel, data=)` to carry [record data](#per-record-sbt-data).
 - `exception` enables user exceptions. Raise one with `wp.optix_throw_exception(code, ...)` (up
   to eight optional details) and read it with `wp.optix_get_exception_code()` and
   `wp.optix_get_exception_detail(i)`.
@@ -208,6 +209,45 @@ Compare `examples_warp/example_warp_optix_kernels.py` with
 output; the latter uses a shared schema, stage declarations, named SBT layout,
 and separate buffers on separate streams.
 
+
+### Per-record SBT data
+
+Like most OptiX applications, a hit group, miss, or callable record can carry its own data, so one
+closest-hit program shades many materials. `data` is a `@wp.struct` instance; the program reads it
+with `wp.optix_load_sbt_data(value)`, which fills a struct of the same type:
+
+```python
+@wp.struct
+class Material:
+    color: wp.vec3
+
+
+@wp.kernel(module="unique")
+def shade():
+    material = Material()
+    wp.optix_load_sbt_data(material)
+    payload = Payload()
+    payload.color = material.color
+    wp.optix_store_payload(payload)
+
+
+red, blue, sky = Material(), Material(), Material()
+red.color, blue.color, sky.color = wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.5, 0.7, 1.0)
+pipeline = wo.Pipeline(
+    raygen,
+    miss=[wo.Record(background, data=sky)],  # background also loads a Material
+    hit_groups=[wo.HitGroup(closest_hit=shade, data=red), wo.HitGroup(closest_hit=shade, data=blue)],
+    payload_words=3,
+)
+red.color = wp.vec3(1.0, 0.5, 0.0)
+pipeline.update_sbt_data()  # re-upload every record's data; no rebuild
+```
+
+Records in one section (miss, hit group, callables) may use different struct types; the
+section's stride fits the largest. The device does not check the type, so load the type that
+was stored. Arrays referenced by record data stay alive with the pipeline, and must be on its
+device. `update_sbt_data(stream=None)` is ordered with launches on that stream, like writing a
+`wp.array`, and does not wait on the host.
 
 ### Explicit SBT layouts
 
