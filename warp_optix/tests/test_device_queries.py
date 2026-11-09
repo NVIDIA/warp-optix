@@ -321,7 +321,7 @@ def test_common_device_queries_on_gpu():
     gas = wo.Accel([wo.triangles(vertices, indices)], flags=RANDOM_ACCESS, compact=True, device=device)
     records = wp.empty(1, dtype=wo.Instance, device=device)
     wp.launch(write_rotated_instance, dim=1, inputs=[gas.id, records], device=device)
-    ias = wo.Accel([wo.instances(records)], device=device)
+    ias = wo.Accel([wo.instances(records, [gas])], device=device)
 
     single_level = wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING
     sbt = wo.SbtLayout(miss=query_miss, hit_groups={"triangles": wo.HitGroup(closest_hit=query_closest_hit)})
@@ -351,7 +351,7 @@ def test_common_device_queries_on_gpu():
         [wo.triangles(vertices, indices)], flags=RANDOM_ACCESS | wo.BuildFlags.ALLOW_UPDATE, device=device
     )
     wp.launch(write_rotated_instance, dim=1, inputs=[dynamic.id, records], device=device)
-    ias = wo.Accel([wo.instances(records)], device=device)
+    ias = wo.Accel([wo.instances(records, [dynamic])], device=device)
     vertices.assign(TRIANGLE_VERTICES + np.array([10.0, 0.0, 0.0], dtype=np.float32))
     dynamic_id = dynamic.id
     dynamic.refit()

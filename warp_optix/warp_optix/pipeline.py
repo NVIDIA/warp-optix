@@ -96,7 +96,7 @@ class Pipeline:
         callables, callable_data = _split_records(callables)
         hit_data = [group.data for group in hit_groups]
         record_data = [*miss_data, *hit_data, *callable_data]
-        if any(data is not None and not _is_struct(data) for data in record_data):
+        if any(data is not None and not wp.types.is_struct(data) for data in record_data):
             raise TypeError("SBT record data must be a Warp struct instance")
         context, _ = resolve(device)
         device = context.device
@@ -338,15 +338,22 @@ class Pipeline:
     def update_sbt_data(self, stream: wp.Stream | None = None) -> None:
         """Upload the current field values of every record's ``data`` struct instance.
 
-        The copy runs on ``stream`` like ``wp.copy`` from host memory, ordered with
-        launches on that stream. Arrays referenced by the data stay alive with the pipeline.
+        The copy is ordered with launches on ``stream``, like writing a ``wp.array``, and
+        does not wait on the host. Arrays referenced by the data stay alive with the pipeline.
         """
         self._check_open()
         context, stream = resolve(self.device, stream)
         data = [data for _, data in self._data_offsets]
         context.check_arrays(data)
         _pack_record_data(self._host_records, self._data_offsets)
-        wp.copy(self._records, wp.array(self._host_records, dtype=wp.uint8, device="cpu"), stream=stream)
+        # Copying from pageable memory returns once the bytes are staged, so the host table can be reused.
+        _warp_context.runtime.core.wp_memcpy_h2d(
+            context.device.context,
+            self._records.ptr,
+            self._host_records.ctypes.data,
+            self._host_records.nbytes,
+            stream.cuda_stream,
+        )
         self._data_arrays = tuple(_record_arrays(data))
 
     def __enter__(self) -> Pipeline:
@@ -618,16 +625,12 @@ def _split_records(entries) -> tuple[list, list]:
     return [program for program, _ in pairs], [data for _, data in pairs]
 
 
-def _is_struct(value) -> bool:
-    return hasattr(getattr(value, "_cls", None), "vars") and hasattr(value, "__ctype__")
-
-
 def _record_arrays(values):
     """Snapshot array references separately from the mutable record structs."""
     for value in values:
         if isinstance(value, wp.array):
             yield value
-        elif _is_struct(value):
+        elif wp.types.is_struct(value):
             yield from _record_arrays(getattr(value, name) for name in value._cls.vars)
 
 
@@ -639,9 +642,10 @@ def _record_stride(section: list) -> int:
 
 
 def _pack_record_data(host_records: np.ndarray, data_offsets) -> None:
+    # A Warp struct instance keeps its packed bytes current in _ctype, as launch parameters rely on.
+    base = host_records.ctypes.data
     for offset, data in data_offsets:
-        packed = bytes(data.__ctype__())
-        host_records[offset : offset + len(packed)] = np.frombuffer(packed, dtype=np.uint8)
+        ctypes.memmove(base + offset, ctypes.addressof(data._ctype), ctypes.sizeof(data._ctype))
 
 
 def _module_name(params, raygen, miss, hit_groups, callables, exception) -> str:

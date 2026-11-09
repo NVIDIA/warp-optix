@@ -9,7 +9,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "warp-optix"
-version = "0.2.0"
+version = "0.2.1"
 description = "Warp ray tracing with PyOptiX"
 readme = "docs/pypi.md"
 requires-python = ">=3.12,<3.13"

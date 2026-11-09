@@ -32,7 +32,8 @@ def write(value: wp.uint32, output: wp.array[wp.uint32]):
     output[i] = value
 
 
-@wo.kernel(kind=wo.ProgramKind.RAYGEN, module="unique")
+# Declares no module, so it gets its own: `fill` below shares this file and must still launch.
+@wo.kernel(kind=wo.ProgramKind.RAYGEN)
 def trace(output: wp.array[wp.uint32]):
     i = wp.tid()
     payload = Payload()
@@ -59,6 +60,11 @@ def miss(value: wp.uint32):
     wp.optix_set_payload(0, value)
 
 
+@wp.kernel
+def fill(output: wp.array[wp.uint32]):
+    output[wp.tid()] = wp.uint32(5)
+
+
 def params(value, output):
     result = Params()
     result.value = wp.uint32(value)
@@ -75,6 +81,17 @@ def test_schema_independent_of_raygen_and_recorded_equivalence():
     wo.launch(pipeline, (64,), [params(37, second)], record_cmd=True).launch()
     np.testing.assert_array_equal(first.numpy(), np.full(64, 37))
     np.testing.assert_array_equal(first.numpy(), second.numpy())
+
+
+def test_declared_programs_default_to_their_own_module():
+    output = wp.empty(64, dtype=wp.uint32)
+    wp.launch(fill, output.shape, [output])
+    np.testing.assert_array_equal(output.numpy(), np.full(64, 5))
+    named = wo.kernel(trace.func, kind=wo.ProgramKind.RAYGEN, module="wo_test_named")
+    assert named.module.name == "wo_test_named" and fill.module is not trace.module
+    # Declaring a kernel of the default module would put OptiX builtins in it.
+    with pytest.raises(TypeError, match="default Warp module"):
+        wo.kernel(fill, kind=wo.ProgramKind.RAYGEN)
 
 
 def test_launches_across_streams_use_their_own_parameters():

@@ -188,7 +188,7 @@ def test_gpu_named_ray_and_instance_dispatch():
     offsets = wp.array([sbt.get_sbt_offset("glass"), sbt.get_sbt_offset("metal")], dtype=wp.uint32, device=device)
     records = wp.empty(2, dtype=wo.Instance, device=device)
     wp.launch(write_instances, dim=2, inputs=[gas.id, offsets, records], device=device)
-    ias = wo.Accel([wo.instances(records)], device=device)
+    ias = wo.Accel([wo.instances(records, [gas])], device=device)
     output = wp.empty(6, dtype=wp.uint32, device=device)
     wo.launch(
         pipeline,

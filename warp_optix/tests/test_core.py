@@ -104,13 +104,13 @@ def test_raygen_only_pipeline_over_device_instances():
     device = wp.get_device("cuda")
     vertices = wp.array(QUAD_VERTICES, dtype=wp.vec3, device=device)
     indices = wp.array(QUAD_INDICES, dtype=wp.int32, device=device)
-    # Batched compaction: a rebuild re-emits the compacted size, and compaction re-registers the new id.
+    # Batched compaction: a rebuild re-emits the compacted size, and instances use the compacted id.
     flags = wo.BuildFlags.PREFER_FAST_TRACE | wo.BuildFlags.ALLOW_COMPACTION
     gas, spare = (wo.Accel([wo.triangles(vertices, indices)], flags=flags, device=device) for _ in range(2))
     gas.rebuild()
     uncompacted = gas._buffer.size
     wo.compact([gas, spare])
-    assert gas._buffer.size < uncompacted and wo.get_context(device)._accels[gas.id] is gas
+    assert gas._buffer.size < uncompacted
     assert gas._memory[0] is gas._buffer
 
     # Two worlds side by side; each world's quad sits at its own height.
@@ -119,7 +119,7 @@ def test_raygen_only_pipeline_over_device_instances():
     heights = wp.array([1.0, 2.0], dtype=float, device=device)
     records = wp.empty(nworld, dtype=wo.Instance, device=device)
     wp.launch(write_instances, dim=nworld, inputs=[gas.id, offsets, heights, records], device=device)
-    ias = wo.Accel([wo.instances(records)], flags=wo.BuildFlags.ALLOW_UPDATE, device=device)
+    ias = wo.Accel([wo.instances(records, [gas])], flags=wo.BuildFlags.ALLOW_UPDATE, device=device)
 
     pipeline = wo.Pipeline(depth_raygen, device=device)
     depth = wp.empty((nworld, 64), dtype=float, device=device)
@@ -154,7 +154,7 @@ def test_raygen_only_pipeline_over_device_instances():
         with pytest.raises(RuntimeError, match="CUDA graphs"):
             ias.refit(stream=stream)
         with pytest.raises(RuntimeError, match="CUDA graphs"):
-            wo.Accel([wo.instances(records)], stream=stream)
+            wo.Accel([wo.instances(records, [gas])], stream=stream)
         depth.fill_(0.0)
     wp.capture_launch(capture.graph, stream=stream)
     wp.synchronize_stream(stream)
@@ -326,7 +326,7 @@ def test_make_instance_overloads_place_instances():
     np.testing.assert_array_equal(host["instance_id"], [10, 11, 0])
     np.testing.assert_array_equal(host["visibility_mask"], [0xFF, 0xFF, 0xFF])
     np.testing.assert_array_equal(host["traversable"], [gas.id] * 3)
-    ias = wo.Accel([wo.instances(records)], device=device)
+    ias = wo.Accel([wo.instances(records, [gas])], device=device)
 
     # Each pair: a point covered only if the instance's transform was applied, and one that is not covered.
     points = [
@@ -527,7 +527,7 @@ def test_accel_query_ray_hits_builtin_curves():
     records = wp.empty(len(gases), dtype=wo.Instance, device=device)
     gas_ids = wp.array([gas.id for gas in gases], dtype=wp.uint64, device=device)
     wp.launch(write_curve_instances, dim=len(gases), inputs=[gas_ids, records], device=device)
-    ias = wo.Accel([wo.instances(records)], device=device)
+    ias = wo.Accel([wo.instances(records, gases)], device=device)
     hit_groups = {curve_type.name: wo.HitGroup(builtin=curve_type) for curve_type in curves}
     pipeline = wo.Pipeline(curve_types_raygen, sbt=wo.SbtLayout(hit_groups=hit_groups), device=device)
     results = wp.full((len(gases), 3), -7.0, dtype=float, device=device)
@@ -559,8 +559,8 @@ def test_empty_build_inputs_build_refit_and_miss():
         wo.triangles(vertices, none),
         wo.curves(vertices, wp.full(4, 0.1, dtype=float, device=device), none),
         wo.aabbs(no_points, no_points),
-        wo.instances(wp.empty(0, dtype=wo.Instance, device=device)),
-        wo.instances(records[:0]),  # An empty view still has a non-null backing pointer.
+        wo.instances(wp.empty(0, dtype=wo.Instance, device=device), []),
+        wo.instances(records[:0], []),  # An empty view still has a non-null backing pointer.
     ]
     pipeline = wo.Pipeline(curve_query_raygen, device=device)
     results = wp.full(4, -7.0, dtype=float, device=device)

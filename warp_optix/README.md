@@ -43,6 +43,7 @@ Like Warp's CUDA context, the OptiX device context is implicit: each CUDA device
 on first use and destroyed at interpreter exit. Its settings come from `wo.config`
 (`wo.config.validation = True`, `wo.config.log_level = 4`), which is read when a device's context is
 first created; later changes only affect devices whose context does not exist yet.
+`wo.config.verify_instances` is read on every instance build.
 `wo.get_context(device).native` gives the PyOptiX `DeviceContext` for advanced calls; it is borrowed
 and must not be destroyed.
 
@@ -75,8 +76,8 @@ with `.close()` or `with`:
   the `wo.Accel` alive while work that reads the id may still be submitted. A `wo.Accel` passed in
   launch inputs is referenced by the pipeline's parameter storage until the next launch on that
   stream replaces it.
-- An instance structure keeps the memory of its child structures alive, at every level of nesting,
-  even if a child is closed or dropped.
+- An instance structure keeps the memory of the children listed in `wo.instances(records, children)`
+  alive, at every level of nesting, even if a child is closed or dropped.
 - Failed pipeline construction destroys only the native objects it created.
 
 ## Programs and pipelines
@@ -181,11 +182,15 @@ that raygen does not declare. Launch with `inputs=[my_params_instance]`.
 The schema is the parameter block itself; to use a single `params: MyParams`
 argument in every shader, keep the default inferred schema instead.
 
-An optional `@wo.kernel(kind=wo.ProgramKind.RAYGEN, module="unique")`
+An optional `@wo.kernel(kind=wo.ProgramKind.RAYGEN)`
 decorator replaces `@wp.kernel` when a shader should declare its intended stage.
-It also accepts an existing Warp kernel. Pipeline construction rejects a declared
-stage that disagrees with its slot. Undecorated Warp kernels continue to get their
-stage from their pipeline slot.
+It defaults to `module="unique"`, because a kernel using `wp.optix_*` builtins
+cannot compile as part of an ordinary Warp module and would break `wp.launch` of the
+other kernels in it; an explicit `module=` is honored. It also accepts an existing
+Warp kernel, which keeps the module chosen by its `@wp.kernel`; a kernel in its Python module's
+default Warp module is rejected for the same reason. Pipeline construction
+rejects a declared stage that disagrees with its slot. Undecorated Warp kernels
+continue to get their stage from their pipeline slot.
 
 Compare `examples_warp/example_warp_optix_kernels.py` with
 `examples_warp/example_warp_optix_explicit_params.py`: both compute the same
@@ -270,8 +275,8 @@ pipeline.update_sbt_data()  # re-upload every record's data; no rebuild
 Records in one section (miss, hit group, callables) may use different struct types; the
 section's stride fits the largest. The device does not check the type, so load the type that
 was stored. Arrays referenced by record data stay alive with the pipeline, and must be on its
-device. `update_sbt_data(stream=None)` copies like `wp.copy` from host memory, ordered with
-launches on that stream.
+device. `update_sbt_data(stream=None)` is ordered with launches on that stream, like writing a
+`wp.array`, and does not wait on the host.
 
 `wo.ProgramKind` names the program kinds and their OptiX entry-name prefixes. Flags are typed
 enums usable both on the host and inside kernels (Warp supports `IntEnum`/`IntFlag` in kernels):
@@ -308,7 +313,7 @@ retain their Warp **device** arrays:
 | `wo.triangles(points, indices, flags=)` | `vec3` (or `float32[N, 3]`) points, int32/uint32 index triplets; a list of point arrays gives motion keys |
 | `wo.aabbs(lowers, uppers, flags=, sbt_indices=)` | `vec3` bounds per custom primitive, like `wp.Bvh(lowers, uppers)`; or packed `wo.aabbs(bounds=float32[N, 6])` to avoid a packing copy |
 | `wo.curves(points, widths, indices, curve_type=, flags=)` | control points, per-point radii, first control point of each segment |
-| `wo.instances(records)` | `wp.array(dtype=wo.Instance)` |
+| `wo.instances(records, children)` | `wp.array(dtype=wo.Instance)`, plus the `wo.Accel` objects the records reference |
 
 Geometry defaults to `GeometryFlags.DISABLE_ANYHIT`; pass `flags=wo.GeometryFlags.NONE` when an
 any-hit program must run. Any build input may be empty (no primitives or records); the structure
@@ -320,8 +325,11 @@ Keep those indices unchanged when reusing a build input; create a new input
 after changing topology. Point-only refits do not repeat this validation.
 
 `wo.Accel(inputs, *, flags=, compact=, motion=, device=, stream=)` builds on a Warp stream and
-exposes `.id` (the `wp.uint64` passed to kernels), `.device`, and `.flags`. Initial instance builds
-read child ids back once to verify that every child is a live structure on the same device.
+exposes `.id` (the `wp.uint64` passed to kernels), `.device`, and `.flags`. Instance records are
+written on the GPU, so builds never read them back: `children` names the structures they reference,
+and the instance structure keeps those alive. Like `wp.config.verify_cuda`,
+`wo.config.verify_instances = True` makes instance builds synchronize and check that every record
+references a listed child; otherwise an unlisted or invalid child id is undefined behavior.
 `compact=True` also synchronizes to shrink static structures; `wo.compact(accels, stream=)` compacts
 many structures built with `wo.BuildFlags.ALLOW_COMPACTION`, which keep their scratch buffer until then,
 with a single synchronization. Compaction changes `.id`, so compact children before building instance
@@ -351,7 +359,7 @@ def write_instances(gas: wp.uint64, poses: wp.array[wp.transform], records: wp.a
 
 records = wp.empty(world_count, dtype=wo.Instance)
 wp.launch(write_instances, dim=world_count, inputs=[gas.id, poses, records])
-ias = wo.Accel([wo.instances(records)], flags=wo.BuildFlags.ALLOW_UPDATE)
+ias = wo.Accel([wo.instances(records, [gas])], flags=wo.BuildFlags.ALLOW_UPDATE)
 # Each step: rewrite the records, then refit.
 wp.launch(write_instances, dim=world_count, inputs=[gas.id, poses, records])
 ias.refit()
@@ -721,7 +729,7 @@ when direct registration is unavailable.
 
 - `warp_optix/__init__.py` — public API.
 - `warp_optix/context.py` — implicit per-device contexts (`get_context`), device/stream resolution, and native-object release.
-- `warp_optix/config.py` — global settings (`validation`, `log_level`).
+- `warp_optix/config.py` — global settings (`validation`, `log_level`, `verify_instances`).
 - `warp_optix/accel.py` — build inputs, `Accel`, and `Instance`/`make_instance`.
 - `warp_optix/pipeline.py` — `Pipeline`, `HitGroup`, `Launch`, and `launch`.
 - `warp_optix/program.py` — rewrites Warp kernels into OptiX programs (`ProgramKind`, `kernel`).

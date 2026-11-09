@@ -394,7 +394,7 @@ def main() -> None:
                 records,
             ],
         )
-        scene = wo.Accel([wo.instances(records)])
+        scene = wo.Accel([wo.instances(records, [triangle_accel, shape_accel, curve_accel])])
 
         image = wp.empty((args.height, args.width), dtype=wp.uint32)
         wo.launch(pipeline, dim=image.shape, inputs=[scene, curve_vertices, curve_indices, image])

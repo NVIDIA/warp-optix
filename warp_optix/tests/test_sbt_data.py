@@ -176,9 +176,13 @@ def test_invalid_record_data():
 def test_record_array_snapshots_update_and_close():
     data = textured("cuda")
     original = weakref.ref(data.palette)
-    hit = wo.HitGroup(closest_hit=textured_hit, data=data)
-    pipeline = wo.Pipeline(raygen, sbt=wo.SbtLayout(hit_groups={"textured": hit}), payload_words=3)
-    del hit
+    sky = Color()
+    layout = wo.SbtLayout(
+        miss=wo.Record(sky_miss, data=sky), hit_groups={"textured": wo.HitGroup(closest_hit=textured_hit, data=data)}
+    )
+    assert "sky_miss" in layout.describe()
+    pipeline = wo.Pipeline(raygen, sbt=layout, payload_words=3)
+    del layout, sky
 
     # Mutating the host struct must not release the array still referenced by
     # the uploaded record, including when an attempted update is rejected.
