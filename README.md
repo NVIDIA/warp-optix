@@ -3,7 +3,7 @@
 Warp ray tracing with PyOptiX 9.1.
 Write ray-generation, hit, miss, and callable programs as Warp kernels, or use
 the included path tracer. Applications import `warp_optix`. Installation brings
-in `pyoptix==9.1.0` for the standard OptiX bindings and builds a small extension
+in `pyoptix==9.1.1` for the standard OptiX bindings and builds a small extension
 for cooperative vectors and missing binding fields and fixes.
 
 > [!WARNING]
@@ -14,8 +14,11 @@ for cooperative vectors and missing binding fields and fixes.
 
 ## Installation
 
-Build from the repository root with Python 3.10+, a CUDA Toolkit and a C++17
-compiler. GPU execution requires a compatible NVIDIA driver. OptiX headers are fetched automatically.
+Releases publish wheels for Python 3.12 on Linux x86-64 and Windows x64 to PyPI
+(`pip install warp-optix`); they need only an NVIDIA driver. To build from source
+you need Python 3.12 and a C++17 compiler. No CUDA Toolkit or OptiX SDK is
+required: the build fetches the OptiX headers and takes `cuda.h` from the
+`nvidia-cuda-runtime-cu12` build requirement.
 
 The wheel includes unmodified OptiX SDK 9.1.0 headers under `warp_optix/include`
 for runtime kernel compilation, so a separate OptiX SDK installation is not
@@ -67,12 +70,13 @@ wo.launch(pipeline, dim=(480, 640), inputs=[accel.id, image])
 
 The raygen kernel's arguments are the launch parameters. Like Warp's CUDA context,
 the OptiX context is implicit (one per device, configured through `wo.config`).
-`wo.Accel`, `wo.Pipeline`, and `wo.LaunchParams` release themselves when the last
+`wo.Accel` and `wo.Pipeline` release themselves when the last
 reference is dropped, or explicitly with `close()`/`with`. As with `wp.Mesh` and
 `wp.array`, device memory is freed in stream order; a pipeline's native OptiX objects
 are destroyed once its submitted launches have finished. Instances are written
 with `wo.make_instance()` and refit with `accel.refit()`. Initial instance builds
-validate child ids with a host readback; compaction also synchronizes. Refits and
+validate child ids with a host readback; compaction also synchronizes (once per
+`wo.compact` batch). Refits and
 launches remain asynchronous on the selected Warp stream.
 
 SBT records are built automatically. For named ray types and explicit hit-group
@@ -95,7 +99,7 @@ be imported in either order. The supplement adds methods and fields to those
 types and repairs module-metadata and continuation-callable handling. Keep
 objects on their owning OptiX/CUDA context and obey their lifetimes.
 
-PyOptiX 9.1.0 has no public native-handle API. The extension therefore uses a
+PyOptiX 9.1.1 has no public native-handle API. The extension therefore uses a
 small, version-pinned pybind11 bridge and checks shared type identities and
 sizes before accessing them. Builds reject OptiX headers that differ from the
 PyOptiX dependency pin; imports reject mismatched compiled SDK versions before
@@ -103,7 +107,7 @@ attaching bindings. Both extensions must use a compatible pybind11
 major version and C++ ABI. If the import reports an ABI mismatch, rebuild both
 packages with pybind11 3.x. See [dependency maintenance](docs/pyoptix-dependency.md).
 
-The distribution version is 0.2.0; the binding version is 9.1.0.
+The distribution version is 0.2.0; the PyOptiX version is 9.1.1 (OptiX SDK 9.1.0).
 
 ## Tests and dependency maintenance
 

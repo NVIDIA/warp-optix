@@ -11,7 +11,11 @@
 static_assert(OPTIX_VERSION == 90100, "OptiX SDK version mismatch: the PyOptiX wrapper bridge requires OptiX 9.1.0");
 #include <optix_stubs.h>
 #include <optix_function_table_definition.h>
-#include <cuda_runtime.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 #include <algorithm>
 #include <array>
 #include <climits>
@@ -69,12 +73,33 @@ size_t network_extent(const std::vector<OptixCoopVecMatrixDescription>& layers, 
 
 // Raw device pointers arrive from Python as integers, so verify that they lie in a
 // live CUDA allocation that covers `requiredBytes` before OptiX reads or writes them.
+// The driver is resolved at runtime, like OptiX itself, so that building needs only
+// cuda.h and the wheel links no CUDA library. Warp has already loaded the driver.
+using PointerGetAttributeFn = CUresult(CUDAAPI*)(void*, CUpointer_attribute, CUdeviceptr);
+
+PointerGetAttributeFn pointer_get_attribute() {
+    static const PointerGetAttributeFn function = [] {
+#ifdef _WIN32
+        HMODULE driver = LoadLibraryExA("nvcuda.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        return driver ? reinterpret_cast<PointerGetAttributeFn>(GetProcAddress(driver, "cuPointerGetAttribute"))
+                      : nullptr;
+#else
+        void* driver = dlopen("libcuda.so.1", RTLD_NOW | RTLD_LOCAL);
+        return driver ? reinterpret_cast<PointerGetAttributeFn>(dlsym(driver, "cuPointerGetAttribute")) : nullptr;
+#endif
+    }();
+    if (!function)
+        throw std::runtime_error("Cannot load cuPointerGetAttribute from the NVIDIA driver library");
+    return function;
+}
+
 void require_device_range(uintptr_t ptr, size_t requiredBytes, const char* name) {
     CUdeviceptr rangeStart = 0;
     size_t rangeSize = 0;
     const CUdeviceptr devicePtr = static_cast<CUdeviceptr>(ptr);
-    if (cuPointerGetAttribute(&rangeStart, CU_POINTER_ATTRIBUTE_RANGE_START_ADDR, devicePtr) != CUDA_SUCCESS ||
-        cuPointerGetAttribute(&rangeSize, CU_POINTER_ATTRIBUTE_RANGE_SIZE, devicePtr) != CUDA_SUCCESS)
+    const PointerGetAttributeFn getAttribute = pointer_get_attribute();
+    if (getAttribute(&rangeStart, CU_POINTER_ATTRIBUTE_RANGE_START_ADDR, devicePtr) != CUDA_SUCCESS ||
+        getAttribute(&rangeSize, CU_POINTER_ATTRIBUTE_RANGE_SIZE, devicePtr) != CUDA_SUCCESS)
         throw py::value_error(std::string(name) + " is not a CUDA device allocation");
     const size_t available = static_cast<size_t>(rangeStart + rangeSize - devicePtr);
     if (requiredBytes > available)
@@ -167,7 +192,7 @@ template <typename T> void require_upstream_type(py::handle cls) {
     const auto* registered = py::detail::get_type_info(typeid(T), false);
     const auto* actual = py::detail::get_type_info(reinterpret_cast<PyTypeObject*>(cls.ptr()));
     if (!registered || registered != actual || registered->type_size != sizeof(T)) {
-        throw py::import_error("warp-optix requires ABI-compatible pyoptix 9.1.0 bindings. "
+        throw py::import_error("warp-optix requires ABI-compatible pyoptix 9.1.1 bindings. "
                                "Rebuild pyoptix and warp-optix using the same pybind11 major version and C++ ABI.");
     }
 }
@@ -183,7 +208,7 @@ template <typename T, typename Field> void add_field(py::handle cls, const char*
 }
 
 void sync_module_options(pyoptix::ModuleCompileOptions& options) {
-    // Upstream 9.1.0's sync() returns before forwarding this metadata.
+    // Upstream 9.1.1's sync() returns before forwarding this metadata.
     options.boundValues.clear();
     options.boundValues.reserve(options.pyboundValues.size());
     for (auto& value : options.pyboundValues) {

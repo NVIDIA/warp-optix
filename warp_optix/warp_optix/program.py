@@ -113,13 +113,16 @@ def as_program(kernel: wp.Kernel, kind: ProgramKind, params, module: str) -> wp.
     )
 
     options = dict(kernel.options) | {"entry_point_abi": "external_constant_params", "enable_backward": False}
-    return wp.Kernel(
+    transformer = _ProgramTransformer(names, kind)
+    result = wp.Kernel(
         program,
         key=f"{kind.value}{_identifier(kernel.key)}",
         module=wp.get_module(module),
         options=options,
-        code_transformers=[_ProgramTransformer(names, kind)],
+        code_transformers=[transformer],
     )
+    result._wo_tid_ndim = transformer.tid_ndim
+    return result
 
 
 def _identifier(key: str) -> str:
@@ -149,22 +152,26 @@ class _ProgramTransformer(ast.NodeTransformer):
     def __init__(self, names: list[str], kind: ProgramKind):
         self.names = names
         self.kind = kind
+        self.tid_ndim = 0
 
     def visit_FunctionDef(self, node: ast.FunctionDef):
-        _rewrite_tid(node, self.kind)
+        self.tid_ndim = _rewrite_tid(node, self.kind)
         node.body = [_statement(f"{name} = {PARAMS_ARG}.{name}", node) for name in self.names] + node.body
         return node
 
 
-def _rewrite_tid(fn: ast.FunctionDef, kind: ProgramKind) -> None:
+def _rewrite_tid(fn: ast.FunctionDef, kind: ProgramKind) -> int:
     """Replace ``a, b = wp.tid()`` with reads of the OptiX launch index.
 
     Warp's ``dim=(d0, d1, d2)`` maps to an OptiX launch of ``(d2, d1, d0)`` so
-    that the fastest-varying Warp index is OptiX's ``x``.
+    that the fastest-varying Warp index is OptiX's ``x``. This matches
+    ``wp.tid()`` only when the launch has as many dimensions as indices are unpacked.
     """
+    tid_ndim = 0
 
     class Rewriter(ast.NodeTransformer):
         def visit_Assign(self, node: ast.Assign):
+            nonlocal tid_ndim
             if not _is_tid_call(node.value):
                 return self.generic_visit(node)
             if kind is not ProgramKind.RAYGEN:
@@ -173,16 +180,20 @@ def _rewrite_tid(fn: ast.FunctionDef, kind: ProgramKind) -> None:
                 raise TypeError("wp.tid() must be assigned to a single target")
             target = node.targets[0]
             names = target.elts if isinstance(target, ast.Tuple) else [target]
-            if len(names) > 3 or not all(isinstance(name, ast.Name) for name in names):
+            ids = [name.id for name in names if isinstance(name, ast.Name)]
+            if len(names) > 3 or len(ids) != len(names):
                 raise TypeError("OptiX launches support at most three wp.tid() dimensions")
             if not isinstance(node.value.func, ast.Attribute):
                 raise TypeError("Call wp.tid() through the warp module in OptiX programs")
             # The module that provides tid() in the kernel's scope also provides the OptiX builtins.
             warp_module = ast.unparse(node.value.func.value)
-            ndim = len(names)
+            ndim = len(ids)
+            if tid_ndim and tid_ndim != ndim:
+                raise TypeError("every wp.tid() call in a raygen program must unpack the same number of indices")
+            tid_ndim = ndim
             index = _statement(f"{_INDEX_VAR} = {warp_module}.optix_get_launch_index()", node)
             return [index] + [
-                _statement(f"{name.id} = int({_INDEX_VAR}[{ndim - 1 - i}])", node) for i, name in enumerate(names)
+                _statement(f"{name} = int({_INDEX_VAR}[{ndim - 1 - i}])", node) for i, name in enumerate(ids)
             ]
 
         def visit_Call(self, node: ast.Call):
@@ -191,3 +202,4 @@ def _rewrite_tid(fn: ast.FunctionDef, kind: ProgramKind) -> None:
             return self.generic_visit(node)
 
     Rewriter().visit(fn)
+    return tid_ndim
