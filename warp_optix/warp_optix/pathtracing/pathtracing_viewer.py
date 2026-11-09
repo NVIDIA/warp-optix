@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
@@ -34,7 +35,7 @@ import warp_optix as wo
 from warp_optix import native
 
 from . import pathtracing_warp_kernels as pwk
-from .camera import Camera
+from .camera import Camera, cross3
 from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH
 from .denoising import DenoiserInputs, OptixDenoiser
 from .environment_map import EnvironmentMap
@@ -49,16 +50,24 @@ try:
 except ImportError:
     Image = None
 
-# Initialize warp
-wp.init()
-
 logger = logging.getLogger(__name__)
 
 
-@wp.kernel
-def _reset_accum_buffer(accum: wp.array2d(dtype=wp.vec4)):
-    x, y = wp.tid()
-    accum[y, x] = wp.vec4(0.0, 0.0, 0.0, 0.0)
+@dataclass(frozen=True)
+class _CameraMatrices:
+    """Camera matrices as flat float32 tuples for the launch parameters."""
+
+    key: tuple
+    view: tuple
+    proj: tuple
+    view_inv: tuple
+    proj_inv: tuple
+    view_proj: tuple
+    position: tuple
+    forward: tuple
+    right: tuple
+    up: tuple
+    tan_half_fov: float
 
 
 @wp.kernel
@@ -67,11 +76,13 @@ def _accumulate_sample(
     accum: wp.array2d(dtype=wp.vec4),
     sample_index: int,
 ):
-    x, y = wp.tid()
+    y, x = wp.tid()
     s = sample[y, x]
-    a = accum[y, x]
-    t = 1.0 / float(sample_index + 1)
-    accum[y, x] = a + (s - a) * t
+    if sample_index == 0:
+        accum[y, x] = s
+    else:
+        a = accum[y, x]
+        accum[y, x] = a + (s - a) / float(sample_index + 1)
 
 
 @wp.kernel(enable_backward=False)
@@ -243,6 +254,10 @@ class Renderer:
         self._prev_instance_transforms_valid = False
 
         self._launch_params = None
+        self._param_values: dict = {}
+        self._array_views: dict = {}
+        self._sky_params = None
+        self._sky_params_state = None
         self._instance_transform_count = 0
         self._device_camera_positions = None
         self._device_camera_targets = None
@@ -252,24 +267,6 @@ class Renderer:
         self._device_camera_initialized = None
         self._device_camera_state = None
         self._volume = None
-        self._volume_min = (0.0, 0.0, 0.0)
-        self._volume_max = (0.0, 0.0, 0.0)
-        self._volume_density_scale = 1.0
-        self._volume_step_size = 0.01
-        self._volume_cool_colors = (
-            (0.0, 0.025, 0.18),
-            (0.0, 0.20, 0.95),
-            (0.0, 0.92, 0.82),
-        )
-        self._volume_warm_colors = (
-            (0.30, 0.008, 0.0),
-            (1.0, 0.075, 0.0),
-            (1.0, 0.62, 0.0),
-        )
-        self._volume_emission = 0.0
-        self._volume_anisotropy = 0.0
-        self._volume_transfer_table = None
-        self._volume_density_feature = False
         self._volume_params = None
 
         # CUDA surface objects
@@ -278,12 +275,10 @@ class Renderer:
         self._denoiser_status_reported = False
         self._last_jitter = (0.0, 0.0)
 
-        # Previous-frame camera matrices for motion vectors.
-        self._prev_view = None
-        self._prev_proj = None
-        self._prev_mvp = None
-        self._last_accum_view = None
-        self._last_accum_proj = None
+        self._camera_matrices_cache: _CameraMatrices | None = None
+        # The previous frame's view-projection, for motion vectors, and the camera that accumulated.
+        self._prev_mvp: tuple = ()
+        self._accum_camera_key: tuple = ()
         self._sync_prev_camera_matrices_to_current()
         self._last_output_mode = self.output_mode
 
@@ -480,31 +475,39 @@ class Renderer:
         density_feature=False,
     ):
         """Set the NanoVDB volume composited by the path tracer."""
-        self._volume = volume
-        self._volume_min = tuple(float(v) for v in bounds_min)
-        self._volume_max = tuple(float(v) for v in bounds_max)
-        self._volume_density_scale = float(density_scale)
-        self._volume_step_size = float(step_size)
-        self._volume_cool_colors = tuple(tuple(float(v) for v in color) for color in cool_colors)
-        self._volume_warm_colors = tuple(tuple(float(v) for v in color) for color in warm_colors)
-        self._volume_emission = float(emission)
-        self._volume_anisotropy = float(anisotropy)
-        self._volume_density_feature = bool(density_feature)
         if transfer_table is None:
-            self._volume_transfer_table = None
+            table = None
         elif isinstance(transfer_table, wp.array):
             if transfer_table.ndim != 1 or transfer_table.dtype != wp.vec4 or len(transfer_table) < 2:
                 raise ValueError("transfer_table must be a 1D Warp vec4 array with at least two entries")
             if not transfer_table.device.is_cuda:
                 raise ValueError("transfer_table must be CUDA-resident")
-            self._volume_transfer_table = transfer_table
+            table = transfer_table
         else:
             table = np.asarray(transfer_table, dtype=np.float32)
             if table.ndim != 2 or table.shape[1] != 4 or len(table) < 2:
                 raise ValueError("transfer_table must have shape (N, 4) with N >= 2")
             if not np.all(np.isfinite(table)) or np.any(table < 0.0):
                 raise ValueError("transfer_table entries must be finite and nonnegative")
-            self._volume_transfer_table = wp.array(table, dtype=wp.vec4, device="cuda")
+            table = wp.array(table, dtype=wp.vec4, device="cuda")
+        # VolumeParams holds only the volume's id, so keep the volume itself alive.
+        self._volume = volume
+        self._volume_params = None
+        if volume is not None:
+            p = VolumeParams()
+            p.volume = wp.uint64(volume.id)
+            p.bounds_min = wp.vec3(*bounds_min)
+            p.bounds_max = wp.vec3(*bounds_max)
+            p.density_scale = float(density_scale)
+            p.step_size = float(step_size)
+            p.cool_dark, p.cool_mid, p.cool_light = (wp.vec3(*color) for color in cool_colors)
+            p.warm_dark, p.warm_mid, p.warm_light = (wp.vec3(*color) for color in warm_colors)
+            p.emission = float(emission)
+            p.anisotropy = float(anisotropy)
+            p.transfer_table = table
+            p.transfer_count = wp.uint32(0 if table is None else len(table))
+            p.density_feature = wp.uint32(bool(density_feature))
+            self._volume_params = p
         self.sample_index = 0
         self.frame_index = 0
         self._denoiser_reset_history = True
@@ -576,7 +579,7 @@ class Renderer:
 
             # Create output buffers
             self._create_buffers()
-            self._launch_params = pwk.PathtraceLaunchParams()
+            self._reset_launch_params()
             self._init_denoiser()
 
             self._create_pipeline()
@@ -605,13 +608,32 @@ class Renderer:
         Mirrors reference first-frame behavior where prevMVP is set to currentMVP to avoid
         spurious large motion vectors after resets/resizes.
         """
-        view = self.camera.get_view_matrix().copy()
-        proj = self.camera.get_projection_matrix().copy()
-        self._prev_view = view
-        self._prev_proj = proj
-        self._prev_mvp = (view @ proj).astype(np.float32)
-        self._last_accum_view = view.copy()
-        self._last_accum_proj = proj.copy()
+        camera = self._camera_matrices()
+        self._prev_mvp = camera.view_proj
+        self._accum_camera_key = camera.key
+
+    def _camera_matrices(self) -> _CameraMatrices:
+        """The camera's matrices, recomputed only when the camera changes."""
+        c = self.camera
+        key = (tuple(c.position), tuple(c.target), tuple(c.up), c.fov, c.aspect_ratio, c.near, c.far)
+        cached = self._camera_matrices_cache
+        if cached is None or cached.key != key:
+            view, proj = c.get_view_matrix(), c.get_projection_matrix()
+
+            def flat(m):
+                return tuple(np.asarray(m, dtype=np.float32).reshape(-1).tolist())
+
+            cached = self._camera_matrices_cache = _CameraMatrices(
+                key,
+                flat(view),
+                flat(proj),
+                flat(np.linalg.inv(view)),
+                flat(np.linalg.inv(proj)),
+                flat(view @ proj),
+                *(flat(v) for v in self._compute_camera_basis()),
+                float(np.tan(np.deg2rad(c.fov * 0.5))),
+            )
+        return cached
 
     def _create_buffers(self):
         """Create output buffers."""
@@ -737,14 +759,14 @@ class Renderer:
         else:
             forward /= forward_norm
 
-        right = np.cross(forward, world_up)
+        right = cross3(forward, world_up)
         right_norm = np.linalg.norm(right)
         if right_norm < 1.0e-8:
             right = np.array([1.0, 0.0, 0.0], dtype=np.float32)
         else:
             right /= right_norm
 
-        up = np.cross(right, forward)
+        up = cross3(right, forward)
         up_norm = np.linalg.norm(up)
         if up_norm < 1.0e-8:
             up = np.array([0.0, 1.0, 0.0], dtype=np.float32)
@@ -818,119 +840,86 @@ class Renderer:
         frame_index_override: int | None = None,
         *,
         update_instance_transforms: bool = True,
-        view: np.ndarray | None = None,
-        proj: np.ndarray | None = None,
-        view_inv: np.ndarray | None = None,
-        proj_inv: np.ndarray | None = None,
+        camera: _CameraMatrices | None = None,
     ):
         """Update launch parameters for the current frame."""
         if update_instance_transforms:
             self._update_instance_transform_buffers()
-
-        if view is None:
-            view = self.camera.get_view_matrix()
-        if proj is None:
-            proj = self.camera.get_projection_matrix()
-        if view_inv is None:
-            view_inv = np.linalg.inv(view)
-        if proj_inv is None:
-            proj_inv = np.linalg.inv(proj)
+        if camera is None:
+            camera = self._camera_matrices()
 
         if self._launch_params is None:
-            self._launch_params = pwk.PathtraceLaunchParams()
+            self._reset_launch_params()
 
         p = self._launch_params
-        p.tlas = wp.uint64(self._scene.tlas_handle)
-        p.width = wp.uint32(self._render_width)
-        p.height = wp.uint32(self._render_height)
-        frame_index_value = self.sample_index if frame_index_override is None else int(frame_index_override)
-        p.frame_index = wp.uint32(frame_index_value)
-        p.max_bounces = wp.uint32(self.max_bounces)
-        p.direct_light_samples = wp.uint32(self.direct_light_samples)
-        p.russian_roulette_start_bounce = wp.uint32(self.russian_roulette_start_bounce)
-        p.analytic_light_intensity = float(self.analytic_light_intensity)
-        p.emissive_material_intensity = float(self.emissive_material_intensity)
-        p.output_mode = int(self.OUTPUT_FINAL)
-        p.device_camera = self._device_camera_state
+        frame_index = self.sample_index if frame_index_override is None else int(frame_index_override)
         if self.use_halton_jitter and self._optix_denoiser is None:
-            jitter_x = self._halton(frame_index_value, 2) - 0.5
-            jitter_y = self._halton(frame_index_value, 3) - 0.5
-            self._last_jitter = (float(jitter_x), float(jitter_y))
+            self._last_jitter = (self._halton(frame_index, 2) - 0.5, self._halton(frame_index, 3) - 0.5)
         else:
             self._last_jitter = (0.0, 0.0)
-
-        pos, forward, right, up = self._compute_camera_basis()
-        p.cam_pos = wp.vec3(float(pos[0]), float(pos[1]), float(pos[2]))
-        p.cam_forward = wp.vec3(float(forward[0]), float(forward[1]), float(forward[2]))
-        p.cam_right = wp.vec3(float(right[0]), float(right[1]), float(right[2]))
-        p.cam_up = wp.vec3(float(up[0]), float(up[1]), float(up[2]))
-        p.cam_tan_half_fov = float(np.tan(np.deg2rad(self.camera.fov * 0.5)))
-        p.cam_aspect = float(self._render_width) / float(max(1, self._render_height))
-        p.jitter = wp.vec2(float(self._last_jitter[0]), float(self._last_jitter[1]))
-        p.view = tuple(np.asarray(view, dtype=np.float32).reshape(-1))
-        p.proj = tuple(np.asarray(proj, dtype=np.float32).reshape(-1))
-        p.view_inv = tuple(np.asarray(view_inv, dtype=np.float32).reshape(-1))
-        p.proj_inv = tuple(np.asarray(proj_inv, dtype=np.float32).reshape(-1))
-        p.prev_mvp = tuple(np.asarray(self._prev_mvp, dtype=np.float32).reshape(-1))
-        p.env_intensity = wp.vec3(
-            float(self.env_intensity[0]),
-            float(self.env_intensity[1]),
-            float(self.env_intensity[2]),
+        env_map = self._env_map
+        flags = (
+            (1 if env_map is None else 0)
+            | (2 if self.use_psr else 0)
+            | (4 if self.use_path_regularization else 0)
+            | (8 if self.backface_culling else 0)
         )
-        ambient = getattr(self._scene, "usd_ambient_light", (0.0, 0.0, 0.0))
-        p.ambient_light = wp.vec3(float(ambient[0]), float(ambient[1]), float(ambient[2]))
-        p.env_rotation = float(self.env_rotation)
-        flags = 0
-        if self._env_map is None:
-            flags |= 1
-        if self.use_psr:
-            flags |= 2
-        if self.use_path_regularization:
-            flags |= 4
-        if self.backface_culling:
-            flags |= 8
-        p.flags = wp.uint32(flags)
-        p.override_roughness = float(self.override_roughness)
-        p.override_metallic = float(self.override_metallic)
-        p.bitangent_flip = float(self.bitangent_flip)
-        p.use_procedural_sky = wp.uint32(1 if self._env_map is None else 0)
-        p.env_map = None if self._env_map is None else self._env_map._env_map_buffer
-        p.env_map_length = wp.uint32(0 if self._env_map is None else self._env_map.width * self._env_map.height * 4)
-        p.env_map_width = wp.uint32(0 if self._env_map is None else self._env_map.width)
-        p.env_map_height = wp.uint32(0 if self._env_map is None else self._env_map.height)
-        p.env_accel = (
-            None
-            if self._env_map is None or self._env_map._env_accel_buffer is None
-            else wp.array(
-                ptr=self._env_map._env_accel_buffer.ptr,
-                shape=(self._env_map.accel_count,),
-                dtype=pwk.EnvAccel,
-            )
-        )
-        p.env_accel_count = wp.uint32(0 if self._env_map is None else self._env_map.accel_count)
+        values = {
+            "tlas": self._scene.tlas_handle,
+            "width": self._render_width,
+            "height": self._render_height,
+            "frame_index": frame_index,
+            "max_bounces": self.max_bounces,
+            "direct_light_samples": self.direct_light_samples,
+            "russian_roulette_start_bounce": self.russian_roulette_start_bounce,
+            "analytic_light_intensity": float(self.analytic_light_intensity),
+            "emissive_material_intensity": float(self.emissive_material_intensity),
+            "output_mode": int(self.OUTPUT_FINAL),
+            "cam_pos": camera.position,
+            "cam_forward": camera.forward,
+            "cam_right": camera.right,
+            "cam_up": camera.up,
+            "cam_tan_half_fov": camera.tan_half_fov,
+            "cam_aspect": self._render_width / max(1, self._render_height),
+            "jitter": self._last_jitter,
+            "view": camera.view,
+            "proj": camera.proj,
+            "view_inv": camera.view_inv,
+            "proj_inv": camera.proj_inv,
+            "prev_mvp": self._prev_mvp,
+            "env_intensity": tuple(float(v) for v in self.env_intensity),
+            "ambient_light": tuple(float(v) for v in getattr(self._scene, "usd_ambient_light", (0.0, 0.0, 0.0))),
+            "env_rotation": float(self.env_rotation),
+            "flags": flags,
+            "override_roughness": float(self.override_roughness),
+            "override_metallic": float(self.override_metallic),
+            "bitangent_flip": float(self.bitangent_flip),
+            "use_procedural_sky": 1 if env_map is None else 0,
+            "env_map_length": 0 if env_map is None else env_map.width * env_map.height * 4,
+            "env_map_width": 0 if env_map is None else env_map.width,
+            "env_map_height": 0 if env_map is None else env_map.height,
+            "env_accel_count": 0 if env_map is None else env_map.accel_count,
+            "sky_lut_width": self._sky_lut_buffer.shape[1],
+            "sky_lut_height": self._sky_lut_buffer.shape[0],
+            "sphere_light_count": self._scene.light_count,
+            "render_prim_count": self._scene.geometry_count,
+            "instance_count": self._scene.instance_count,
+            "material_count": self._scene.materials.count,
+            "texture_count": self._scene.texture_count,
+        }
+        # Most fields keep their value across frames, and assigning a struct field converts it.
+        last = self._param_values
+        for name, value in values.items():
+            if last.get(name) != value:
+                setattr(p, name, value)
+                last[name] = value
 
-        sky = pwk.PhysicalSkyParams()
-        sky.rgb_unit_conversion = wp.vec3(*self.sky_rgb_unit_conversion)
-        sky.multiplier = float(self.sky_multiplier)
-        sky.haze = float(self.sky_haze)
-        sky.redblueshift = float(self.sky_redblueshift)
-        sky.saturation = float(self.sky_saturation)
-        sky.horizon_height = float(self.sky_horizon_height)
-        sky.ground_color = wp.vec3(*self.sky_ground_color)
-        sky.horizon_blur = float(self.sky_horizon_blur)
-        sky.night_color = wp.vec3(*self.sky_night_color)
-        sky.sun_disk_intensity = float(self.sky_sun_disk_intensity)
         sd = self.sky_sun_direction
         sd_len = (sd[0] ** 2 + sd[1] ** 2 + sd[2] ** 2) ** 0.5
         if sd_len > 1.0e-8:
             sd = (sd[0] / sd_len, sd[1] / sd_len, sd[2] / sd_len)
-        sky.sun_direction = wp.vec3(*sd)
-        sky.sun_disk_scale = float(self.sky_sun_disk_scale)
-        sky.sun_glow_intensity = float(self.sky_sun_glow_intensity)
-        sky.y_is_up = int(self.sky_y_is_up)
-        sky.grayscale = float(self.sky_grayscale)
-        p.sky = sky
-        sky_state = (
+        # The lookup table depends only on these; the sun disk, glow, and grayscale apply at shading.
+        sky_lut_state = (
             tuple(self.sky_rgb_unit_conversion),
             float(self.sky_multiplier),
             float(self.sky_haze),
@@ -943,128 +932,122 @@ class Renderer:
             tuple(sd),
             int(self.sky_y_is_up),
         )
-        if self._env_map is None and sky_state != self._sky_lut_state:
+        sky_state = (
+            *sky_lut_state,
+            float(self.sky_sun_disk_intensity),
+            float(self.sky_sun_disk_scale),
+            float(self.sky_sun_glow_intensity),
+            float(self.sky_grayscale),
+        )
+        if sky_state != self._sky_params_state:
+            sky = pwk.PhysicalSkyParams()
+            sky.rgb_unit_conversion = wp.vec3(*self.sky_rgb_unit_conversion)
+            sky.multiplier = float(self.sky_multiplier)
+            sky.haze = float(self.sky_haze)
+            sky.redblueshift = float(self.sky_redblueshift)
+            sky.saturation = float(self.sky_saturation)
+            sky.horizon_height = float(self.sky_horizon_height)
+            sky.ground_color = wp.vec3(*self.sky_ground_color)
+            sky.horizon_blur = float(self.sky_horizon_blur)
+            sky.night_color = wp.vec3(*self.sky_night_color)
+            sky.sun_disk_intensity = float(self.sky_sun_disk_intensity)
+            sky.sun_direction = wp.vec3(*sd)
+            sky.sun_disk_scale = float(self.sky_sun_disk_scale)
+            sky.sun_glow_intensity = float(self.sky_sun_glow_intensity)
+            sky.y_is_up = int(self.sky_y_is_up)
+            sky.grayscale = float(self.sky_grayscale)
+            p.sky = self._sky_params = sky
+            self._sky_params_state = sky_state
+        if env_map is None and sky_lut_state != self._sky_lut_state:
             wp.launch(
                 generate_physical_sky_lut,
-                dim=(self._sky_lut_buffer.shape[1], self._sky_lut_buffer.shape[0]),
-                inputs=[sky],
+                dim=self._sky_lut_buffer.shape,
+                inputs=[self._sky_params],
                 outputs=[self._sky_lut_buffer],
                 device="cuda",
                 stream=self._render_stream,
             )
-            self._sky_lut_state = sky_state
-        p.sky_lut = self._sky_lut_buffer
-        p.sky_lut_width = wp.uint32(self._sky_lut_buffer.shape[1])
-        p.sky_lut_height = wp.uint32(self._sky_lut_buffer.shape[0])
+            self._sky_lut_state = sky_lut_state
 
-        p.sphere_lights = (
-            None
-            if self._scene._sphere_light_data is None
-            else wp.array(
-                ptr=self._scene._sphere_light_data.ptr,
-                shape=(self._scene.light_count,),
-                dtype=pwk.SphereLight,
-            )
-        )
-        p.sphere_light_count = wp.uint32(self._scene.light_count)
-        p.render_primitives = (
-            None
-            if self._scene._render_primitives is None or self._scene.geometry_count == 0
-            else wp.array(
-                ptr=self._scene._render_primitives.ptr,
-                shape=(self._scene.geometry_count,),
-                dtype=pwk.RenderPrimitive,
-            )
-        )
-        p.render_prim_count = wp.uint32(self._scene.geometry_count)
-        p.instance_render_prim_ids = self._scene._instance_render_prim_ids
-        p.instance_geometry_types = self._scene._instance_geometry_types
-        p.instance_material_ids = self._scene._instance_material_ids
-        p.instance_count = wp.uint32(self._scene.instance_count)
-        p.instance_transforms = (
-            None
-            if self._instance_transforms_buffer is None
-            else wp.array(
-                ptr=self._instance_transforms_buffer.ptr,
-                shape=(self._scene.instance_count,),
-                dtype=pwk.TransformMatrix3x4,
-            )
-        )
-        p.prev_instance_transforms = (
-            None
-            if self._prev_instance_transforms_buffer is None
-            else wp.array(
-                ptr=self._prev_instance_transforms_buffer.ptr,
-                shape=(self._scene.instance_count,),
-                dtype=pwk.TransformMatrix3x4,
-            )
-        )
-        p.compact_materials = (
-            None
-            if self._scene._compact_materials is None or self._scene.materials.count == 0
-            else wp.array(
-                ptr=self._scene._compact_materials.ptr,
-                shape=(self._scene.materials.count,),
-                dtype=pwk.CompactMaterial,
-            )
-        )
-        p.packed_indices = self._scene._packed_indices
-        p.packed_positions = self._scene._packed_positions
-        p.packed_radii = self._scene._packed_radii
-        p.packed_normals = self._scene._packed_normals
-        p.packed_tangents = self._scene._packed_tangents
-        p.packed_texcoords0 = self._scene._packed_texcoords0
-        p.packed_texcoords1 = self._scene._packed_texcoords1
-        p.packed_prev_positions = self._scene._packed_prev_positions
-        p.packed_material_ids = self._scene._packed_material_ids
-        p.material_count = wp.uint32(self._scene.materials.count)
-        p.textures = self._scene._texture_data
-        p.texture_count = wp.uint32(self._scene.texture_count)
+        scene = self._scene
+        arrays = {
+            "device_camera": self._device_camera_state,
+            "env_map": None if env_map is None else env_map._env_map_buffer,
+            "env_accel": self._array_view(
+                "env_accel",
+                None if env_map is None else env_map._env_accel_buffer,
+                0 if env_map is None else env_map.accel_count,
+                pwk.EnvAccel,
+            ),
+            "sky_lut": self._sky_lut_buffer,
+            "sphere_lights": self._array_view(
+                "sphere_lights", scene._sphere_light_data, scene.light_count, pwk.SphereLight
+            ),
+            "render_primitives": self._array_view(
+                "render_primitives", scene._render_primitives, scene.geometry_count, pwk.RenderPrimitive
+            ),
+            "instance_render_prim_ids": scene._instance_render_prim_ids,
+            "instance_geometry_types": scene._instance_geometry_types,
+            "instance_material_ids": scene._instance_material_ids,
+            "instance_transforms": self._array_view(
+                "instance_transforms", self._instance_transforms_buffer, scene.instance_count, pwk.TransformMatrix3x4
+            ),
+            "prev_instance_transforms": self._array_view(
+                "prev_instance_transforms",
+                self._prev_instance_transforms_buffer,
+                scene.instance_count,
+                pwk.TransformMatrix3x4,
+            ),
+            "compact_materials": self._array_view(
+                "compact_materials", scene._compact_materials, scene.materials.count, pwk.CompactMaterial
+            ),
+            "packed_indices": scene._packed_indices,
+            "packed_positions": scene._packed_positions,
+            "packed_radii": scene._packed_radii,
+            "packed_normals": scene._packed_normals,
+            "packed_tangents": scene._packed_tangents,
+            "packed_texcoords0": scene._packed_texcoords0,
+            "packed_texcoords1": scene._packed_texcoords1,
+            "packed_prev_positions": scene._packed_prev_positions,
+            "packed_material_ids": scene._packed_material_ids,
+            "textures": scene._texture_data,
+            "color_output": self._color_buffer,
+            "normal_roughness_output": self._normal_roughness_buffer,
+            "motion_output": self._motion_buffer,
+            "depth_output": self._depth_buffer,
+            "diffuse_output": self._diffuse_buffer,
+            "specular_output": self._specular_buffer,
+            "spec_hit_dist_output": self._spec_hit_dist_buffer,
+        }
+        # Assigning an array field re-validates it, and the arrays change only with the scene or size.
+        for name, value in arrays.items():
+            if getattr(p, name) is not value:
+                setattr(p, name, value)
 
-        p.color_output = self._color_buffer
-        p.normal_roughness_output = self._normal_roughness_buffer
-        p.motion_output = self._motion_buffer
-        p.depth_output = self._depth_buffer
-        p.diffuse_output = self._diffuse_buffer
-        p.specular_output = self._specular_buffer
-        p.spec_hit_dist_output = self._spec_hit_dist_buffer
+    def _reset_launch_params(self) -> None:
+        """Start a new launch-parameter struct; every field is assigned on the next update."""
+        self._launch_params = pwk.PathtraceLaunchParams()
+        self._param_values = {}
+        self._sky_params_state = None
 
-    def _update_temporal_state(
-        self,
-        current_view: np.ndarray,
-        current_proj: np.ndarray,
-        use_external_accum: bool,
-    ) -> bool:
+    def _array_view(self, name: str, buffer, count: int, dtype):
+        """A typed view of a scene byte buffer for field ``name``, reused while the buffer and count are unchanged."""
+        if buffer is None or count == 0:
+            return None
+        cached = self._array_views.get(name)
+        if cached is None or cached.ptr != buffer.ptr or cached.shape[0] != count:
+            cached = self._array_views[name] = wp.array(ptr=buffer.ptr, shape=(count,), dtype=dtype)
+        return cached
+
+    def _update_temporal_state(self, camera: _CameraMatrices, use_external_accum: bool) -> bool:
         """Update accumulation state and return whether temporal history resets."""
         if self._optix_denoiser is not None:
             return False
 
-        reset_temporal = (
-            self.output_mode != self._last_output_mode
-            or (not np.allclose(current_view, self._last_accum_view))
-            or (not np.allclose(current_proj, self._last_accum_proj))
-        )
+        reset_temporal = self.output_mode != self._last_output_mode or camera.key != self._accum_camera_key
 
-        if use_external_accum:
-            if reset_temporal:
-                wp.launch(
-                    _reset_accum_buffer,
-                    dim=(self._render_width, self._render_height),
-                    inputs=[self._accum_buffer],
-                    device="cuda",
-                    stream=self._render_stream,
-                )
-                self.frame_index = 0
-            return bool(reset_temporal)
-
-        # No persistent external accumulation for this mode.
-        wp.launch(
-            _reset_accum_buffer,
-            dim=(self._render_width, self._render_height),
-            inputs=[self._accum_buffer],
-            device="cuda",
-            stream=self._render_stream,
-        )
+        if use_external_accum and reset_temporal:
+            self.frame_index = 0
         return bool(reset_temporal)
 
     def _launch_samples(
@@ -1072,65 +1055,42 @@ class Renderer:
         samples_this_frame: int,
         use_external_accum: bool,
         *,
-        view: np.ndarray,
-        proj: np.ndarray,
-        view_inv: np.ndarray,
-        proj_inv: np.ndarray,
+        camera: _CameraMatrices,
     ):
-        """Launch OptiX path tracing and optional external accumulation kernels."""
+        """Launch the frame's samples and return the buffer holding the frame."""
+        accumulate = use_external_accum or samples_this_frame > 1
         for s in range(samples_this_frame):
             launch_frame_index = self.sample_index + s
             self._update_launch_params(
                 frame_index_override=launch_frame_index,
                 update_instance_transforms=False,
-                view=view,
-                proj=proj,
-                view_inv=view_inv,
-                proj_inv=proj_inv,
+                camera=camera,
             )
 
             self._launch_optix()
 
-            if self._volume is not None:
-                p = VolumeParams()
-                p.volume = wp.uint64(self._volume.id)
-                p.bounds_min = wp.vec3(*self._volume_min)
-                p.bounds_max = wp.vec3(*self._volume_max)
-                p.density_scale = self._volume_density_scale
-                p.step_size = self._volume_step_size
-                p.cool_dark = wp.vec3(*self._volume_cool_colors[0])
-                p.cool_mid = wp.vec3(*self._volume_cool_colors[1])
-                p.cool_light = wp.vec3(*self._volume_cool_colors[2])
-                p.warm_dark = wp.vec3(*self._volume_warm_colors[0])
-                p.warm_mid = wp.vec3(*self._volume_warm_colors[1])
-                p.warm_light = wp.vec3(*self._volume_warm_colors[2])
-                p.emission = self._volume_emission
-                p.anisotropy = self._volume_anisotropy
-                p.transfer_table = self._volume_transfer_table
-                p.transfer_count = wp.uint32(
-                    0 if self._volume_transfer_table is None else len(self._volume_transfer_table)
-                )
-                p.density_feature = wp.uint32(self._volume_density_feature)
-                self._volume_params = p
+            if self._volume_params is not None:
                 wp.launch(
                     composite_volume,
-                    dim=(self._render_width, self._render_height),
+                    dim=(self._render_height, self._render_width),
                     inputs=[self._launch_params, self._volume_params],
                     device="cuda",
                     stream=self._render_stream,
                 )
 
-            accum_sample_index = int(self.frame_index if use_external_accum else s)
-            wp.launch(
-                _accumulate_sample,
-                dim=(self._render_width, self._render_height),
-                inputs=[self._color_buffer, self._accum_buffer, accum_sample_index],
-                device="cuda",
-                stream=self._render_stream,
-            )
+            if accumulate:
+                accum_sample_index = int(self.frame_index if use_external_accum else s)
+                wp.launch(
+                    _accumulate_sample,
+                    dim=(self._render_height, self._render_width),
+                    inputs=[self._color_buffer, self._accum_buffer, accum_sample_index],
+                    device="cuda",
+                    stream=self._render_stream,
+                )
 
             if use_external_accum:
                 self.frame_index += 1
+        return self._accum_buffer if accumulate else self._color_buffer
 
     def _launch_optix(self):
         if self.enable_cuda_graphs and self._cuda_graph_error is None:
@@ -1194,45 +1154,31 @@ class Renderer:
             self._denoiser_status_reported = True
         self._update_device_camera()
 
-        current_view = self.camera.get_view_matrix().copy()
-        current_proj = self.camera.get_projection_matrix().copy()
-        current_view_inv = np.linalg.inv(current_view)
-        current_proj_inv = np.linalg.inv(current_proj)
+        camera = self._camera_matrices()
         use_external_accum = (
             self.accumulate_samples and self._optix_denoiser is None and self._device_camera_state is None
         )
         samples_this_frame = self.samples_per_frame
-        reset_temporal = self._update_temporal_state(current_view, current_proj, use_external_accum)
+        reset_temporal = self._update_temporal_state(camera, use_external_accum)
         self._update_instance_transform_buffers()
-        self._launch_samples(
-            samples_this_frame,
-            use_external_accum,
-            view=current_view,
-            proj=current_proj,
-            view_inv=current_view_inv,
-            proj_inv=current_proj_inv,
-        )
+        frame = self._launch_samples(samples_this_frame, use_external_accum, camera=camera)
 
         # Queue the current-to-previous transform snapshot behind the OptiX launch.
         self._snapshot_instance_transforms()
 
-        # Keep previous matrices for next frame's motion-vector calculation.
-        self._prev_view = current_view.copy()
-        self._prev_proj = current_proj.copy()
-        self._prev_mvp = (current_view @ current_proj).astype(np.float32)
-        self._last_accum_view = current_view.copy()
-        self._last_accum_proj = current_proj.copy()
+        self._prev_mvp = camera.view_proj
+        self._accum_camera_key = camera.key
         self._last_output_mode = self.output_mode
 
         if self._optix_denoiser is not None:
             output = self._optix_denoiser.apply(
-                self._denoiser_inputs(self._accum_buffer),
+                self._denoiser_inputs(frame),
                 reset=reset_temporal or self._denoiser_reset_history,
             )
             self._denoiser_reset_history = False
             self._process_output(output, resize_final_to_render=False)
         else:
-            self._process_output(self._accum_buffer, resize_final_to_render=True)
+            self._process_output(frame, resize_final_to_render=True)
         self.sample_index += samples_this_frame
 
     def get_output(self) -> np.ndarray:
