@@ -383,12 +383,13 @@ class _ParamsStorage:
     does not form a reference cycle and ``del pipeline`` releases it at once.
     """
 
-    __slots__ = ("allocated", "data", "dirty", "host", "inputs", "stream")
+    __slots__ = ("allocated", "data", "dirty", "host", "inputs", "reset_host", "stream")
 
     def __init__(self, params_type, device: wp.Device):
         self.data = wp.empty(1, dtype=params_type, device=device)
         self.host = params_type()
         self.inputs: dict = {}
+        self.reset_host = False
         self.dirty = False
         # The allocation is ordered on the current stream: the first use waits for it, not for later work there.
         self.allocated: wp.Event | None = wp.get_stream(device).record_event()
@@ -401,10 +402,15 @@ class _ParamsStorage:
             if len(values) != 1 or getattr(values[0], "_cls", None) is not pipeline.params_type:
                 raise TypeError("A pipeline with params_type takes one instance of it as its parameters")
             context.check_arrays(values)
+            # Field setters retain Python references in the host struct as well.
+            # Discard those when replacing the entire parameter block.
+            if self.reset_host:
+                self.host = pipeline.params_type()
+                self.reset_host = False
             ctypes.memmove(
                 ctypes.addressof(self.host._ctype), ctypes.addressof(values[0]._ctype), pipeline._params_size
             )
-            self.inputs = {None: values[0]}
+            self.inputs = {name: getattr(values[0], name) for name in pipeline.params_type.vars}
         else:
             names = pipeline._param_names
             values = tuple(values)
@@ -435,6 +441,7 @@ class _ParamsStorage:
                 self.dirty = True
                 return
         setattr(self.host, name, value)
+        self.reset_host = True
         self.inputs[name] = retained
         self.dirty = True
 

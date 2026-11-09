@@ -3,6 +3,8 @@
 
 """End-to-end tests of the core API: accel builds, pipelines, launches, and ray queries."""
 
+import time
+
 import numpy as np
 import pytest
 import warp as wp
@@ -217,6 +219,45 @@ def test_aabbs_from_lowers_uppers_and_packed_bounds_hit_and_refit():
     separate.refit()
     wo.launch(pipeline, dim=4, inputs=[separate, xs, centers, depth])
     np.testing.assert_allclose(depth.numpy(), [-1.0, -1.0, 4.5, 5.5], atol=1e-5)
+
+
+@pytest.mark.parametrize("hold_before_allocation", [True, False])
+def test_aabb_build_on_another_stream_orders_only_its_allocation(gate, hold_before_allocation):
+    device = wp.get_device("cuda")
+    side = wp.Stream(device)
+    lowers = wp.zeros(8, dtype=wp.vec3, device=device)
+    uppers = wp.ones(8, dtype=wp.vec3, device=device)
+    # Warm up packing and OptiX before holding a stream: module loading may synchronize.
+    warm = wo.Accel([wo.aabbs(lowers, uppers)], flags=wo.BuildFlags.ALLOW_UPDATE)
+    wp.synchronize_device(device)
+
+    if hold_before_allocation:
+        held = gate.block(wp.get_stream(device))
+    build_input = wo.aabbs(lowers, uppers)
+    if not hold_before_allocation:
+        held = gate.block(wp.get_stream(device))
+    accel = wo.Accel([build_input], flags=wo.BuildFlags.ALLOW_UPDATE, stream=side)
+    built = side.record_event()
+    if hold_before_allocation:
+        # A small warmed build would finish in this interval without the allocation dependency.
+        deadline = time.monotonic() + 0.025
+        while not built.is_complete and time.monotonic() < deadline:
+            time.sleep(0.001)
+        assert not built.is_complete, "Build used its private bounds before their allocation completed"
+    else:
+        wp.synchronize_stream(side)
+    assert not held.is_complete, "The gate expired before checking allocation ordering"
+    gate.open()
+    wp.synchronize_stream(side)
+    np.testing.assert_array_equal(build_input.arrays[0].numpy(), [[0, 0, 0, 1, 1, 1]] * 8)
+
+    # Later refits must not wait for unrelated work on the allocation stream.
+    held = gate.block(wp.get_stream(device))
+    accel.refit(stream=side)
+    wp.synchronize_stream(side)
+    assert not held.is_complete
+    gate.open()
+    warm.close()
 
 
 # ---------------------------------------------------------------------------

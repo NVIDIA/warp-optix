@@ -99,6 +99,31 @@ def test_launches_across_streams_use_their_own_parameters():
         np.testing.assert_array_equal(output.numpy(), np.full(4096, value))
 
 
+def test_explicit_parameter_replacements_release_previous_arrays():
+    pipeline = wo.Pipeline(write, params_type=Params)
+    initial = wp.empty(8, dtype=wp.uint32, device=pipeline.device)
+    initial_ref = weakref.ref(initial)
+    recorded = wo.launch(pipeline, 8, [params(1, initial)], record_cmd=True)
+    del initial
+    assert initial_ref() is not None
+
+    # Updating another field must preserve the output's keepalive.
+    recorded.set_param_by_name("value", 2)
+    assert initial_ref() is not None
+    replacement = wp.empty(8, dtype=wp.uint32, device=pipeline.device)
+    replacement_ref = weakref.ref(replacement)
+    recorded.set_param_by_name("output", replacement)
+    del replacement
+    assert initial_ref() is None
+    assert replacement_ref() is not None
+
+    output = wp.empty(8, dtype=wp.uint32, device=pipeline.device)
+    recorded.set_params([params(3, output)])
+    assert replacement_ref() is None
+    recorded.launch()
+    np.testing.assert_array_equal(output.numpy(), np.full(8, 3))
+
+
 def test_invalid_params_schemas_and_stage_placements():
     with pytest.raises(TypeError, match="kind must be a ProgramKind"):
         wo.kernel(write, kind="miss")

@@ -261,9 +261,19 @@ def aabbs(
         bounds = wp.empty((lowers.size, 6), dtype=wp.float32, device=lowers.device)
         sources = (lowers, uppers)
         if lowers.size:
-            prepare = wp.launch(
+            allocated = wp.get_stream(bounds.device).record_event()
+            pack = wp.launch(
                 _pack_bounds, lowers.size, inputs=[lowers, uppers, bounds], device=bounds.device, record_cmd=True
-            ).launch
+            )
+
+            def prepare(stream):
+                nonlocal allocated
+                # The private bounds allocation may belong to a different stream.
+                # Wait once for the allocation, without waiting for later work there.
+                if allocated is not None:
+                    stream.wait_event(allocated)
+                    allocated = None
+                pack.launch(stream)
 
     elif lowers is not None or uppers is not None:
         raise ValueError("pass either lowers and uppers, or bounds, not both")
