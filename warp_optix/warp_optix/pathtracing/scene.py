@@ -20,6 +20,7 @@ Handles mesh loading, BLAS/TLAS construction, and instance management.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -29,12 +30,20 @@ import numpy as np
 import warp as wp
 
 import warp_optix as wo
-from warp_optix import native
 
 from .color_utils import srgb_to_linear_u8
 from .materials import ALPHA_OPAQUE, MaterialManager
 
 logger = logging.getLogger(__name__)
+
+# Build flags of static and dynamic geometry. Curve hit groups must declare the same flags, since
+# OptiX specializes its built-in curve intersection on them.
+STATIC_BUILD_FLAGS = (
+    wo.BuildFlags.ALLOW_RANDOM_VERTEX_ACCESS | wo.BuildFlags.PREFER_FAST_TRACE | wo.BuildFlags.ALLOW_COMPACTION
+)
+DYNAMIC_BUILD_FLAGS = (
+    wo.BuildFlags.ALLOW_RANDOM_VERTEX_ACCESS | wo.BuildFlags.ALLOW_UPDATE | wo.BuildFlags.PREFER_FAST_BUILD
+)
 _MAX_TEXTURE_BUILD_WORKERS = 8
 NO_MATERIAL_OVERRIDE = np.uint32(np.iinfo(np.uint32).max)
 
@@ -317,7 +326,6 @@ class Mesh:
         self.material_id = material_id
         self.material_ids = _normalize_primitive_material_ids(material_ids, len(self.indices), self.material_id)
         self.dynamic = bool(dynamic)
-        self._packed_normal_offset = 0
 
         # Tangents only need triangle accumulation when authored UVs exist.
         self.tangents = (
@@ -429,12 +437,6 @@ class Mesh:
         normals /= np.where(lengths > 0.0, lengths, 1.0)
         return normals
 
-    def upload_to_gpu(self, device: wp.DeviceLike = "cuda"):
-        """Upload the acceleration-structure inputs and, for dynamic meshes, writable normals."""
-        self.d_vertices = wp.array(self.vertices.flatten(), dtype=wp.float32, device=device)
-        self.d_indices = wp.array(self.indices.flatten(), dtype=wp.uint32, device=device)
-        self.d_normals = wp.array(self.normals.flatten(), dtype=wp.float32, device=device) if self.dynamic else None
-
 
 class Curve:
     """Native OptiX round linear or cubic Bézier curve geometry.
@@ -444,10 +446,12 @@ class Curve:
     swept-surface radius per control point and uses the same interpolation basis.
     """
 
+    # Hit groups: static linear and cubic curves use SBT offsets 2 and 4, dynamic ones 6 and 8.
     _BASIS_SPECS = {
         "linear": ("round_linear", 2, 2, 1),
         "cubic_bezier": ("round_cubic_bezier", 4, 4, 2),
     }
+    _DYNAMIC_SBT_SHIFT = 4
 
     def __init__(
         self,
@@ -501,7 +505,7 @@ class Curve:
         self.basis = basis
         self.primitive_type = primitive_type
         self.control_point_count = control_point_count
-        self.sbt_offset = sbt_offset
+        self.sbt_offset = sbt_offset + (self._DYNAMIC_SBT_SHIFT if dynamic else 0)
         self.geometry_type = geometry_type
         self.vertices = np.ascontiguousarray(vertices, dtype=np.float32)
         self.radii = np.ascontiguousarray(radii, dtype=np.float32)
@@ -512,15 +516,7 @@ class Curve:
         self.d_vertices = None
         self.d_widths = None
         self.d_indices = None
-        self._packed_position_offset = 0
-        self._packed_radius_offset = 0
         self._packed_material_offset = 0
-
-    def upload_to_gpu(self, device: wp.DeviceLike = "cuda"):
-        """Upload control points, radii, and segment starts to CUDA."""
-        self.d_vertices = wp.array(self.vertices.reshape(-1), dtype=wp.float32, device=device)
-        self.d_widths = wp.array(self.radii, dtype=wp.float32, device=device)
-        self.d_indices = wp.array(self.indices, dtype=wp.uint32, device=device)
 
 
 class Instance:
@@ -567,7 +563,7 @@ class Scene:
         self.device = wp.get_device(device)
         if not self.device.is_cuda:
             raise ValueError("Scene requires a CUDA device")
-        self._optix = None  # Will be set when building
+        self._built = False
         self.enable_texture_mipmaps = bool(enable_texture_mipmaps)
         self.materials = MaterialManager()
         self._meshes = []
@@ -1450,14 +1446,9 @@ class Scene:
         self._d_usd_instance_node_ids = None
         self._d_usd_level_nodes = []
 
-    def build(self, optix_module):
-        """
-        Build the scene: upload meshes, create BLASes, and create TLAS.
-
-        Args:
-            optix_module: The imported optix module
-        """
-        self._optix = optix_module
+    def build(self):
+        """Build the scene: upload meshes, create BLASes, and create TLAS."""
+        self._built = True
 
         if len(self._meshes) == 0:
             logger.info("No meshes to build.")
@@ -1483,9 +1474,7 @@ class Scene:
             len(self._instances),
         )
 
-        # Upload meshes to GPU
-        for mesh in self._meshes:
-            mesh.upload_to_gpu(self.device)
+        self._upload_geometry()
 
         # Build BLAS for each mesh
         self._build_blas()
@@ -1510,38 +1499,76 @@ class Scene:
         """Rebuild only TLAS after instance transform updates."""
         if len(self._meshes) == 0 or len(self._instances) == 0:
             return
-        if self._optix is None:
+        if not self._built:
             return
         if len(self._gas) != len(self._meshes):
             # Fallback if a full build has not been completed yet.
-            self.build(self._optix)
+            self.build()
             return
         self._build_tlas(stream=stream)
+
+    def _upload_geometry(self):
+        """Upload geometry with one copy per attribute; each geometry keeps views of the shared buffers.
+
+        The acceleration structures and the shaders read the same index, curve, and normal buffers, so
+        writes to a geometry's device arrays reach both. Shaders read triangle positions through OptiX.
+        """
+
+        def upload(parts, dtype):
+            if not parts:
+                return None, []
+            data = wp.array(np.concatenate(parts), dtype=dtype, device=self.device)
+            offsets = np.cumsum([0] + [len(part) for part in parts]).tolist()
+            return data, [data[begin:end] for begin, end in itertools.pairwise(offsets)]
+
+        meshes = self._meshes
+        triangles = [g for g in meshes if g.primitive_type == "triangles"]
+        curves = [g for g in meshes if g.primitive_type != "triangles"]
+        self._packed_indices, indices = upload([g.indices.reshape(-1) for g in meshes], wp.uint32)
+        _, positions = upload([g.vertices.reshape(-1) for g in triangles], wp.float32)
+        self._packed_normals, normals = upload([g.normals.reshape(-1) for g in triangles], wp.float32)
+        self._packed_positions, control_points = upload([g.vertices.reshape(-1) for g in curves], wp.float32)
+        self._packed_radii, radii = upload([g.radii for g in curves], wp.float32)
+        for geometry, geometry_indices in zip(meshes, indices, strict=True):
+            geometry.d_indices = geometry_indices
+        for mesh, mesh_positions, mesh_normals in zip(triangles, positions, normals, strict=True):
+            mesh.d_vertices = mesh_positions
+            mesh.d_normals = mesh_normals if mesh.dynamic else None
+        for curve, curve_points, curve_radii in zip(curves, control_points, radii, strict=True):
+            curve.d_vertices, curve.d_widths = curve_points, curve_radii
 
     def _build_blas(self):
         """Build bottom-level acceleration structures for all geometry.
 
         Geometry whose materials are all opaque disables any-hit programs;
         dynamic geometry keeps them because its per-primitive materials may
-        change on the device. Static geometry is not compacted; one
-        synchronization after all builds releases the scratch buffers of
-        static geometry, which is never refit.
+        change on the device. Static geometry, which is never refit, is
+        compacted in one batch. Indices were validated on the host when the
+        geometry was created.
         """
         opaque = self._opaque_materials
-        for geometry in self._meshes:
+        static = []
+        # Small builds leave the GPU mostly idle, so spread them over a few streams.
+        main = wp.get_stream(self.device)
+        streams = [wp.Stream(self.device) for _ in range(4)]
+        for stream in streams:
+            stream.wait_stream(main)
+        for index, geometry in enumerate(self._meshes):
             all_opaque = (
                 not geometry.dynamic
                 and len(opaque) > 0
                 and bool(opaque[np.clip(geometry.material_ids, 0, len(opaque) - 1)].all())
             )
-            geometry_flags = native.GEOMETRY_FLAG_DISABLE_ANYHIT if all_opaque else native.GEOMETRY_FLAG_NONE
+            geometry_flags = wo.GeometryFlags.DISABLE_ANYHIT if all_opaque else wo.GeometryFlags.NONE
             if geometry.primitive_type == "triangles":
-                build_input = wo.triangles(geometry.d_vertices, geometry.d_indices, flags=geometry_flags)
+                build_input = wo.triangles(
+                    geometry.d_vertices, geometry.d_indices, flags=geometry_flags, validate=False
+                )
             else:
                 curve_type = (
-                    native.PRIMITIVE_TYPE_ROUND_LINEAR
+                    wo.PrimitiveType.ROUND_LINEAR
                     if geometry.primitive_type == "round_linear"
-                    else native.PRIMITIVE_TYPE_ROUND_CUBIC_BEZIER
+                    else wo.PrimitiveType.ROUND_CUBIC_BEZIER
                 )
                 build_input = wo.curves(
                     geometry.d_vertices,
@@ -1549,14 +1576,16 @@ class Scene:
                     geometry.d_indices,
                     curve_type=curve_type,
                     flags=geometry_flags,
+                    validate=False,
                 )
-            build_flags = native.BUILD_FLAG_ALLOW_RANDOM_VERTEX_ACCESS | (
-                native.BUILD_FLAG_ALLOW_UPDATE | native.BUILD_FLAG_PREFER_FAST_BUILD
-                if geometry.dynamic
-                else native.BUILD_FLAG_PREFER_FAST_TRACE
-            )
-            # Static structures (no ALLOW_UPDATE) release their scratch buffer after the build.
-            self._gas.append(wo.Accel([build_input], flags=build_flags, device=self.device))
+            build_flags = DYNAMIC_BUILD_FLAGS if geometry.dynamic else STATIC_BUILD_FLAGS
+            gas = wo.Accel([build_input], flags=build_flags, stream=streams[index % len(streams)])
+            self._gas.append(gas)
+            if not geometry.dynamic:
+                static.append(gas)
+        for stream in streams:
+            main.wait_stream(stream)
+        wo.compact(static, stream=main)
 
     def _update_dynamic_geometry_accel(
         self,
@@ -1588,18 +1617,11 @@ class Scene:
         geometry = self._meshes[geometry_index]
         if geometry.primitive_type != "triangles" or not geometry.dynamic:
             raise ValueError("geometry must be a dynamic triangle mesh")
-        if self._optix is None:
+        if not self._built:
             return False
         if len(self._gas) != len(self._meshes):
             raise RuntimeError("build the scene before refitting dynamic meshes")
 
-        wp.copy(
-            self._packed_normals,
-            geometry.d_normals,
-            dest_offset=geometry._packed_normal_offset,
-            count=geometry.normals.size,
-            stream=stream,
-        )
         return self._update_dynamic_geometry_accel(geometry_index, stream, rebuild_gas, rebuild_tlas)
 
     def refit_mesh(self, geometry_index: int, stream=None, rebuild_tlas: bool = True):
@@ -1625,25 +1647,11 @@ class Scene:
         geometry = self._meshes[geometry_index]
         if geometry.primitive_type == "triangles" or not geometry.dynamic:
             raise ValueError("geometry must be a dynamic curve")
-        if self._optix is None:
+        if not self._built:
             return False
         if len(self._gas) != len(self._meshes):
             raise RuntimeError("build the scene before refitting dynamic curves")
 
-        wp.copy(
-            self._packed_positions,
-            geometry.d_vertices,
-            dest_offset=geometry._packed_position_offset,
-            count=geometry.vertices.size,
-            stream=stream,
-        )
-        wp.copy(
-            self._packed_radii,
-            geometry.d_widths,
-            dest_offset=geometry._packed_radius_offset,
-            count=geometry.radii.size,
-            stream=stream,
-        )
         return self._update_dynamic_geometry_accel(geometry_index, stream, rebuild_gas, rebuild_tlas)
 
     def refit_curve(self, geometry_index: int, stream=None, rebuild_tlas: bool = True):
@@ -1671,12 +1679,12 @@ class Scene:
             flags = np.zeros(count, dtype=np.uint32)
             for index, inst in enumerate(self._instances):
                 if inst.double_sided:
-                    flags[index] |= native.INSTANCE_FLAG_DISABLE_TRIANGLE_FACE_CULLING
+                    flags[index] |= wo.InstanceFlags.DISABLE_TRIANGLE_FACE_CULLING
                 # A material override replaces every per-primitive material of the instance.
                 if inst.material_id is not None:
                     override_opaque = 0 <= inst.material_id < len(opaque) and opaque[inst.material_id]
                     flags[index] |= (
-                        native.INSTANCE_FLAG_DISABLE_ANYHIT if override_opaque else native.INSTANCE_FLAG_ENFORCE_ANYHIT
+                        wo.InstanceFlags.DISABLE_ANYHIT if override_opaque else wo.InstanceFlags.ENFORCE_ANYHIT
                     )
             handles = np.array([gas.id for gas in self._gas], dtype=np.uint64)
             sbt_offsets = np.array([geometry.sbt_offset for geometry in self._meshes], dtype=np.uint32)
@@ -1727,86 +1735,51 @@ class Scene:
 
     def _build_scene_buffers(self):
         """Build GPU buffers for scene description."""
-        # Build RenderPrimitive array
-        rp_dtype = _create_render_primitive_dtype()
-        render_primitives = np.zeros(len(self._meshes), dtype=rp_dtype)
-        packed_indices = []
-        packed_positions = []
-        packed_radii = []
-        packed_normals = []
-        packed_tangents = []
-        packed_texcoords0 = []
-        packed_texcoords1 = []
-        packed_material_ids = []
+        meshes = self._meshes
+        triangles = [g for g in meshes if g.primitive_type == "triangles"]
 
-        index_offset = 0
-        position_offset = 0
-        radius_offset = 0
-        normal_offset = 0
-        tangent_offset = 0
-        tex0_offset = 0
-        tex1_offset = 0
-        material_offset = 0
+        def sizes(size):
+            return np.fromiter((size(g) for g in meshes), dtype=np.int64, count=len(meshes))
 
-        for i, geometry in enumerate(self._meshes):
-            rp = render_primitives[i]
-            flat_indices = geometry.indices.reshape(-1)
-            is_triangle_mesh = geometry.primitive_type == "triangles"
-            flat_positions = np.empty(0, dtype=np.float32) if is_triangle_mesh else geometry.vertices.reshape(-1)
-            flat_radii = np.empty(0, dtype=np.float32) if is_triangle_mesh else geometry.radii
-            flat_normals = geometry.normals.reshape(-1) if is_triangle_mesh else np.empty(0, dtype=np.float32)
-            flat_tangents = geometry.tangents.reshape(-1) if is_triangle_mesh else np.empty(0, dtype=np.float32)
-            flat_tex0 = geometry.texcoords.reshape(-1) if is_triangle_mesh else np.empty(0, dtype=np.float32)
-            flat_tex1 = geometry.texcoords1.reshape(-1) if is_triangle_mesh else np.empty(0, dtype=np.float32)
-            primitive_material_ids = geometry.material_ids
+        def starts(counts):
+            # Each geometry's offset into a buffer packing every geometry's values in order.
+            return (np.cumsum(counts) - counts).astype(np.uint32)
 
-            rp["indexOffset"] = np.uint32(index_offset)
-            rp["materialIdOffset"] = np.uint32(material_offset)
-            rp["vertexBuffer"]["positionOffset"] = np.uint32(position_offset)
-            rp["vertexBuffer"]["normalOffset"] = np.uint32(normal_offset)
-            rp["vertexBuffer"]["radiusOffset"] = np.uint32(radius_offset)
-            rp["vertexBuffer"]["tangentOffset"] = np.uint32(tangent_offset)
-            rp["vertexBuffer"]["texCoord0Offset"] = np.uint32(tex0_offset)
-            rp["vertexBuffer"]["texCoord1Offset"] = np.uint32(tex1_offset)
-            rp["vertexBuffer"]["prevPositionOffset"] = np.uint32(0)
-            rp["vertexBuffer"]["hasTexCoord1"] = np.uint32(is_triangle_mesh)
-            rp["vertexBuffer"]["hasPrevPosition"] = np.uint32(0)
-            rp["numIndices"] = np.uint32(geometry.indices.size)
-            geometry._packed_position_offset = position_offset
-            geometry._packed_normal_offset = normal_offset
-            geometry._packed_radius_offset = radius_offset
-            geometry._packed_material_offset = material_offset
-            rp["numVertices"] = np.uint32(geometry.vertices.shape[0])
+        def triangle_sizes(attribute):
+            return sizes(lambda g: getattr(g, attribute).size if g.primitive_type == "triangles" else 0)
 
-            packed_indices.append(flat_indices.astype(np.uint32, copy=False))
-            packed_positions.append(flat_positions.astype(np.float32, copy=False))
-            packed_normals.append(flat_normals.astype(np.float32, copy=False))
-            packed_tangents.append(flat_tangents.astype(np.float32, copy=False))
-            packed_radii.append(flat_radii.astype(np.float32, copy=False))
-            packed_texcoords0.append(flat_tex0.astype(np.float32, copy=False))
-            packed_texcoords1.append(flat_tex1.astype(np.float32, copy=False))
-            packed_material_ids.append(primitive_material_ids)
+        def curve_sizes(attribute):
+            return sizes(lambda g: 0 if g.primitive_type == "triangles" else getattr(g, attribute).size)
 
-            index_offset += flat_indices.shape[0]
-            position_offset += flat_positions.shape[0]
-            normal_offset += flat_normals.shape[0]
-            tangent_offset += flat_tangents.shape[0]
-            tex0_offset += flat_tex0.shape[0]
-            tex1_offset += flat_tex1.shape[0]
-            material_offset += primitive_material_ids.shape[0]
-            radius_offset += flat_radii.shape[0]
+        render_primitives = np.zeros(len(meshes), dtype=_create_render_primitive_dtype())
+        vertex_buffer = render_primitives["vertexBuffer"]
+        index_counts = sizes(lambda g: g.indices.size)
+        material_offsets = starts(sizes(lambda g: len(g.material_ids)))
+        render_primitives["indexOffset"] = starts(index_counts)
+        render_primitives["materialIdOffset"] = material_offsets
+        render_primitives["numIndices"] = index_counts
+        render_primitives["numVertices"] = sizes(lambda g: g.vertices.shape[0])
+        vertex_buffer["positionOffset"] = starts(curve_sizes("vertices"))
+        vertex_buffer["radiusOffset"] = starts(curve_sizes("radii"))
+        vertex_buffer["normalOffset"] = starts(triangle_sizes("normals"))
+        vertex_buffer["tangentOffset"] = starts(triangle_sizes("tangents"))
+        vertex_buffer["texCoord0Offset"] = starts(triangle_sizes("texcoords"))
+        vertex_buffer["texCoord1Offset"] = starts(triangle_sizes("texcoords1"))
+        vertex_buffer["hasTexCoord1"] = [g.primitive_type == "triangles" for g in meshes]
+        for geometry, offset in zip(meshes, material_offsets.tolist(), strict=True):
+            geometry._packed_material_offset = offset
+        packed_tangents = [g.tangents.reshape(-1) for g in triangles]
+        packed_texcoords0 = [g.texcoords.reshape(-1) for g in triangles]
+        packed_texcoords1 = [g.texcoords1.reshape(-1) for g in triangles]
+        packed_material_ids = [g.material_ids for g in meshes]
 
         rp_bytes = render_primitives.view(np.uint8).reshape(-1)
         self._render_primitives = wp.array(rp_bytes, dtype=wp.uint8, device=self.device)
-        self._packed_indices = wp.array(np.concatenate(packed_indices), dtype=wp.uint32, device=self.device)
 
         def packed_float_buffer(parts):
-            values = np.concatenate(parts)
+            values = np.concatenate(parts) if parts else np.empty(0, dtype=np.float32)
             return wp.array(values, dtype=wp.float32, device=self.device) if values.size else None
 
-        self._packed_positions = packed_float_buffer(packed_positions)
-        self._packed_radii = packed_float_buffer(packed_radii)
-        self._packed_normals = packed_float_buffer(packed_normals)
         self._packed_tangents = packed_float_buffer(packed_tangents)
         self._packed_texcoords0 = packed_float_buffer(packed_texcoords0)
         self._packed_texcoords1 = packed_float_buffer(packed_texcoords1)

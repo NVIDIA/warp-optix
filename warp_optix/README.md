@@ -53,10 +53,14 @@ Constructors and free functions take `device=` and, where they submit work, `str
 - only `device`: that device's current stream;
 - both: they must name the same device, otherwise `ValueError`.
 
+As with `wp.launch(stream=...)`, work submitted to a stream is ordered only after earlier work on
+that stream, not after the current stream; order producers on other streams with
+`stream.wait_stream()` or `stream.wait_event()`.
+
 `wo.Accel` without either uses the device of its inputs; `wo.launch` defaults to the pipeline's
 device. Methods of device-bound objects (`accel.refit()`, `params.assign()`) take only `stream=`.
 
-Resources (`wo.Accel`, `wo.Pipeline`, `wo.LaunchParams`) follow Warp's lifetime model
+Resources (`wo.Accel`, `wo.Pipeline`) follow Warp's lifetime model
 (`wp.Mesh`, `wp.array`): they release themselves when the last reference is dropped, or explicitly
 with `.close()` or `with`:
 
@@ -71,7 +75,8 @@ with `.close()` or `with`:
   the `wo.Accel` alive while work that reads the id may still be submitted. A `wo.Accel` passed in
   launch inputs is referenced by the pipeline's parameter storage until the next launch on that
   stream replaces it.
-- An instance structure keeps the memory of its child structures alive, even if a child is closed.
+- An instance structure keeps the memory of its child structures alive, at every level of nesting,
+  even if a child is closed or dropped.
 - Failed pipeline construction destroys only the native objects it created.
 
 ## Programs and pipelines
@@ -123,20 +128,25 @@ may be omitted but not skipped by keyword, because Warp's external-builtin API h
 arguments; `wp.optix_traverse()` takes the same arguments with an optional payload. Flags, masks,
 SBT indices, and register indices accept any integer type, so `wo.RayFlags` members need no cast.
 
-`wo.Pipeline(raygen, *, miss, hit_groups, ray_types, sbt, callables, exception, exception_flags,
+`wo.Pipeline(raygen, *, miss, hit_groups, ray_types, sbt, callables, continuation_callables,
+exception, exception_flags,
 payload_words, attribute_words, max_trace_depth, max_traversable_depth, graph_flags, motion_blur,
 max_registers, device)` compiles all programs into one module and builds the shader binding table:
 
 - `miss` lists one miss program per ray type; `None` is a record without a program.
-- `hit_groups` holds `wo.HitGroup(closest_hit=, any_hit=, intersection=, builtin=)` entries.
+- `hit_groups` holds `wo.HitGroup(closest_hit=, any_hit=, intersection=, builtin=, build_flags=)` entries.
   The hit record for geometry type `g` and ray type `r` is `hit_groups[g * ray_types + r]`;
   trace with `sbt_offset=r` and `sbt_stride=ray_types`, and give instances `sbt_offset=g *
-  ray_types`. `builtin=wo.PrimitiveType.*` selects OptiX's built-in curve intersector; a
+  ray_types`. `builtin=wo.PrimitiveType.*` selects OptiX's built-in curve intersector, which
+  OptiX specializes on build flags: `build_flags` (default `PREFER_FAST_TRACE`, like `wo.Accel`)
+  must match the curve structures' flags, so curves built with other flags need their own group. A
   group with an `intersection` program serves custom primitives. Primitive-type flags are derived
   from the groups.
 - `callables` are direct-callable programs, invoked with `wp.optix_direct_call(index)` in list
-  order. Callables use a no-argument, void interface: they read launch parameters and write
-  referenced Warp arrays.
+  order. `continuation_callables` are invoked with `wp.optix_continuation_call(index)`; they
+  follow the direct callables in the same SBT section, so `continuation_callables[k]` has index
+  `len(callables) + k`. Callables use a no-argument, void interface: they read launch parameters
+  and write referenced Warp arrays.
 - `exception` enables user exceptions. Raise one with `wp.optix_throw_exception(code, ...)` (up
   to eight optional details) and read it with `wp.optix_get_exception_code()` and
   `wp.optix_get_exception_detail(i)`.
@@ -146,9 +156,11 @@ max_registers, device)` compiles all programs into one module and builds the sha
   For example, `exception_flags=wo.ExceptionFlags.STACK_OVERFLOW | wo.ExceptionFlags.TRACE_DEPTH`
   enables those debugging checks. Include `USER` when using `optix_throw_exception`.
 
-`wo.launch(pipeline, dim, inputs=None, device=None, stream=None, *, params=None)` mirrors `wp.launch`:
-it writes the launch parameters with a Warp kernel on `stream` and then launches OptiX on the same
-stream. Neither step synchronizes the host. `wo.Accel` objects in `inputs` are passed as their `id`
+`wo.launch(pipeline, dim, inputs=None, outputs=None, *, device=None, stream=None, record_cmd=False)`
+mirrors `wp.launch`: `inputs` and `outputs` are concatenated into the raygen arguments, and a raygen
+that calls `wp.tid()` must unpack as many indices as `dim` has entries.
+it packs the launch parameters on the host, copies them to the device on `stream`, and then launches
+OptiX on the same stream. Neither step synchronizes the host. `wo.Accel` objects in `inputs` are passed as their `id`
 and kept alive for the launch. OptiX does not record its work into CUDA graphs, so `wo.launch`,
 `wo.Accel`, `refit()`/`rebuild()`, and `wo.Pipeline` raise `RuntimeError` during stream capture.
 Kernels written against a single launch-parameter struct (`def raygen(params: MyParams)`) work
@@ -158,29 +170,27 @@ Automatic parameter storage is separate for each CUDA stream. Sequential launche
 on one stream reuse its buffer. Calls on shared resources from multiple host
 threads require external synchronization.
 
+For launches in a simulation loop, record the launch once, as with `wp.launch(..., record_cmd=True)`:
+
+```python
+launch = wo.launch(pipeline, dim=(height, width), inputs=[accel, image], record_cmd=True)
+for step in range(steps):
+    launch.set_param_by_name("accel", accels[step])  # or set_param_at_index, set_params, set_dim
+    launch.launch(stream=stream)
+```
+
+A `wo.Launch` checks and packs its parameters once and keeps its own parameter block; `launch()`
+copies the parameters to the device only after they change, so an unchanged replay costs little more
+than the OptiX launch itself. Replays on different streams are ordered on the GPU; use separate
+`wo.Launch` objects for independent concurrent launches. Arrays and acceleration structures set as
+parameters stay referenced until replaced or until the `wo.Launch` is dropped.
+
 For a shared schema independent of raygen, pass `params_type=MyParams`, where
 `MyParams` is a `@wp.struct`. Each program declares any subset of the schema's
 fields by name and identical type. This lets a miss or hit program use fields
 that raygen does not declare. Launch with `inputs=[my_params_instance]`.
 The schema is the parameter block itself; to use a single `params: MyParams`
 argument in every shader, keep the default inferred schema instead.
-
-Advanced callers can own parameter storage explicitly:
-
-```python
-params = wo.LaunchParams(pipeline)
-params.assign(my_params_instance, stream=stream)
-wo.launch(pipeline, dim=(height, width), stream=stream, params=params)
-```
-
-For inferred schemas, `assign()` takes the argument sequence instead.
-`LaunchParams` belongs to its pipeline (and its device) and must be assigned before use.
-Supply either `inputs` or `params`, never both. Updates and launches on shared
-parameters are ordered on the GPU, including across streams. Separate
-`LaunchParams` objects allow independent concurrent launches. Referenced arrays remain retained
-until replaced or until the `LaunchParams` is released (`close()`/`with`); callers must still order
-their own writes to those arrays. Directly modifying
-`params.data` bypasses the API's ordering and validation.
 
 An optional `@wo.kernel(kind=wo.ProgramKind.RAYGEN, module="unique")`
 decorator replaces `@wp.kernel` when a shader should declare its intended stage.
@@ -276,16 +286,21 @@ retain their Warp **device** arrays:
 | `wo.instances(records)` | `wp.array(dtype=wo.Instance)` |
 
 Geometry defaults to `GeometryFlags.DISABLE_ANYHIT`; pass `flags=wo.GeometryFlags.NONE` when an
-any-hit program must run.
+any-hit program must run. Any build input may be empty (no primitives or records); the structure
+then has nothing to intersect, which suits dynamic geometry that has no elements yet.
 
-`triangles()` and `curves()` read indices back once to validate their bounds.
+`triangles()` and `curves()` read indices back once to validate their bounds; pass
+`validate=False` to skip that synchronization for indices already checked on the host.
 Keep those indices unchanged when reusing a build input; create a new input
 after changing topology. Point-only refits do not repeat this validation.
 
 `wo.Accel(inputs, *, flags=, compact=, motion=, device=, stream=)` builds on a Warp stream and
 exposes `.id` (the `wp.uint64` passed to kernels), `.device`, and `.flags`. Initial instance builds
 read child ids back once to verify that every child is a live structure on the same device.
-`compact=True` also synchronizes to shrink static structures. `accel.refit(stream=)` refits a
+`compact=True` also synchronizes to shrink static structures; `wo.compact(accels, stream=)` compacts
+many structures built with `wo.BuildFlags.ALLOW_COMPACTION`, which keep their scratch buffer until then,
+with a single synchronization. Compaction changes `.id`, so compact children before building instance
+structures over them. `accel.refit(stream=)` refits a
 structure built with `wo.BuildFlags.ALLOW_UPDATE` to its inputs' current contents using the
 retained scratch buffer, so it neither allocates nor synchronizes on success; `accel.rebuild(stream=)`
 rebuilds in place to restore trace quality (structures without `ALLOW_UPDATE` allocate a temporary
@@ -695,7 +710,7 @@ when direct registration is unavailable.
 - `warp_optix/context.py` — implicit per-device contexts (`get_context`), device/stream resolution, and native-object release.
 - `warp_optix/config.py` — global settings (`validation`, `log_level`).
 - `warp_optix/accel.py` — build inputs, `Accel`, and `Instance`/`make_instance`.
-- `warp_optix/pipeline.py` — `Pipeline`, `HitGroup`, `LaunchParams`, and `launch`.
+- `warp_optix/pipeline.py` — `Pipeline`, `HitGroup`, `Launch`, and `launch`.
 - `warp_optix/program.py` — rewrites Warp kernels into OptiX programs (`ProgramKind`, `kernel`).
 - `warp_optix/rays.py` — `accel_query_ray`, `accel_query_ray_anyhit`, and `AccelQueryRay`.
 - `warp_optix/enums.py` — flag and primitive-type enums, usable on the host and in kernels.

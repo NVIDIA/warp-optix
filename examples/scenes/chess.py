@@ -47,34 +47,26 @@ def lathe(profile, segments=64, *, round_profile=True):
     tangent /= np.linalg.norm(tangent, axis=1)[:, None]
     tangent[0] = (np.sign(tangent[0, 0]), 0)
     tangent[-1] = (np.sign(tangent[-1, 0]), 0)
-    heights = [p[1] for p in profile]
-    height = max(heights) - min(heights)
-    for k, ((r0, y0), (r1, y1)) in enumerate(pairwise(profile)):
-        for j in range(segments):
-            angles = [2 * np.pi * j / segments, 2 * np.pi * (j + 1) / segments]
-            start = len(vertices)
-            for row, (r, y, angle, u) in enumerate(
-                [
-                    (r0, y0, angles[0], j / segments),
-                    (r1, y1, angles[0], j / segments),
-                    (r1, y1, angles[1], (j + 1) / segments),
-                    (r0, y0, angles[1], (j + 1) / segments),
-                ]
-            ):
-                dr, dy = tangent[k + (row in (1, 2))]
-                vertices.append((r * np.cos(angle), y, r * np.sin(angle)))
-                normals.append(
-                    (
-                        dy * np.cos(angle),
-                        -dr,
-                        dy * np.sin(angle),
-                    )
-                )
-                uvs.append((u, (y - min(heights)) / height))
-            if r1 > 0:
-                triangles.append((start, start + 1, start + 2))
-            if r0 > 0:
-                triangles.append((start, start + 2, start + 3))
+    # Each profile segment k and angular step j is a quad of four vertices; rows 1 and 2 lie on
+    # profile point k + 1, and rows 2 and 3 at angle step j + 1.
+    k = np.arange(len(profile) - 1)[:, None, None]
+    j = np.arange(segments)[None, :, None]
+    point = k + np.array([0, 1, 1, 0])
+    step = j + np.array([0, 0, 1, 1])
+    angle = 2 * np.pi * step / segments
+    r, y = profile[point, 0], profile[point, 1]
+    dr, dy = tangent[point, 0], tangent[point, 1]
+    shape = (*np.broadcast_shapes(point.shape, step.shape), 3)
+    vertices = np.stack(np.broadcast_arrays(r * np.cos(angle), y, r * np.sin(angle)), axis=-1).reshape(shape)
+    normals = np.stack(np.broadcast_arrays(dy * np.cos(angle), -dr, dy * np.sin(angle)), axis=-1).reshape(shape)
+    low, height = profile[:, 1].min(), np.ptp(profile[:, 1])
+    uvs = np.stack(np.broadcast_arrays(step / segments, (y - low) / height), axis=-1)
+    # Fan tips on the axis (zero radius) drop their degenerate triangle.
+    start = 4 * (k * segments + j)
+    quads = np.stack(np.broadcast_arrays(start + [0, 1, 2], start + [0, 2, 3]), axis=2)
+    keep = np.broadcast_to(np.stack((profile[1:, 0] > 0, profile[:-1, 0] > 0), axis=1)[:, None, :], quads.shape[:3])
+    triangles = quads[keep]
+    vertices, normals, uvs = (a.reshape(-1, a.shape[-1]) for a in (vertices, normals, uvs))
     return _arrays(vertices, triangles, normals, uvs)
 
 

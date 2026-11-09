@@ -1087,49 +1087,34 @@ def _mesh_arrays(mesh, UsdGeom):
         )
 
     left_handed = str(mesh.GetOrientationAttr().Get()) == "leftHanded"
-    holes = set(int(i) for i in (mesh.GetHoleIndicesAttr().Get() or []))
+    holes = np.asarray(mesh.GetHoleIndicesAttr().Get() or [], dtype=np.int64)
     reverse_winding = left_handed
-    if not holes and np.all(counts == 3):
-        corners = np.arange(len(point_indices), dtype=np.int64).reshape(-1, 3)
-        if reverse_winding:
-            corners = corners[:, (0, 2, 1)]
-        triangles = np.column_stack((corners, np.arange(len(counts), dtype=np.int64)))
-    else:
-        triangles: list[tuple[int, int, int, int]] = []
-        offset = 0
-        for face, count in enumerate(counts):
-            count = int(count)
-            if face not in holes and count >= 3:
-                for i in range(1, count - 1):
-                    tri = (
-                        (offset, offset + i + 1, offset + i)
-                        if reverse_winding
-                        else (offset, offset + i, offset + i + 1)
-                    )
-                    triangles.append((*tri, face))
-            offset += count
+    offsets = np.cumsum(counts) - counts
+    valid = counts >= 3
+    valid[holes[(holes >= 0) & (holes < len(counts))]] = False
+    # Fan-triangulate each polygon: (first, first + i, first + i + 1) for i in 1..count-2.
+    fan_sizes = np.where(valid, counts - 2, 0)
+    triangle_faces = np.repeat(np.arange(len(counts), dtype=np.int64), fan_sizes)
+    first = offsets[triangle_faces]
+    second = first + np.arange(len(triangle_faces)) - np.repeat(np.cumsum(fan_sizes) - fan_sizes, fan_sizes) + 1
+    third = second + 1
+    if reverse_winding:
+        second, third = third, second
+    triangles = np.column_stack((first, second, third, triangle_faces))
 
     # Preserve authored normals regardless of the texture-coordinate
     # interpolation. Face-varying UVs do not imply flat shading, and replacing
     # valid normals with winding-derived ones can invert the shading frame on
     # otherwise valid USD meshes. Generate polygon normals only as a fallback.
     if normals is None:
-        normals = np.zeros_like(vertices)
-        offset = 0
-        for face, count in enumerate(counts):
-            count = int(count)
-            if face not in holes and count >= 3:
-                first, second, third = offset, offset + 1, offset + 2
-                face_normal = np.cross(
-                    vertices[second] - vertices[first],
-                    vertices[third] - vertices[first],
-                )
-                if left_handed:
-                    face_normal = -face_normal
-                length = float(np.linalg.norm(face_normal))
-                if length > 1.0e-20:
-                    normals[offset : offset + count] = face_normal / length
-            offset += count
+        start = offsets[valid]
+        face_normals = np.cross(vertices[start + 1] - vertices[start], vertices[start + 2] - vertices[start])
+        if left_handed:
+            face_normals = -face_normals
+        length = np.linalg.norm(face_normals, axis=1, keepdims=True)
+        polygon_normals = np.zeros((len(counts), 3), dtype=np.float32)
+        polygon_normals[valid] = np.where(length > 1.0e-20, face_normals / np.maximum(length, 1.0e-20), 0.0)
+        normals = polygon_normals[face_ids]
     return vertices, normals, texcoords, triangles, point_indices
 
 

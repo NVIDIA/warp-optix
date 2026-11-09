@@ -67,7 +67,7 @@ def _pack_display_rgba8(
     width: int,
     height: int,
 ):
-    x, y = wp.tid()
+    y, x = wp.tid()
     if x >= width or y >= height:
         return
 
@@ -317,8 +317,7 @@ def main():
     wp.init()
     options = SCENE_OPTIONS.get(args.scene, {}) if args.usd is None and args.gltf is None else {}
     api = PathTracer(width=args.width, height=args.height, denoiser=args.denoiser, **options)
-    if not api.initialize():
-        raise RuntimeError("Failed to initialize pathtracing API.")
+    api.initialize()
 
     if args.usd is not None:
         name, view = args.usd.name, setup_usd(api, args)
@@ -367,7 +366,7 @@ def main():
         api.render_frame()
         wp.launch(
             _pack_display_rgba8,
-            dim=(render_width, render_height),
+            dim=(render_height, render_width),
             inputs=[api.viewer.tonemapped_output, mapped_image, render_width, render_height],
             device="cuda",
         )
