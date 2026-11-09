@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ctypes
+import dataclasses
 import sys
 from types import SimpleNamespace
 
@@ -158,6 +159,15 @@ def test_optix_gpu_denoises_and_resets_history(upscale):
         denoiser.apply(inputs).numpy()
         reset = denoiser.apply(inputs, reset=True).numpy()
         np.testing.assert_allclose(reset, first, rtol=1e-5, atol=1e-5)
+
+        # Flow beyond half-float range (here a camera jump, plus a NaN) once blacked out every later frame.
+        extreme = np.full((48, 64, 2), 1.0e9, dtype=np.float32)
+        extreme[0, 0] = np.nan
+        jump = dataclasses.replace(inputs, motion=wp.array(extreme, dtype=wp.vec2, device="cuda"))
+        for frame_inputs in (jump, inputs, jump, inputs):
+            output = denoiser.apply(frame_inputs).numpy()
+            assert np.isfinite(output).all()
+            assert np.mean((output[..., :3] - 1.0) ** 2) < np.mean((noisy[..., :3] - 1.0) ** 2) * 0.5
     finally:
         denoiser.close()
 
@@ -182,9 +192,14 @@ def test_renderer_gpu_optix_samples_motion_switch_and_resize():
     api = _cornell_api(width=64, height=48, denoiser="optix", optix_upscale=True, enable_cuda_graphs=True)
     try:
         scene = api.scene
+        # A camera placed before the first frame produces no motion on that frame.
+        start = api.viewer.camera.position.copy()
+        api.set_camera_look_at(start + (0.0, 0.5, 0.0), api.viewer.camera.target)
         frames = []
         for _ in range(3):
             api.render_frame()
+            if not frames:
+                assert np.abs(api.viewer._motion_buffer.numpy()).max() < 1.0e-3
             frames.append(api.viewer._color_buffer.numpy().copy())
         assert api.viewer.sample_index == 3
         assert not api.cuda_graph_active
