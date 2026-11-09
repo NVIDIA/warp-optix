@@ -280,6 +280,27 @@ def test_instances_keep_closed_children_alive_at_every_level():
     assert gas_buffer() is None
 
 
+def test_instances_retain_child_traversal_memory_without_build_resources():
+    vertices, indices = geometry()
+    gas = wo.Accel([wo.triangles(vertices, indices)], flags=wo.BuildFlags.ALLOW_UPDATE)
+    gas_ref = weakref.ref(gas)
+    buffer_ref, scratch_ref, vertices_ref = weakref.ref(gas._buffer), weakref.ref(gas._scratch), weakref.ref(vertices)
+    parent = wo.Accel([wo.instances(instance_records(gas), [gas])])
+
+    del gas, vertices, indices
+    settle()
+    assert gas_ref() is None
+    assert scratch_ref() is None and vertices_ref() is None
+    assert buffer_ref() is not None
+    depth = wp.empty(1, dtype=float, device="cuda")
+    wo.launch(wo.Pipeline(depth_raygen), 1, [parent, depth])
+    np.testing.assert_allclose(depth.numpy(), [5.0])
+
+    parent.close()
+    settle()
+    assert buffer_ref() is None
+
+
 def test_release_callbacks_run_once_when_collect_reenters():
     settle()
     context = wo.get_context("cuda")

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import ctypes
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import warp as wp
@@ -497,7 +497,11 @@ class Accel:
         self._scratch_size = scratch_size
         self._compacted = False
         self._compacted_size = compacted_size
-        self._inputs = inputs
+        # The retained memory snapshots suffice for traversal, even after a child
+        # is closed. Do not also retain its build inputs and scratch via the object.
+        self._inputs = tuple(
+            replace(item, instance_children=None) if item.instance_children is not None else item for item in inputs
+        )
         self._native_inputs = native_inputs
         self._flags = flags
         self._rebuild_options = options
