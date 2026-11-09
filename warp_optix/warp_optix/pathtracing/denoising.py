@@ -215,6 +215,12 @@ class OptixDenoiser:
         """Queue denoising and return the owned float4 Warp output array."""
         if self._denoiser is None:
             raise RuntimeError("OptiX denoiser is closed")
+        # Recorded launches and native OptiX calls may change the current CUDA context.
+        # Preserve the caller's context without adding stream synchronization on every frame.
+        with wp.ScopedDevice(self.stream.device):
+            return self._apply(inputs, reset=reset)
+
+    def _apply(self, inputs: DenoiserInputs, *, reset):
         # Output and history buffers swap every call, so each parity keeps its own native bindings.
         binding = self._bindings[self._parity]
         if (
