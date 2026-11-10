@@ -18,6 +18,51 @@ def test_mesh_generates_normals_and_fallback_tangents_without_authored_attribute
     np.testing.assert_array_equal(mesh.tangents, np.array([[1.0, 0.0, 0.0, 1.0]] * 3, dtype=np.float32))
 
 
+def _mirrored_uv_fold():
+    """Two quads in the XY plane whose U coordinate mirrors at the shared x=1 column."""
+    vertices = np.array(
+        [[x, y, 0.0] for y in (0.0, 1.0) for x in (0.0, 1.0, 2.0)],
+        dtype=np.float32,
+    )
+    texcoords = np.array([[1.0 - abs(1.0 - x), y] for x, y, _ in vertices], dtype=np.float32)
+    indices = np.array([[0, 1, 4], [0, 4, 3], [1, 2, 5], [1, 5, 4]], dtype=np.uint32)
+    return vertices, indices, texcoords
+
+
+def test_mesh_splits_vertices_at_mirrored_uv_seams():
+    vertices, indices, texcoords = _mirrored_uv_fold()
+    mesh = Mesh(vertices, indices, texcoords=texcoords)
+
+    # The two seam vertices gain mirrored copies; the original six keep their indices.
+    assert len(mesh.vertices) == 8
+    np.testing.assert_array_equal(mesh.vertices[:6], vertices)
+    np.testing.assert_array_equal(mesh.indices[:2], indices[:2])
+    for array in (mesh.vertices, mesh.normals, mesh.texcoords, mesh.texcoords1):
+        np.testing.assert_array_equal(array[6:], array[[1, 4]])
+
+    corner_tangents = mesh.tangents[mesh.indices]
+    left, right = corner_tangents[:2].reshape(-1, 4), corner_tangents[2:].reshape(-1, 4)
+    np.testing.assert_allclose(left, [[1.0, 0.0, 0.0, 1.0]] * 6, atol=1.0e-6)
+    np.testing.assert_allclose(right, [[-1.0, 0.0, 0.0, -1.0]] * 6, atol=1.0e-6)
+
+
+def test_mesh_keeps_vertex_count_without_mirrored_uvs():
+    vertices, indices, _ = _mirrored_uv_fold()
+    mesh = Mesh(vertices, indices, texcoords=vertices[:, :2].copy())
+
+    assert len(mesh.vertices) == len(vertices)
+    np.testing.assert_array_equal(mesh.indices, indices)
+    np.testing.assert_allclose(mesh.tangents, [[1.0, 0.0, 0.0, 1.0]] * 6, atol=1.0e-6)
+
+
+def test_dynamic_mesh_does_not_split_mirrored_uv_seams():
+    vertices, indices, texcoords = _mirrored_uv_fold()
+    mesh = Mesh(vertices, indices, texcoords=texcoords, dynamic=True)
+
+    assert len(mesh.vertices) == len(vertices)
+    np.testing.assert_array_equal(mesh.indices, indices)
+
+
 @pytest.mark.parametrize("indices", [[[-1, 1, 2]], [[0, 1, 3]], [[0.0, 1.0, 2.0]]])
 def test_mesh_rejects_invalid_indices_before_gpu_upload(indices):
     vertices = np.zeros((3, 3), dtype=np.float32)
