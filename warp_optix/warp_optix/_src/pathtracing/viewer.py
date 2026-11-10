@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from warp_optix.gl import GLInteropViewer
+from warp_optix._src.gl.interop import GLInteropViewer
 
 from .camera import cross3
 from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH

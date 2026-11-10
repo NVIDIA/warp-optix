@@ -9,13 +9,13 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import warp as wp
+from warp_optix._src.pathtracing import pathtracing_viewer as renderer_module
 from warp_optix.pathtracing import (
     DenoiserInputs,
     OptixDenoiser,
     PathTracer,
     Renderer,
 )
-from warp_optix.pathtracing import pathtracing_viewer as renderer_module
 
 
 def _renderer(monkeypatch, mode):

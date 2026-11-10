@@ -133,8 +133,8 @@ def test_bare_entries_apply_to_every_ray_type():
 
 
 def test_callable_kind_is_part_of_compiled_module_identity(monkeypatch):
-    from warp_optix.pipeline import _module_name
-    from warp_optix.program import params_struct
+    from warp_optix._src.pipeline import _module_name
+    from warp_optix._src.program import params_struct
 
     params = params_struct(raygen)
     direct = _module_name(params, raygen, [], [], [radiance_miss], None)

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import warp as wp
 
-from warp_optix.enums import PrimitiveType, RayFlags
+from warp_optix._src.enums import PrimitiveType, RayFlags
 
 
 @wp.struct

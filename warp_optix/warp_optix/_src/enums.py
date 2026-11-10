@@ -5,7 +5,7 @@
 
 from enum import IntEnum, IntFlag
 
-from warp_optix._backend import get_backend
+from warp_optix._src.backend import get_backend
 
 _backend = get_backend()
 

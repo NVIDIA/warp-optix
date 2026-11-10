@@ -7,9 +7,9 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import warp as wp
-from warp_optix.pathtracing import usd_loader
-from warp_optix.pathtracing.scene import Scene
-from warp_optix.pathtracing.usd_loader import (
+from warp_optix._src.pathtracing import usd_loader
+from warp_optix._src.pathtracing.scene import Scene
+from warp_optix._src.pathtracing.usd_loader import (
     _MIP_CHAIN_MEMORY_FACTOR,
     _ambient_light_from_custom_layer_data,
     _compact_corners,

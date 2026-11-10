@@ -433,3 +433,32 @@ inference-optimal, non-transposed matrix with the element interpretation in the 
 `warp_optix.gl` provides optional pyglet-based helpers for interactive examples:
 `GLInteropViewer` presents a CUDA-mapped `uint32` RGBA pixel buffer each frame without a host
 copy, and `GLLineOverlay` draws depth-tested lines over it (see below).
+
+## Layout
+
+The public API is what these modules export; everything under `warp_optix/_src/` is implementation
+and may change without notice, as in Warp and Newton.
+
+- `warp_optix/__init__.py`: the core API (`wo.Accel`, `wo.Pipeline`, `wo.launch`, ...).
+- `warp_optix/config.py`: global settings (`validation`, `log_level`, `verify_instances`).
+- `warp_optix/native.py`: PyOptiX plus the supplemental bindings.
+- `warp_optix/pathtracing.py`: the path tracer (`PathTracer`, `Viewer`, ...).
+- `warp_optix/gl.py`: the OpenGL interop viewer and line overlay.
+
+Under `warp_optix/_src/`:
+
+- `context.py`: implicit per-device contexts, device/stream resolution, and native-object release.
+- `accel.py`: build inputs, `Accel`, and `Instance`/`make_instance`.
+- `pipeline.py`, `program.py`, `sbt.py`: pipelines and launches, Warp kernels as OptiX programs,
+  and SBT layouts.
+- `rays.py`: `accel_query_ray`, `accel_query_ray_anyhit`, and `AccelQueryRay`.
+- `enums.py`: flag and primitive-type enums, usable on the host and in kernels.
+- `builtins.py` and `addon.py`: OptiX builtin registrations and the OptiX module build options;
+  the device-side C++ wrappers are in `warp_optix/_native/include/warp_optix_builtins.h`.
+- `backend.py`: composes PyOptiX with the supplemental extension `warp_optix._ext`.
+- `gl/` and `pathtracing/`: the implementations behind `warp_optix.gl` and `warp_optix.pathtracing`.
+
+See [`examples/`](../examples/README.md) for complete programs: `example_minimal.py` (minimal pipeline),
+`example_curves.py` (built-in curves), `example_mixed_geometry.py` (triangles, curves, and
+custom primitives under GPU-written instances), `example_motion_blur.py` (vertex motion keys),
+and `example_raytracing.py` (Cornell box with an interactive viewer).

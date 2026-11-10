@@ -75,7 +75,15 @@ def test_public_surface():
         "make_instance",
         "triangles",
     }
-    assert all(hasattr(wo, name) for name in wo.__all__)
+    # Each public module exports exactly its __all__; everything else lives in warp_optix._src.
+    # Submodules become package attributes once imported: `gl` and `pathtracing` are opt-in extras
+    # and `native` is the advanced PyOptiX escape hatch, so none of them is in `wo.__all__`.
+    import warp_optix.gl
+    import warp_optix.pathtracing
+
+    for module in (wo, warp_optix.gl, warp_optix.pathtracing):
+        names = {name for name in vars(module) if not name.startswith("_")} - {"gl", "native", "pathtracing"}
+        assert names == set(module.__all__), module.__name__
 
 
 def test_enums_match_native():

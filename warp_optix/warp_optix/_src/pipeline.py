@@ -19,12 +19,12 @@ import warp as wp
 from warp._src import context as _warp_context
 
 from warp_optix import native
-from warp_optix.accel import Accel
-from warp_optix.addon import build_options
-from warp_optix.context import CAPTURE_ERROR, native_objects, resolve
-from warp_optix.enums import ExceptionFlags, PrimitiveType, TraversableGraphFlags
-from warp_optix.program import ProgramKind, as_program, params_struct
-from warp_optix.sbt import HitGroup, Record, SbtLayout
+from warp_optix._src.accel import Accel
+from warp_optix._src.addon import build_options
+from warp_optix._src.context import CAPTURE_ERROR, native_objects, resolve
+from warp_optix._src.enums import ExceptionFlags, PrimitiveType, TraversableGraphFlags
+from warp_optix._src.program import ProgramKind, as_program, params_struct
+from warp_optix._src.sbt import HitGroup, Record, SbtLayout
 
 _log = logging.getLogger(__name__)
 # Warp module options every pipeline sets on its programs' module.
