@@ -76,6 +76,8 @@ def test_public_surface():
         "triangles",
     }
     # Each public module exports exactly its __all__; everything else lives in warp_optix._src.
+    # Submodules become package attributes once imported: `gl` and `pathtracing` are opt-in extras
+    # and `native` is the advanced PyOptiX escape hatch, so none of them is in `wo.__all__`.
     import warp_optix.gl
     import warp_optix.pathtracing
 

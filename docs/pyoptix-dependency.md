@@ -21,7 +21,7 @@ An isolated build does not inspect the user's installed PyOptiX binary; the
 import check catches dependency binaries built with different headers.
 
 `src/extension.cpp` registers only additional cooperative-vector types
-and operations. `_backend.py` composes these with the dependency without
+and operations. `_src/backend.py` composes these with the dependency without
 modifying the `optix` module: importing this package leaves PyOptiX's module
 and types exactly as they were. Upstream 9.1.1 gaps are handled locally:
 `native.moduleCreate`/`native.builtinISModuleGet` forward the module compile
