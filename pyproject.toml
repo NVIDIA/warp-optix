@@ -9,7 +9,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "warp-optix"
-version = "0.2.0"
+version = "0.2.1"
 description = "Warp ray tracing with PyOptiX"
 readme = "docs/pypi.md"
 requires-python = ">=3.12,<3.13"
@@ -45,7 +45,7 @@ ui = ["imgui-bundle>=1.92", "PyOpenGL>=3.1"]
 
 [project.urls]
 Homepage = "https://github.com/NVIDIA/warp-optix"
-Documentation = "https://github.com/NVIDIA/warp-optix/blob/main/warp_optix/README.md"
+Documentation = "https://github.com/NVIDIA/warp-optix#readme"
 Repository = "https://github.com/NVIDIA/warp-optix"
 Issues = "https://github.com/NVIDIA/warp-optix/issues"
 

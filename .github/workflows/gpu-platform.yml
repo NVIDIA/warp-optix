@@ -123,7 +123,7 @@ jobs:
       - name: Run full suite with CUDA required
         env:
           WARP_CACHE_PATH: ${{ runner.temp }}/warp-kernel-cache
-        run: uv run --no-sync pytest warp_optix/tests examples_warp/neural_texture --require-cuda --junitxml=test-results/cuda.xml
+        run: uv run --no-sync pytest warp_optix/tests examples/neural_texture --require-cuda --junitxml=test-results/cuda.xml
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0

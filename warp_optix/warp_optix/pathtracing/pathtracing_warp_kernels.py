@@ -25,6 +25,13 @@ from warp_optix.enums import RayFlags
 
 from .func_common import Mat16f, Vec6f
 
+# Ray types of the path tracer's SBT, in record order. Traces use these indices as their SBT
+# offset and miss index, and the count as their SBT stride.
+RAY_TYPES = ("primary", "secondary")
+PRIMARY_RAY = wp.constant(wp.uint32(RAY_TYPES.index("primary")))
+SECONDARY_RAY = wp.constant(wp.uint32(RAY_TYPES.index("secondary")))
+RAY_STRIDE = wp.constant(wp.uint32(len(RAY_TYPES)))
+
 
 @wp.struct
 class PrimaryPayload:
@@ -2547,9 +2554,9 @@ def _sample_sphere_light_contribution(
         0.0,
         wp.uint32(255),
         wp.uint32(RayFlags.TERMINATE_ON_FIRST_HIT | RayFlags.DISABLE_CLOSESTHIT),
-        wp.uint32(1),
-        wp.uint32(2),
-        wp.uint32(1),
+        SECONDARY_RAY,
+        RAY_STRIDE,
+        SECONDARY_RAY,
     )
     if shadow.visible == wp.uint32(1):
         bsdf = evaluated.bsdf_diffuse + evaluated.bsdf_glossy
@@ -2777,10 +2784,10 @@ def _evaluate_material_from_payload(
     return out
 
 
-# The pipeline compiles every program with the raygen's module options. Fast math avoids the
+# The renderer enables fast math for every program through the pipeline's module options. This avoids the
 # precise sin/cos range reduction, which spills to local memory and uses fp64 instructions.
 @wo.kernel(kind=wo.ProgramKind.RAYGEN)
-@wp.kernel(module="unique", module_options={"fast_math": True})
+@wp.kernel(module="unique")
 def primary_raygen(params: PathtraceLaunchParams):
     launch_idx = wp.optix_get_launch_index()
     x = int(launch_idx[0])
@@ -2811,9 +2818,9 @@ def primary_raygen(params: PathtraceLaunchParams):
         0.0,
         wp.uint32(255),
         ray_flags,
-        wp.uint32(0),
-        wp.uint32(2),
-        wp.uint32(0),
+        PRIMARY_RAY,
+        RAY_STRIDE,
+        PRIMARY_RAY,
     )
 
     hitT = _payload_get_hitT(payload)
@@ -2960,9 +2967,9 @@ def primary_raygen(params: PathtraceLaunchParams):
             0.0,
             wp.uint32(255),
             ray_flags,
-            wp.uint32(0),
-            wp.uint32(2),
-            wp.uint32(0),
+            PRIMARY_RAY,
+            RAY_STRIDE,
+            PRIMARY_RAY,
         )
 
     # Virtual origin for PSR depth computation (matches C++ reference).
@@ -3133,9 +3140,9 @@ def primary_raygen(params: PathtraceLaunchParams):
                     wp.uint32(RayFlags.TERMINATE_ON_FIRST_HIT | RayFlags.DISABLE_CLOSESTHIT)
                     | _backface_culling_ray_flag(params)
                 ),
-                wp.uint32(1),
-                wp.uint32(2),
-                wp.uint32(1),
+                SECONDARY_RAY,
+                RAY_STRIDE,
+                SECONDARY_RAY,
             )
             if shadow.visible == wp.uint32(1):
                 mis_weight = _power_heuristic(ls.pdf, bsdf_eval.pdf)
@@ -3241,9 +3248,9 @@ def primary_raygen(params: PathtraceLaunchParams):
             0.0,
             wp.uint32(255),
             wp.uint32(0) if (sec_event_type & BSDF_EVENT_TRANSMISSION) != 0 else ray_flags,
-            wp.uint32(0),
-            wp.uint32(2),
-            wp.uint32(0),
+            PRIMARY_RAY,
+            RAY_STRIDE,
+            PRIMARY_RAY,
         )
 
         t_sec = _payload_get_hitT(sec_payload)
@@ -3356,9 +3363,9 @@ def primary_raygen(params: PathtraceLaunchParams):
                         wp.uint32(RayFlags.TERMINATE_ON_FIRST_HIT | RayFlags.DISABLE_CLOSESTHIT)
                         | _backface_culling_ray_flag(params)
                     ),
-                    wp.uint32(1),
-                    wp.uint32(2),
-                    wp.uint32(1),
+                    SECONDARY_RAY,
+                    RAY_STRIDE,
+                    SECONDARY_RAY,
                 )
                 if sec_shadow.visible == wp.uint32(1):
                     sec_mis = _power_heuristic(sec_ls.pdf, sec_bsdf_eval.pdf)
@@ -3991,3 +3998,40 @@ def secondary_any_hit(params: PathtraceLaunchParams):
     payload.visible = wp.uint32(0)
     wp.optix_store_payload(payload)
     wp.optix_terminate_ray()
+
+
+# Build flags of static and dynamic scene geometry. Curve hit groups declare the same flags, since
+# OptiX specializes its built-in curve intersection on them.
+STATIC_BUILD_FLAGS = (
+    wo.BuildFlags.ALLOW_RANDOM_VERTEX_ACCESS | wo.BuildFlags.PREFER_FAST_TRACE | wo.BuildFlags.ALLOW_COMPACTION
+)
+DYNAMIC_BUILD_FLAGS = (
+    wo.BuildFlags.ALLOW_RANDOM_VERTEX_ACCESS | wo.BuildFlags.ALLOW_UPDATE | wo.BuildFlags.PREFER_FAST_BUILD
+)
+
+
+def _hit_groups(primary_closest_hit, builtin=None, build_flags=wo.BuildFlags.PREFER_FAST_TRACE):
+    return {
+        "primary": wo.HitGroup(primary_closest_hit, primary_any_hit, builtin=builtin, build_flags=build_flags),
+        "secondary": wo.HitGroup(secondary_closest_hit, secondary_any_hit, builtin=builtin, build_flags=build_flags),
+    }
+
+
+# Hit groups are named by the scene geometry's hit_group.
+SBT = wo.SbtLayout(
+    ray_types=RAY_TYPES,
+    miss={"primary": primary_miss, "secondary": secondary_miss},
+    hit_groups={
+        "triangles": _hit_groups(primary_closest_hit),
+        "round_linear": _hit_groups(curve_primary_closest_hit, wo.PrimitiveType.ROUND_LINEAR, STATIC_BUILD_FLAGS),
+        "round_cubic_bezier": _hit_groups(
+            curve_primary_closest_hit, wo.PrimitiveType.ROUND_CUBIC_BEZIER, STATIC_BUILD_FLAGS
+        ),
+        "round_linear_dynamic": _hit_groups(
+            curve_primary_closest_hit, wo.PrimitiveType.ROUND_LINEAR, DYNAMIC_BUILD_FLAGS
+        ),
+        "round_cubic_bezier_dynamic": _hit_groups(
+            curve_primary_closest_hit, wo.PrimitiveType.ROUND_CUBIC_BEZIER, DYNAMIC_BUILD_FLAGS
+        ),
+    },
+)
