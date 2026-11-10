@@ -3,7 +3,10 @@
 
 """Explicit parameter schemas, buffer ordering, and stage declarations."""
 
+import ast
+import inspect
 import weakref
+from typing import Any
 
 import numpy as np
 import pytest
@@ -73,9 +76,7 @@ def params(value, output):
 
 
 def test_schema_independent_of_raygen_and_recorded_equivalence():
-    sbt = wo.SbtBuilder(["radiance"])
-    sbt.set_miss("radiance", miss)
-    pipeline = wo.Pipeline(trace, sbt=sbt, params_type=Params, payload_words=1)
+    pipeline = wo.Pipeline(trace, sbt=wo.SbtLayout(miss=miss), params_type=Params, payload_words=1)
     assert pipeline.params_type is Params
     first = wp.empty(64, dtype=wp.uint32, device=pipeline.device)
     second = wp.empty_like(first)
@@ -141,13 +142,48 @@ def test_explicit_parameter_replacements_release_previous_arrays():
     np.testing.assert_array_equal(output.numpy(), np.full(8, 3))
 
 
+@wp.kernel(module="unique")
+def tid_in_expression(output: wp.array[int]):
+    output[0] = wp.tid() + 1
+
+
+@wp.kernel(module="unique")
+def tid_four_dimensions(output: wp.array[int]):
+    a, b, c, d = wp.tid()
+    output[0] = a + b + c + d
+
+
+@wp.kernel(module="unique")
+def tid_dimensions_differ(output: wp.array[int]):
+    i = wp.tid()
+    j, k = wp.tid()
+    output[0] = i + j + k
+
+
+@wp.kernel(module="unique")
+def tid_two_targets(output: wp.array[int]):
+    i = j = wp.tid()
+    output[0] = i + j
+
+
+def test_invalid_tid_uses_are_rejected_before_compiling():
+    for kernel, message in (
+        (tid_in_expression, "right-hand side"),
+        (tid_four_dimensions, "at most three"),
+        (tid_dimensions_differ, "same number of indices"),
+        (tid_two_targets, "single target"),
+    ):
+        with pytest.raises(TypeError, match=message):
+            wo.Pipeline(kernel)
+
+
 def test_invalid_params_schemas_and_stage_placements():
     with pytest.raises(TypeError, match="kind must be a ProgramKind"):
         wo.kernel(write, kind="miss")
     with pytest.raises(TypeError, match="declares MISS.*RAYGEN"):
         wo.Pipeline(miss)
     with pytest.raises(TypeError, match="declares RAYGEN.*MISS"):
-        wo.Pipeline(write, miss=[trace])
+        wo.Pipeline(write, sbt=wo.SbtLayout(miss=trace))
     with pytest.raises(TypeError, match="Warp struct"):
         wo.Pipeline(write, params_type=int)
     pipeline = wo.Pipeline(write, params_type=Params)
@@ -258,6 +294,94 @@ def test_raygen_arguments_may_use_any_name_and_are_checked():
         wo.launch(pipeline, (4,), [1.5, output])
 
 
+@wp.kernel(module="unique")
+def generic_write(value: Any, output: wp.array2d[Any]):
+    i, j = wp.tid()
+    output[i, j] = value * type(value)(i * 10 + j)
+
+
+@wp.kernel(module="unique")
+def generic_miss(value: Any):
+    wp.optix_set_payload(0, value + value)
+
+
+@wp.kernel(module="unique")
+def generic_array_miss(value: wp.array[Any]):
+    value[0] = value[0]
+
+
+def test_generic_programs_take_launch_parameter_types():
+    output = wp.zeros(4, dtype=wp.uint32, device="cuda")
+    wo.launch(
+        wo.Pipeline(trace, sbt=wo.SbtLayout(miss=generic_miss), params_type=Params, payload_words=1),
+        (4,),
+        [params(3, output)],
+    )
+    np.testing.assert_array_equal(output.numpy(), np.full(4, 6))
+
+    values = wp.zeros((2, 3), dtype=wp.float64, device="cuda")
+    wo.launch(
+        wo.Pipeline(wp.overload(generic_write, [wp.float64, wp.array2d[wp.float64]])), values.shape, [2.0, values]
+    )
+    np.testing.assert_array_equal(values.numpy(), [[0.0, 2.0, 4.0], [20.0, 22.0, 24.0]])
+
+    with pytest.raises(TypeError, match="type mismatch"):
+        wo.Pipeline(trace, sbt=wo.SbtLayout(miss=generic_array_miss), params_type=Params)
+
+
+@wp.kernel(module="unique")
+def undefined_symbol(output: wp.array[wp.uint32]):
+    i = wp.tid()
+    output[i] = missing_symbol  # noqa: F821
+
+
+def test_program_errors_point_at_kernel_source():
+    lines, start = inspect.getsourcelines(undefined_symbol.func)
+    line = start + next(n for n, text in enumerate(lines) if "missing_symbol" in text)
+    with pytest.raises(wp.WarpCodegenKeyError, match="missing_symbol") as error:
+        wo.Pipeline(undefined_symbol)
+    # KeyError.__str__ quotes and escapes backslashes in Windows paths.
+    assert f"{__file__}:{line}:" in error.value.args[0]
+
+
+def test_programs_preserve_explicit_source_and_transformers():
+    source = inspect.getsource(write.func).replace("output[i] = value", "output[i] = value + wp.uint32(1)")
+
+    class AddOne(ast.NodeTransformer):
+        def visit_Constant(self, node):
+            if node.value == 1:
+                node.value = 2
+            return node
+
+    overridden = wp.Kernel(
+        write.func,
+        key="source_override_write",
+        module=wp.get_module("wo_test_source_override"),
+        source=source,
+        code_transformers=[AddOne()],
+    )
+    # 9 = 7 + 2: the program compiles the explicit source with the kernel's own transformer, not write.func.
+    output = wp.empty(4, dtype=wp.uint32, device="cuda")
+    with wo.Pipeline(overridden) as pipeline:
+        wo.launch(pipeline, (4,), [7, output])
+        np.testing.assert_array_equal(output.numpy(), np.full(4, 9))
+
+
+def test_programs_preserve_closures_and_warp_aliases():
+    warp_alias = wp
+    offset = wp.uint32(11)
+
+    @wp.kernel(module="unique")
+    def aliased_tid(output: wp.array[wp.uint32]):
+        i = warp_alias.tid()
+        output[i] = offset + warp_alias.uint32(i)
+
+    output = wp.empty(4, dtype=wp.uint32, device="cuda")
+    with wo.Pipeline(aliased_tid) as pipeline:
+        wo.launch(pipeline, (4,), [output])
+        np.testing.assert_array_equal(output.numpy(), np.arange(4) + 11)
+
+
 def test_equal_pipelines_share_one_module_name():
     @wp.kernel(module="unique")
     def other(value: wp.uint32, output: wp.array[wp.uint32]):
@@ -266,7 +390,7 @@ def test_equal_pipelines_share_one_module_name():
 
     def name(raygen, miss=(None,)):
         return pipeline_module._module_name(
-            pipeline_module.params_struct(raygen), raygen, miss, [wo.HitGroup()], (), (), None
+            pipeline_module.params_struct(raygen), raygen, miss, [wo.HitGroup()], (), None
         )
 
     assert name(write) == name(write)

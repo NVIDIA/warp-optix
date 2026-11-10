@@ -218,7 +218,9 @@ def test_aabbs_from_lowers_uppers_and_packed_bounds_hit_and_refit():
     separate = wo.Accel([wo.aabbs(lowers, uppers)], flags=wo.BuildFlags.ALLOW_UPDATE, device=device)
     packed = wo.Accel([wo.aabbs(bounds=bounds)], device=device)
     pipeline = wo.Pipeline(
-        moving_sphere_raygen, hit_groups=[wo.HitGroup(intersection=moving_sphere_intersection)], device=device
+        moving_sphere_raygen,
+        sbt=wo.SbtLayout(hit_groups={"spheres": wo.HitGroup(intersection=moving_sphere_intersection)}),
+        device=device,
     )
     xs = wp.array([0.0, 3.0, 6.0, 9.0], dtype=float, device=device)
     depth = wp.empty(4, dtype=float, device=device)
@@ -467,8 +469,7 @@ def test_trace_with_payload_closest_hit_and_miss_programs():
     gas = wo.Accel([wo.triangles(vertices, indices)], device=device)
     pipeline = wo.Pipeline(
         shaded_raygen,
-        miss=[shaded_miss],
-        hit_groups=[wo.HitGroup(closest_hit=shaded_closest_hit)],
+        sbt=wo.SbtLayout(miss=shaded_miss, hit_groups={"triangles": wo.HitGroup(closest_hit=shaded_closest_hit)}),
         payload_words=3,
         device=device,
     )
@@ -527,8 +528,8 @@ def test_accel_query_ray_hits_builtin_curves():
     gas_ids = wp.array([gas.id for gas in gases], dtype=wp.uint64, device=device)
     wp.launch(write_curve_instances, dim=len(gases), inputs=[gas_ids, records], device=device)
     ias = wo.Accel([wo.instances(records, gases)], device=device)
-    hit_groups = [wo.HitGroup(builtin=curve_type) for curve_type in curves]
-    pipeline = wo.Pipeline(curve_types_raygen, hit_groups=hit_groups, device=device)
+    hit_groups = {curve_type.name: wo.HitGroup(builtin=curve_type) for curve_type in curves}
+    pipeline = wo.Pipeline(curve_types_raygen, sbt=wo.SbtLayout(hit_groups=hit_groups), device=device)
     results = wp.full((len(gases), 3), -7.0, dtype=float, device=device)
     wo.launch(pipeline, dim=len(gases), inputs=[ias, results])
     out = results.numpy()
@@ -543,8 +544,8 @@ def test_invalid_hit_groups_and_miss_records_are_rejected():
         wo.HitGroup(builtin=wo.PrimitiveType.TRIANGLE)
     with pytest.raises(ValueError, match="cannot be combined"):
         wo.HitGroup(intersection=curve_query_raygen, builtin=wo.PrimitiveType.ROUND_LINEAR)
-    with pytest.raises(ValueError, match="miss must contain at least one entry"):
-        wo.Pipeline(curve_query_raygen, miss=[])
+    with pytest.raises(ValueError, match="Miss.*missing"):
+        wo.SbtLayout(miss={})
 
 
 def test_empty_build_inputs_build_refit_and_miss():
@@ -576,6 +577,7 @@ def write_first(out: wp.array[float]):
     out[0] = 10.0
 
 
+@wo.kernel(kind=wo.ProgramKind.CONTINUATION_CALLABLE)
 @wp.kernel(module="unique")
 def write_second(out: wp.array[float]):
     out[1] = 20.0
@@ -589,6 +591,6 @@ def call_both(out: wp.array[float]):
 
 def test_continuation_callables_follow_direct_callables():
     out = wp.empty(2, dtype=float, device="cuda")
-    pipeline = wo.Pipeline(call_both, callables=[write_first], continuation_callables=[write_second])
+    pipeline = wo.Pipeline(call_both, callables=[write_first, write_second])
     wo.launch(pipeline, 1, [out])
     np.testing.assert_array_equal(out.numpy(), [10.0, 20.0])

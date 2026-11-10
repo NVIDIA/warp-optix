@@ -39,7 +39,7 @@ from .defaults import DEFAULT_VIEWER_HEIGHT, DEFAULT_VIEWER_WIDTH
 from .denoising import DenoiserInputs, OptixDenoiser
 from .environment_map import EnvironmentMap
 from .lighting import RENDERER_RADIANCE_PER_NIT
-from .scene import DYNAMIC_BUILD_FLAGS, STATIC_BUILD_FLAGS, Scene
+from .scene import Scene
 from .sky_lut import generate_physical_sky_lut
 from .tonemap import Tonemapper
 from .volume_composite import VolumeParams, composite_volume
@@ -708,27 +708,13 @@ class Renderer:
     def _create_pipeline(self):
         """Create the OptiX pipeline with primary and shadow/visibility ray types.
 
-        Geometry SBT offsets select the hit groups: triangles 0, then round linear
-        and round cubic Bezier curves at 2 and 4 when static and 6 and 8 when
-        dynamic, since built-in curve intersection depends on the build flags.
-        Bounces iterate in raygen, so hit and miss programs never trace recursively.
+        The scene takes each geometry's instance SBT offset from the same
+        ``pwk.SBT`` layout. Bounces iterate in raygen, so hit and miss programs
+        never trace recursively.
         """
-        curve_groups = []
-        for flags in (STATIC_BUILD_FLAGS, DYNAMIC_BUILD_FLAGS):
-            for builtin in (wo.PrimitiveType.ROUND_LINEAR, wo.PrimitiveType.ROUND_CUBIC_BEZIER):
-                curve_groups += [
-                    wo.HitGroup(pwk.curve_primary_closest_hit, pwk.primary_any_hit, builtin=builtin, build_flags=flags),
-                    wo.HitGroup(pwk.secondary_closest_hit, pwk.secondary_any_hit, builtin=builtin, build_flags=flags),
-                ]
         self._pipeline = wo.Pipeline(
             pwk.primary_raygen,
-            miss=[pwk.primary_miss, pwk.secondary_miss],
-            hit_groups=[
-                wo.HitGroup(pwk.primary_closest_hit, pwk.primary_any_hit),
-                wo.HitGroup(pwk.secondary_closest_hit, pwk.secondary_any_hit),
-                *curve_groups,
-            ],
-            ray_types=2,
+            sbt=pwk.SBT,
             payload_words=19,
             graph_flags=wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
             module_options={"fast_math": True},

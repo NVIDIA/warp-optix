@@ -11,6 +11,7 @@ from warp_optix import native
 
 
 def test_import_boundary_in_fresh_process(tmp_path):
+    # warp_optix is imported before optix; test_backend_dependency covers the other order.
     subprocess.run(
         [
             sys.executable,
@@ -29,8 +30,10 @@ assert wp._src.context.runtime is None
 assert wo.__version__ == version('warp-optix')
 from warp_optix import native
 assert native.version() == (9, 1, 0)
-assert native.DeviceContext is optix.DeviceContext
-assert native.Module is optix.Module
+for name in ('DeviceContext', 'Module', 'ProgramGroup', 'Pipeline', 'Denoiser',
+             'BuildInputTriangleArray', 'Image2D', 'ModuleCompileOptions'):
+    assert getattr(native, name) is getattr(optix, name), name
+assert sys.modules['optix'] is optix and optix.__spec__.name == 'optix'
 assert 'warp_optix._bindings' not in sys.modules
 """,
         ],
@@ -48,7 +51,6 @@ def test_public_surface():
         "ExceptionFlags",
         "GeometryFlags",
         "HitGroup",
-        "HitGroupHandle",
         "HitKind",
         "Instance",
         "InstanceFlags",
@@ -58,7 +60,6 @@ def test_public_surface():
         "ProgramKind",
         "RayFlags",
         "Record",
-        "SbtBuilder",
         "SbtLayout",
         "TraversableGraphFlags",
         "aabbs",

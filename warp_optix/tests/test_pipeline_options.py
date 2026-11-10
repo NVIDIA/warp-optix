@@ -47,6 +47,22 @@ def second(output: wp.array[wp.uint32]):
     output[1] = wp.uint32(41)
 
 
+@wp.kernel(module="unique")
+def call_first_continuation(output: wp.array[wp.uint32]):
+    wp.optix_continuation_call(wp.uint32(0))
+
+
+@wo.kernel(kind=wo.ProgramKind.CONTINUATION_CALLABLE)
+def first_continuation(output: wp.array[wp.uint32]):
+    wp.optix_continuation_call(wp.uint32(2))
+    output[0] = output[1] + wp.uint32(1)
+
+
+@wo.kernel(kind=wo.ProgramKind.CONTINUATION_CALLABLE)
+def second_continuation(output: wp.array[wp.uint32]):
+    output[1] = wp.uint32(41)
+
+
 @pytest.fixture
 def compiled(monkeypatch):
     """Record the compile options and PTX of every OptiX module created during the test."""
@@ -62,23 +78,23 @@ def compiled(monkeypatch):
 
 
 def test_module_options_apply_to_every_program_and_must_agree(compiled):
-    wo.Pipeline(sine, miss=[miss])
+    wo.Pipeline(sine, sbt=wo.SbtLayout(miss=miss))
     assert "sin.approx" not in compiled[-1][1]
-    pipeline = wo.Pipeline(sine, miss=[miss], module_options={"fast_math": True})
+    pipeline = wo.Pipeline(sine, sbt=wo.SbtLayout(miss=miss), module_options={"fast_math": True})
     assert "sin.approx" in compiled[-1][1]
     output = wp.zeros(4, dtype=float, device="cuda")
     wo.launch(pipeline, 4, [output])
     np.testing.assert_allclose(output.numpy(), np.sin(np.arange(4) + 0.5), rtol=1e-5)
     # The same programs without the override compile without it again.
-    wo.Pipeline(sine, miss=[miss])
+    wo.Pipeline(sine, sbt=wo.SbtLayout(miss=miss))
     assert "sin.approx" not in compiled[-1][1]
 
     # Kernels whose modules disagree are rejected before compiling, unless the pipeline decides.
     count = len(compiled)
     with pytest.raises(ValueError, match="'fast_math' is False for kernel 'sine' but True for kernel 'fast_miss'"):
-        wo.Pipeline(sine, miss=[fast_miss])
+        wo.Pipeline(sine, sbt=wo.SbtLayout(miss=fast_miss))
     assert len(compiled) == count
-    wo.Pipeline(sine, miss=[fast_miss], module_options={"fast_math": True})
+    wo.Pipeline(sine, sbt=wo.SbtLayout(miss=fast_miss), module_options={"fast_math": True})
     assert "sin.approx" in compiled[-1][1]
     with pytest.raises(ValueError, match="Unknown Warp module options: fast_maths"):
         wo.Pipeline(sine, module_options={"fast_maths": True})
@@ -94,7 +110,19 @@ def test_module_options_apply_to_every_program_and_must_agree(compiled):
     np.testing.assert_allclose(output.numpy(), np.sin(np.arange(4) + 0.5), rtol=1e-6)
 
 
-def test_nested_callables_get_stack_for_their_depth(monkeypatch):
+@pytest.mark.parametrize(
+    "raygen,callables,expected_depths",
+    [
+        (call_first, [first, second], [(0, 1), (0, 2)]),
+        (
+            call_first_continuation,
+            [first_continuation, second_continuation, second_continuation],
+            [(1, 0), (2, 0)],
+        ),
+        (call_first_continuation, [first_continuation, second, second_continuation], [(1, 1), (2, 2)]),
+    ],
+)
+def test_nested_callables_get_stack_for_their_depth(monkeypatch, raygen, callables, expected_depths):
     original = native.util.computeStackSizes
     depths = []
 
@@ -103,9 +131,9 @@ def test_nested_callables_get_stack_for_their_depth(monkeypatch):
         return original(stack_sizes, max_trace_depth, max_cc_depth, max_dc_depth)
 
     monkeypatch.setattr(native.util, "computeStackSizes", compute)
-    wo.Pipeline(call_first, callables=[first, second])
-    pipeline = wo.Pipeline(call_first, callables=[first, second], max_callable_depth=2)
-    assert depths == [(0, 1), (0, 2)]
+    wo.Pipeline(raygen, callables=callables)
+    pipeline = wo.Pipeline(raygen, callables=callables, max_callable_depth=2)
+    assert depths == expected_depths
 
     output = wp.zeros(2, dtype=wp.uint32, device="cuda")
     wo.launch(pipeline, 1, [output])
@@ -141,6 +169,6 @@ def test_closed_pipelines_leave_no_warp_modules_or_structs():
 
     # A failure after registering the raygen program must detach its module as well.
     with pytest.raises(TypeError, match="type differs from launch parameters"):
-        wo.Pipeline(sine, miss=[call_first])
+        wo.Pipeline(sine, sbt=wo.SbtLayout(miss=call_first))
     assert not sine.module.dependents
     assert len(modules) == count
