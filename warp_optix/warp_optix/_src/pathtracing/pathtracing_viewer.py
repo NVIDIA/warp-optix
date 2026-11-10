@@ -717,6 +717,7 @@ class Renderer:
             sbt=pwk.SBT,
             payload_words=19,
             graph_flags=wo.TraversableGraphFlags.ALLOW_SINGLE_LEVEL_INSTANCING,
+            module_options={"fast_math": True},
             device=self._device,
         )
 
