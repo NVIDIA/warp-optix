@@ -2607,7 +2607,7 @@ def _evaluate_material_from_payload(
     # Handedness is an orientation, not a scale. Interpolation across mirrored
     # UVs can produce values between -1 and 1; using their magnitude squashes
     # the shading frame and turns isotropic specular lobes into curved streaks.
-    bs = -1.0 if bitangent_sign < 0.0 else 1.0
+    bs = wp.sign(bitangent_sign)
     b = wp.normalize(wp.cross(n, t)) * bs
 
     materials = params.compact_materials
@@ -2739,7 +2739,7 @@ def _evaluate_material_from_payload(
     # C++ lines 185-191: re-orthogonalize tangent frame after normal map
     if needs_tangent_update:
         b_new = wp.cross(n, t)
-        bsign_new = -1.0 if wp.dot(b, b_new) < 0.0 else 1.0
+        bsign_new = wp.sign(wp.dot(b, b_new))
         b = b_new * bsign_new
         t = wp.cross(b, n) * bsign_new
 

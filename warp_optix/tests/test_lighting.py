@@ -27,6 +27,7 @@ def _evaluate_interpolated_tangent_frame(
     params: PathtraceLaunchParams,
     handedness: wp.array(dtype=wp.float32),
     output: wp.array(dtype=wp.vec4),
+    orientation: wp.array(dtype=wp.float32),
 ):
     index = wp.tid()
     hit = _evaluate_material_from_payload(
@@ -40,6 +41,7 @@ def _evaluate_interpolated_tangent_frame(
         0.0,
     )
     output[index] = wp.vec4(wp.length(hit.T), wp.length(hit.B), wp.dot(hit.T, hit.B), wp.dot(hit.normal, hit.B))
+    orientation[index] = wp.dot(hit.B, wp.cross(hit.normal, hit.T))
 
 
 def test_mirrored_uv_handedness_interpolation_preserves_orthonormal_shading_frame():
@@ -59,8 +61,16 @@ def test_mirrored_uv_handedness_interpolation_preserves_orthonormal_shading_fram
     params.material_count = 1
     handedness = wp.array([-1.0, -0.25, 0.0, 0.25, 1.0], dtype=wp.float32, device="cpu")
     output = wp.zeros(5, dtype=wp.vec4, device="cpu")
-    wp.launch(_evaluate_interpolated_tangent_frame, dim=5, inputs=[params, handedness, output], device="cpu")
+    orientation = wp.zeros(5, dtype=wp.float32, device="cpu")
+    wp.launch(
+        _evaluate_interpolated_tangent_frame,
+        dim=5,
+        inputs=[params, handedness, output, orientation],
+        device="cpu",
+    )
     np.testing.assert_allclose(output.numpy(), np.tile((1.0, 1.0, 0.0, 0.0), (5, 1)), atol=1.0e-6)
+    # Handedness still selects the bitangent direction: negative mirrors it, zero defaults to right-handed.
+    np.testing.assert_allclose(orientation.numpy(), (-1.0, -1.0, 1.0, 1.0, 1.0), atol=1.0e-6)
 
 
 @wp.kernel

@@ -321,6 +321,21 @@ class Mesh:
         self.material_ids = _normalize_primitive_material_ids(material_ids, len(self.indices), self.material_id)
         self.dynamic = bool(dynamic)
 
+        # Mirrored UV islands that share vertices would otherwise average
+        # opposite tangents and interpolate handedness through zero. Dynamic
+        # meshes keep their vertex count because callers write positions
+        # directly into the device vertex buffer.
+        if has_texcoords and not self.dynamic:
+            (
+                self.vertices,
+                self.indices,
+                self.normals,
+                self.texcoords,
+                self.texcoords1,
+            ) = self._split_mirrored_uv_seams(
+                self.vertices, self.indices, self.normals, self.texcoords, self.texcoords1
+            )
+
         # Tangents only need triangle accumulation when authored UVs exist.
         self.tangents = (
             self._compute_tangents(self.vertices, self.indices, self.normals, self.texcoords)
@@ -343,6 +358,62 @@ class Mesh:
         tangents[use_y, 1] = 1.0
         tangents[:, 3] = 1.0
         return tangents
+
+    @staticmethod
+    def _split_mirrored_uv_seams(
+        vertices: np.ndarray,
+        indices: np.ndarray,
+        normals: np.ndarray,
+        texcoords: np.ndarray,
+        texcoords1: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Duplicate vertices whose adjacent triangles disagree on tangent handedness.
+
+        Corners with negative handedness are moved to an appended copy of the
+        vertex, so original vertex indices stay valid and each triangle ends up
+        with one handedness at all three corners.
+        """
+        tri = indices.astype(np.int64, copy=False)
+        v0 = vertices[tri[:, 0]]
+        uv0 = texcoords[tri[:, 0]]
+        e1 = vertices[tri[:, 1]] - v0
+        e2 = vertices[tri[:, 2]] - v0
+        duv1 = texcoords[tri[:, 1]] - uv0
+        duv2 = texcoords[tri[:, 2]] - uv0
+        denom = duv1[:, 0] * duv2[:, 1] - duv2[:, 0] * duv1[:, 1]
+        valid = (np.abs(denom) >= 1.0e-8)[:, None]
+
+        # dot(cross(N, dP/du), dP/dv) == dot(N, cross(e1, e2)) / denom.
+        orientation = np.einsum("mkj,mj->mk", normals[tri], np.cross(e1, e2)) * denom[:, None]
+        positive = valid & (orientation > 0.0)
+        negative = valid & (orientation < 0.0)
+
+        n_verts = len(vertices)
+        has_positive = np.zeros(n_verts, dtype=bool)
+        has_negative = np.zeros(n_verts, dtype=bool)
+        has_positive[tri[positive]] = True
+        has_negative[tri[negative]] = True
+        split = has_positive & has_negative
+        if not np.any(split):
+            return vertices, indices, normals, texcoords, texcoords1
+
+        source = np.flatnonzero(split)
+        remap = np.full(n_verts, -1, dtype=np.int64)
+        remap[source] = n_verts + np.arange(len(source), dtype=np.int64)
+        moved = negative & split[tri]
+        new_tri = tri.copy()
+        new_tri[moved] = remap[tri[moved]]
+
+        def extend(values: np.ndarray) -> np.ndarray:
+            return np.ascontiguousarray(np.concatenate([values, values[source]]), dtype=np.float32)
+
+        return (
+            extend(vertices),
+            np.ascontiguousarray(new_tri, dtype=np.uint32),
+            extend(normals),
+            extend(texcoords),
+            extend(texcoords1),
+        )
 
     def _compute_tangents(
         self,
