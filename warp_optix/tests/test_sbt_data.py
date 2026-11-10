@@ -116,7 +116,8 @@ def textured(device):
     return data
 
 
-def test_records_carry_their_own_data():
+@pytest.mark.parametrize("recorded", [False, True])
+def test_records_carry_their_own_data(recorded):
     device = wp.get_device("cuda")
     gas = two_triangle_gas(device)
     flat, sky, ground = Color(), Color(), Color()
@@ -143,7 +144,15 @@ def test_records_carry_their_own_data():
     gc.collect()
     assert palette() is not None
     image = wp.empty(5, dtype=wp.vec3, device=device)
-    wo.launch(pipeline, 4, [gas, image])
+    command = wo.launch(pipeline, 4, [gas, image], record_cmd=True) if recorded else None
+
+    def launch():
+        if command is not None:
+            command.launch()
+        else:
+            wo.launch(pipeline, 4, [gas, image])
+
+    launch()
     expected = [[0.1, 0.2, 0.3], [2.5, 4.25, 6.125], [0.0, 0.0, 1.0], [4.0, 5.0, 6.0], [-1.0, -1.0, -1.0]]
     np.testing.assert_allclose(image.numpy(), expected)
 
@@ -156,7 +165,8 @@ def test_records_carry_their_own_data():
     flat.color = wp.vec3(1.0, 0.0, 0.0)
     sky.color = wp.vec3(0.0, 1.0, 0.0)
     pipeline.update_sbt_data()
-    wo.launch(pipeline, 4, [gas, image])
+    # A recorded launch reuses its native arguments and must still read the updated SBT data.
+    launch()
     expected[0], expected[2] = [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]
     np.testing.assert_allclose(image.numpy(), expected)
 

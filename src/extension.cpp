@@ -75,21 +75,23 @@ size_t network_extent(const std::vector<OptixCoopVecMatrixDescription>& layers, 
 // live CUDA allocation that covers `requiredBytes` before OptiX reads or writes them.
 // The driver is resolved at runtime, like OptiX itself, so that building needs only
 // cuda.h and the wheel links no CUDA library. Warp has already loaded the driver.
+void* driver_symbol(const char* name) {
+#ifdef _WIN32
+    static const HMODULE driver = LoadLibraryExA("nvcuda.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    void* function = driver ? reinterpret_cast<void*>(GetProcAddress(driver, name)) : nullptr;
+#else
+    static void* const driver = dlopen("libcuda.so.1", RTLD_NOW | RTLD_LOCAL);
+    void* function = driver ? dlsym(driver, name) : nullptr;
+#endif
+    if (!function)
+        throw std::runtime_error(std::string("Cannot load ") + name + " from the NVIDIA driver library");
+    return function;
+}
+
 using PointerGetAttributeFn = CUresult(CUDAAPI*)(void*, CUpointer_attribute, CUdeviceptr);
 
 PointerGetAttributeFn pointer_get_attribute() {
-    static const PointerGetAttributeFn function = [] {
-#ifdef _WIN32
-        HMODULE driver = LoadLibraryExA("nvcuda.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-        return driver ? reinterpret_cast<PointerGetAttributeFn>(GetProcAddress(driver, "cuPointerGetAttribute"))
-                      : nullptr;
-#else
-        void* driver = dlopen("libcuda.so.1", RTLD_NOW | RTLD_LOCAL);
-        return driver ? reinterpret_cast<PointerGetAttributeFn>(dlsym(driver, "cuPointerGetAttribute")) : nullptr;
-#endif
-    }();
-    if (!function)
-        throw std::runtime_error("Cannot load cuPointerGetAttribute from the NVIDIA driver library");
+    static const auto function = reinterpret_cast<PointerGetAttributeFn>(driver_symbol("cuPointerGetAttribute"));
     return function;
 }
 
@@ -231,6 +233,8 @@ void validate_pyoptix_bindings(py::module_ upstream) {
     require_upstream_type<pyoptix::ModuleCompileBoundValueEntry>(upstream.attr("ModuleCompileBoundValueEntry"));
     require_upstream_type<pyoptix::PayloadType>(upstream.attr("PayloadType"));
     require_upstream_type<pyoptix::ModuleCompileOptions>(upstream.attr("ModuleCompileOptions"));
+    require_upstream_type<pyoptix::Pipeline>(upstream.attr("Pipeline"));
+    require_upstream_type<pyoptix::ShaderBindingTable>(upstream.attr("ShaderBindingTable"));
     require_upstream_type<OptixDenoiserGuideLayer>(upstream.attr("DenoiserGuideLayer"));
     require_upstream_type<OptixDenoiserParams>(upstream.attr("DenoiserParams"));
     require_upstream_type<OptixDenoiserSizes>(upstream.attr("DenoiserSizes"));
@@ -249,6 +253,39 @@ PYBIND11_MODULE(_ext, m) {
         PYOPTIX_CHECK(optixDeviceContextGetProperty(context.deviceContext, OPTIX_DEVICE_PROPERTY_COOP_VEC, &flags,
                                                     sizeof(flags)));
         return flags;
+    });
+    // Launch from raw handles: PyOptiX's launch converts its wrapper objects on every call.
+    // The handles are read once per pipeline; the layouts are checked at import.
+    m.def("pipeline_handle", [](const pyoptix::Pipeline& p) { return reinterpret_cast<uintptr_t>(p.pipeline); });
+    // Address of the table inside the PyOptiX object; valid while the caller keeps that object alive.
+    m.def("sbt_address", [](const pyoptix::ShaderBindingTable& t) { return reinterpret_cast<uintptr_t>(&t.sbt); });
+    m.def("launch_raw", [](uintptr_t pipeline, uintptr_t stream, uintptr_t params, size_t params_size, uintptr_t sbt,
+                           unsigned width, unsigned height, unsigned depth) {
+        ensure_optix_initialized();
+        PYOPTIX_CHECK(optixLaunch(reinterpret_cast<OptixPipeline>(pipeline), reinterpret_cast<CUstream>(stream),
+                                  static_cast<CUdeviceptr>(params), params_size,
+                                  reinterpret_cast<const OptixShaderBindingTable*>(sbt), width, height, depth));
+    });
+    // launch_raw, but only when `context` is current and `stream` is not capturing; returns
+    // whether it launched. OptiX does not reject capture, and a captured launch faults on replay.
+    m.def("launch_replay", [](uintptr_t context, uintptr_t pipeline, uintptr_t stream, uintptr_t params,
+                              size_t params_size, uintptr_t sbt, unsigned width, unsigned height, unsigned depth) {
+        using CtxGetCurrentFn = CUresult(CUDAAPI*)(CUcontext*);
+        using StreamIsCapturingFn = CUresult(CUDAAPI*)(CUstream, CUstreamCaptureStatus*);
+        static const auto ctx_get_current = reinterpret_cast<CtxGetCurrentFn>(driver_symbol("cuCtxGetCurrent"));
+        static const auto stream_is_capturing =
+            reinterpret_cast<StreamIsCapturingFn>(driver_symbol("cuStreamIsCapturing"));
+        CUcontext current = nullptr;
+        CUstreamCaptureStatus capture = CU_STREAM_CAPTURE_STATUS_NONE;
+        if (ctx_get_current(&current) != CUDA_SUCCESS || reinterpret_cast<uintptr_t>(current) != context ||
+            stream_is_capturing(reinterpret_cast<CUstream>(stream), &capture) != CUDA_SUCCESS ||
+            capture != CU_STREAM_CAPTURE_STATUS_NONE)
+            return false;
+        ensure_optix_initialized();
+        PYOPTIX_CHECK(optixLaunch(reinterpret_cast<OptixPipeline>(pipeline), reinterpret_cast<CUstream>(stream),
+                                  static_cast<CUdeviceptr>(params), params_size,
+                                  reinterpret_cast<const OptixShaderBindingTable*>(sbt), width, height, depth));
+        return true;
     });
     m.def("coopVecMatrixComputeSize", &warp_optix_ext::coopVecMatrixComputeSize, py::arg("context"), py::arg("N"),
           py::arg("K"), py::arg("elementType"), py::arg("layout"), py::arg("rowColumnStrideInBytes") = 0u);
