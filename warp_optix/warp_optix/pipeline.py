@@ -27,6 +27,8 @@ from warp_optix.program import ProgramKind, as_program, params_struct
 from warp_optix.sbt import HitGroup, Record, SbtLayout
 
 _log = logging.getLogger(__name__)
+# Warp module options every pipeline sets on its programs' module.
+_PIPELINE_MODULE_OPTIONS = ("enable_backward", "extra_build_options")
 _BUILTIN_PRIMITIVE_FLAGS = {
     int(native.PRIMITIVE_TYPE_ROUND_LINEAR): int(native.PRIMITIVE_TYPE_FLAGS_ROUND_LINEAR),
     int(native.PRIMITIVE_TYPE_ROUND_QUADRATIC_BSPLINE): int(native.PRIMITIVE_TYPE_FLAGS_ROUND_QUADRATIC_BSPLINE),
@@ -58,6 +60,12 @@ class Pipeline:
     ``HitGroup(data=...)``, store a Warp struct instance in the record;
     :meth:`update_sbt_data` uploads later changes to those instances.
 
+    All programs compile into one Warp module. ``module_options`` sets its Warp
+    module options; any option not given there must be equal in the Warp
+    modules of all the program kernels. Like Warp's, ``mode="debug"`` (or
+    ``wp.config.mode``) makes the programs debuggable: OptiX then compiles them
+    unoptimized with full debug information.
+
     Release is automatic when the last reference is dropped, or explicit with
     :meth:`close` or ``with``. Device memory is freed in stream order, like
     ``wp.array``; the native OptiX objects are destroyed once the launches
@@ -77,9 +85,11 @@ class Pipeline:
         attribute_words: int = 2,
         max_trace_depth: int = 1,
         max_traversable_depth: int = 2,
+        max_callable_depth: int = 1,
         graph_flags: TraversableGraphFlags = TraversableGraphFlags.ALLOW_ANY,
         motion_blur: bool = False,
         max_registers: int = native.COMPILE_DEFAULT_MAX_REGISTER_COUNT,
+        module_options: dict | None = None,
         device: wp.DeviceLike = None,
     ):
         self._closed = True
@@ -102,51 +112,34 @@ class Pipeline:
         device = context.device
         context.check_arrays(record_data)
 
-        with native_objects(context) as owned:
-            # All programs compile into one Warp module that inherits the raygen module's options.
-            params = params_struct(raygen) if params_type is None else params_type
-            module_name = _module_name(params, raygen, miss, hit_groups, callables, exception)
-
-            def program(kernel, kind):
-                return None if kernel is None else as_program(kernel, kind, params, module_name)
-
-            raygen_program = program(raygen, ProgramKind.RAYGEN)
-            miss_programs = [program(k, ProgramKind.MISS) for k in miss]
-            hit_programs = [
-                (
-                    program(g.closest_hit, ProgramKind.CLOSEST_HIT),
-                    program(g.any_hit, ProgramKind.ANY_HIT),
-                    program(g.intersection, ProgramKind.INTERSECTION),
-                )
+        callable_kinds = [
+            ProgramKind.CONTINUATION_CALLABLE
+            if getattr(k, "_optix_kind", None) is ProgramKind.CONTINUATION_CALLABLE
+            else ProgramKind.DIRECT_CALLABLE
+            for k in callables
+        ]
+        params = params_struct(raygen) if params_type is None else params_type
+        slots = [
+            (raygen, ProgramKind.RAYGEN),
+            *((k, ProgramKind.MISS) for k in miss),
+            *(
+                slot
                 for g in hit_groups
-            ]
-            # A callable is direct unless declared with wo.kernel(kind=ProgramKind.CONTINUATION_CALLABLE).
-            callable_kinds = [
-                ProgramKind.CONTINUATION_CALLABLE
-                if getattr(k, "_optix_kind", None) is ProgramKind.CONTINUATION_CALLABLE
-                else ProgramKind.DIRECT_CALLABLE
-                for k in callables
-            ]
-            callable_programs = [program(k, kind) for k, kind in zip(callables, callable_kinds)]
-            exception_program = program(exception, ProgramKind.EXCEPTION)
+                for slot in (
+                    (g.closest_hit, ProgramKind.CLOSEST_HIT),
+                    (g.any_hit, ProgramKind.ANY_HIT),
+                    (g.intersection, ProgramKind.INTERSECTION),
+                )
+            ),
+            *zip(callables, callable_kinds),
+            (exception, ProgramKind.EXCEPTION),
+        ]
+        slots = [(kernel, kind) for kernel, kind in slots if kernel is not None]
+        module_name = _module_name(params, raygen, miss, hit_groups, callables, exception)
+        options = _warp_module_options([kernel for kernel, _ in slots], module_options)
+        ptx, entries, tid_ndim = _compile_ptx(slots, params, module_name, options, device)
 
-            module = wp.get_module(module_name)
-            wp.set_module_options(
-                {**raygen.module.options, "enable_backward": False, "extra_build_options": build_options()},
-                module=module,
-            )
-            module_dir = os.path.join(wp.config.kernel_cache_dir, "warp_optix", module_name)
-            ptx = wp.compile_aot_module(module, device=device, module_dir=module_dir, use_ptx=True)[0].read_bytes()
-
-            primitive_flags = 0
-            for group in hit_groups:
-                if group.builtin is not None:
-                    primitive_flags |= _BUILTIN_PRIMITIVE_FLAGS[int(group.builtin)]
-                elif group.intersection is not None:
-                    primitive_flags |= int(native.PRIMITIVE_TYPE_FLAGS_CUSTOM)
-                else:
-                    primitive_flags |= int(native.PRIMITIVE_TYPE_FLAGS_TRIANGLE)
-
+        with native_objects(context) as owned:
             pipeline_options = native.PipelineCompileOptions(
                 usesMotionBlur=motion_blur,
                 traversableGraphFlags=int(graph_flags),
@@ -158,21 +151,24 @@ class Pipeline:
                     else exception_flags
                 ),
                 pipelineLaunchParamsVariableName="params",
-                usesPrimitiveTypeFlags=primitive_flags or int(native.PRIMITIVE_TYPE_FLAGS_TRIANGLE),
+                usesPrimitiveTypeFlags=_primitive_flags(hit_groups),
             )
-            module_options = native.ModuleCompileOptions(
+            # OptiX accepts full debug information only without optimization.
+            debug = (options["mode"] or wp.config.mode) == "debug"
+            compile_options = native.ModuleCompileOptions(
                 maxRegisterCount=max_registers,
-                optLevel=native.COMPILE_OPTIMIZATION_DEFAULT,
-                debugLevel=native.COMPILE_DEBUG_LEVEL_DEFAULT,
+                optLevel=native.COMPILE_OPTIMIZATION_LEVEL_0 if debug else native.COMPILE_OPTIMIZATION_DEFAULT,
+                debugLevel=native.COMPILE_DEBUG_LEVEL_FULL if debug else native.COMPILE_DEBUG_LEVEL_DEFAULT,
             )
-            optix_module, log = context.native.moduleCreate(module_options, pipeline_options, ptx)
+            optix_module, log = native.moduleCreate(context.native, compile_options, pipeline_options, ptx)
             owned.append(optix_module)
             if log:
                 _log.debug("module %s: %s", module_name, log)
             # Built-in intersection modules belong to the device context; they are not destroyed with the pipeline.
             builtin_modules = {
-                (group.builtin, group.build_flags): context.native.builtinISModuleGet(
-                    module_options,
+                (group.builtin, group.build_flags): native.builtinISModuleGet(
+                    context.native,
+                    compile_options,
                     pipeline_options,
                     native.BuiltinISOptions(
                         builtinISModuleType=native.PrimitiveType(int(group.builtin)),
@@ -184,44 +180,17 @@ class Pipeline:
                 if group.builtin is not None
             }
 
-            # Keyword arguments of one ProgramGroupDesc slot. OptiX treats an empty entry
-            # name without a module as "no program"; built-in intersections have a module only.
-            def slot(prefix: str, suffix: str, kernel, module=optix_module) -> dict:
-                if kernel is not None:
-                    return {
-                        f"{prefix}Module{suffix}": module,
-                        f"{prefix}EntryFunctionName{suffix}": kernel.get_mangled_name(),
-                    }
-                if module is not optix_module:
-                    return {f"{prefix}Module{suffix}": module}
-                return {f"{prefix}EntryFunctionName{suffix}": ""}
-
-            raygen_desc = native.ProgramGroupDesc(**slot("raygen", "", raygen_program))
-            miss_descs = [native.ProgramGroupDesc(**slot("miss", "", k)) for k in miss_programs]
-            hit_descs = [
-                native.ProgramGroupDesc(
-                    **slot("hitgroup", "CH", ch),
-                    **slot("hitgroup", "AH", ah),
-                    **(
-                        slot("hitgroup", "IS", None, builtin_modules[group.builtin, group.build_flags])
-                        if group.builtin is not None
-                        else slot("hitgroup", "IS", is_)
-                    ),
-                )
-                for group, (ch, ah, is_) in zip(hit_groups, hit_programs)
-            ]
-            callable_descs = []
-            for k, kind in zip(callable_programs, callable_kinds):
-                continuation = kind is ProgramKind.CONTINUATION_CALLABLE
-                desc = native.ProgramGroupDesc(**slot("callables", "CC" if continuation else "DC", k))
-                if continuation:
-                    # PyOptiX 9.1.1 ignores the callablesModuleCC constructor argument.
-                    desc.callablesModuleCC = optix_module
-                callable_descs.append(desc)
-            exception_descs = (
-                [native.ProgramGroupDesc(**slot("exception", "", exception_program))] if exception_program else []
+            descs = _program_group_descs(
+                optix_module,
+                builtin_modules,
+                entries,
+                raygen,
+                miss,
+                hit_groups,
+                callables,
+                callable_kinds,
+                exception,
             )
-            descs = [raygen_desc, *exception_descs, *miss_descs, *hit_descs, *callable_descs]
             groups, log = context.native.programGroupCreate(descs, native.ProgramGroupOptions())
             owned.extend(groups)
             if log:
@@ -238,45 +207,19 @@ class Pipeline:
                 *native.util.computeStackSizes(
                     stack_sizes,
                     max_trace_depth,
-                    int(ProgramKind.CONTINUATION_CALLABLE in callable_kinds),
-                    int(ProgramKind.DIRECT_CALLABLE in callable_kinds),
+                    max_callable_depth if ProgramKind.CONTINUATION_CALLABLE in callable_kinds else 0,
+                    max_callable_depth if ProgramKind.DIRECT_CALLABLE in callable_kinds else 0,
                 ),
                 max_traversable_depth,
             )
 
-            # One device buffer holds every SBT record in descriptor order: the header, then
-            # the record data. Each section's stride fits its largest record.
-            header = native.SBT_RECORD_HEADER_SIZE
-            sections = [[None], [None] * len(exception_descs), miss_data, hit_data, callable_data]
-            strides = [_record_stride(section) for section in sections]
-            bases = list(itertools.accumulate((len(s) * n for s, n in zip(sections, strides)), initial=0))
-            offsets = [base + i * n for s, n, base in zip(sections, strides, bases) for i in range(len(s))]
-            host_records = np.zeros(bases[-1], dtype=np.uint8)
-            for group, offset in zip(groups, offsets):
-                native.sbtRecordPackHeader(group, host_records[offset : offset + header])
-            data_offsets = [
-                (offset + header, data)
-                for offset, data in zip(offsets, [data for section in sections for data in section])
-                if data is not None
-            ]
-            _pack_record_data(host_records, data_offsets)
-            records = wp.array(host_records, dtype=wp.uint8, device=device)
-            # Launches on other streams do not wait for this upload.
-            wp.synchronize_stream(wp.get_stream(device))
-
-            _, exception_base, miss_base, hit_base, callable_base, _ = (records.ptr + base for base in bases)
-            sbt_table = native.ShaderBindingTable(
-                raygenRecord=records.ptr,
-                exceptionRecord=exception_base if exception_descs else 0,
-                missRecordBase=miss_base,
-                missRecordStrideInBytes=strides[2],
-                missRecordCount=len(miss_descs),
-                hitgroupRecordBase=hit_base if hit_descs else 0,
-                hitgroupRecordStrideInBytes=strides[3],
-                hitgroupRecordCount=len(hit_descs),
-                callablesRecordBase=callable_base if callable_descs else 0,
-                callablesRecordStrideInBytes=strides[4],
-                callablesRecordCount=len(callable_descs),
+            records, sbt_table, host_records, data_offsets = _shader_binding_table(
+                groups,
+                device,
+                exception=exception is not None,
+                miss_data=miss_data,
+                hit_data=hit_data,
+                callable_data=callable_data,
             )
 
         self._context = context
@@ -289,7 +232,7 @@ class Pipeline:
         self._data_arrays = tuple(_record_arrays(record_data))
         self._params_size = ctypes.sizeof(params.ctype)
         self._param_names = tuple(arg.label for arg in raygen.adj.args)
-        self._tid_ndim = raygen_program._wo_tid_ndim
+        self._tid_ndim = tid_ndim
         self._params_type = params
         self._explicit_params = params_type is not None
         self._sbt_layout = layout
@@ -619,6 +562,149 @@ def _launch(pipeline: Pipeline, context, storage: _ParamsStorage, size, stream: 
             native.launch(*args)
     # Remembered so close() can wait for these launches before destroying the native pipeline.
     pipeline._streams[stream.cuda_stream] = stream
+
+
+def _warp_module_options(kernels: Sequence[wp.Kernel], overrides: dict | None) -> dict:
+    """Return the Warp module options for compiling ``kernels`` into one pipeline module.
+
+    Options in ``overrides`` win; every other option must agree across the
+    kernels' Warp modules.
+    """
+    overrides = dict(overrides or {})
+    defaults = kernels[0].module.options
+    unknown = sorted(set(overrides) - set(defaults))
+    if unknown:
+        raise ValueError(f"Unknown Warp module options: {', '.join(unknown)}")
+    reserved = sorted(set(overrides) & set(_PIPELINE_MODULE_OPTIONS))
+    if reserved:
+        raise ValueError(f"Pipelines set the Warp module options {', '.join(reserved)} themselves")
+    modules = {id(kernel.module): kernel for kernel in kernels}
+    for name, value in defaults.items():
+        if name in overrides or name in _PIPELINE_MODULE_OPTIONS:
+            continue
+        for kernel in modules.values():
+            other = kernel.module.options.get(name)
+            if other != value:
+                raise ValueError(
+                    f"Warp module option {name!r} is {value!r} for kernel {kernels[0].key!r} but {other!r} for "
+                    f"kernel {kernel.key!r}; choose one with Pipeline(module_options={{{name!r}: ...}})"
+                )
+    return {**defaults, **overrides, "enable_backward": False, "extra_build_options": build_options()}
+
+
+def _compile_ptx(slots, params, module_name: str, options: dict, device: wp.Device) -> tuple[bytes, dict, int]:
+    """Compile each ``(kernel, kind)`` slot as an OptiX program into one PTX module.
+
+    Returns the PTX, the entry-function name of each slot, and the raygen index dimensions. The Warp module
+    exists only for this compile: it is never registered with Warp, and its
+    dependency links are removed afterwards, so nothing retains it.
+    """
+    module = wp.Module(module_name)
+    try:
+        programs = {}
+        for kernel, kind in slots:
+            if (kernel, kind) not in programs:
+                programs[kernel, kind] = as_program(kernel, kind, params, module)
+        wp.set_module_options(options, module=module)
+        module_dir = os.path.join(wp.config.kernel_cache_dir, "warp_optix", module_name)
+        ptx = wp.compile_aot_module(module, device=device, module_dir=module_dir, use_ptx=True)[0].read_bytes()
+        tid_ndim = next(program._wo_tid_ndim for (_, kind), program in programs.items() if kind is ProgramKind.RAYGEN)
+        return ptx, {slot: program.get_mangled_name() for slot, program in programs.items()}, tid_ndim
+    finally:
+        module._detach_references()
+
+
+def _primitive_flags(hit_groups) -> int:
+    flags = 0
+    for group in hit_groups:
+        if group.builtin is not None:
+            flags |= _BUILTIN_PRIMITIVE_FLAGS[int(group.builtin)]
+        elif group.intersection is not None:
+            flags |= int(native.PRIMITIVE_TYPE_FLAGS_CUSTOM)
+        else:
+            flags |= int(native.PRIMITIVE_TYPE_FLAGS_TRIANGLE)
+    return flags or int(native.PRIMITIVE_TYPE_FLAGS_TRIANGLE)
+
+
+def _program_group_descs(
+    optix_module, builtin_modules, entries, raygen, miss, hit_groups, callables, callable_kinds, exception
+) -> list:
+    """Return the program group descriptors in SBT order: raygen, exception, miss, hit groups, callables."""
+
+    # Keyword arguments of one ProgramGroupDesc slot. OptiX treats an empty entry
+    # name without a module as "no program"; built-in intersections have a module only.
+    def slot(prefix: str, suffix: str, kernel, kind, module=optix_module) -> dict:
+        if kernel is not None:
+            return {f"{prefix}Module{suffix}": module, f"{prefix}EntryFunctionName{suffix}": entries[kernel, kind]}
+        if module is not optix_module:
+            return {f"{prefix}Module{suffix}": module}
+        return {f"{prefix}EntryFunctionName{suffix}": ""}
+
+    descs = [native.ProgramGroupDesc(**slot("raygen", "", raygen, ProgramKind.RAYGEN))]
+    if exception is not None:
+        descs.append(native.ProgramGroupDesc(**slot("exception", "", exception, ProgramKind.EXCEPTION)))
+    descs += [native.ProgramGroupDesc(**slot("miss", "", k, ProgramKind.MISS)) for k in miss]
+    descs += [
+        native.ProgramGroupDesc(
+            **slot("hitgroup", "CH", g.closest_hit, ProgramKind.CLOSEST_HIT),
+            **slot("hitgroup", "AH", g.any_hit, ProgramKind.ANY_HIT),
+            **(
+                slot("hitgroup", "IS", None, None, builtin_modules[g.builtin, g.build_flags])
+                if g.builtin is not None
+                else slot("hitgroup", "IS", g.intersection, ProgramKind.INTERSECTION)
+            ),
+        )
+        for g in hit_groups
+    ]
+    for kernel, kind in zip(callables, callable_kinds):
+        continuation = kind is ProgramKind.CONTINUATION_CALLABLE
+        desc = native.ProgramGroupDesc(**slot("callables", "CC" if continuation else "DC", kernel, kind))
+        if continuation:
+            # PyOptiX 9.1.1 ignores the callablesModuleCC constructor argument.
+            desc.callablesModuleCC = optix_module
+        descs.append(desc)
+    return descs
+
+
+def _shader_binding_table(groups, device: wp.Device, *, exception: bool, miss_data, hit_data, callable_data):
+    """Upload every SBT record in descriptor order: its header, then its data.
+
+    Each section's stride fits its largest record. Returns the device records, the table, the host
+    copy, and the ``(offset, data)`` of every record that has data.
+    """
+    header = native.SBT_RECORD_HEADER_SIZE
+    sections = [[None], [None] * exception, list(miss_data), list(hit_data), list(callable_data)]
+    strides = [_record_stride(section) for section in sections]
+    bases = list(itertools.accumulate((len(s) * n for s, n in zip(sections, strides)), initial=0))
+    offsets = [base + i * n for s, n, base in zip(sections, strides, bases) for i in range(len(s))]
+    host_records = np.zeros(bases[-1], dtype=np.uint8)
+    for group, offset in zip(groups, offsets):
+        native.sbtRecordPackHeader(group, host_records[offset : offset + header])
+    data_offsets = [
+        (offset + header, data)
+        for offset, data in zip(offsets, [data for section in sections for data in section])
+        if data is not None
+    ]
+    _pack_record_data(host_records, data_offsets)
+    records = wp.array(host_records, dtype=wp.uint8, device=device)
+    # Launches on other streams do not wait for this upload.
+    wp.synchronize_stream(wp.get_stream(device))
+
+    _, exception_base, miss_base, hit_base, callable_base, _ = (records.ptr + base for base in bases)
+    table = native.ShaderBindingTable(
+        raygenRecord=records.ptr,
+        exceptionRecord=exception_base if exception else 0,
+        missRecordBase=miss_base,
+        missRecordStrideInBytes=strides[2],
+        missRecordCount=len(miss_data),
+        hitgroupRecordBase=hit_base if hit_data else 0,
+        hitgroupRecordStrideInBytes=strides[3],
+        hitgroupRecordCount=len(hit_data),
+        callablesRecordBase=callable_base if callable_data else 0,
+        callablesRecordStrideInBytes=strides[4],
+        callablesRecordCount=len(callable_data),
+    )
+    return records, table, host_records, data_offsets
 
 
 def _split_records(entries) -> tuple[list, list]:

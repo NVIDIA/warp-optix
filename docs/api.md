@@ -94,8 +94,8 @@ arguments; `wp.optix_traverse()` takes the same arguments with an optional paylo
 SBT indices, and register indices accept any integer type, so `wo.RayFlags` members need no cast.
 
 `wo.Pipeline(raygen, *, sbt, callables, exception, exception_flags,
-payload_words, attribute_words, max_trace_depth, max_traversable_depth, graph_flags, motion_blur,
-max_registers, device)` compiles all programs into one module and builds the shader binding table:
+payload_words, attribute_words, max_trace_depth, max_traversable_depth, max_callable_depth, graph_flags, motion_blur,
+max_registers, module_options, device)` compiles all programs into one module and builds the shader binding table:
 
 - `sbt` is a [`wo.SbtLayout`](#sbt-layouts) of ray types, miss records, and hit groups. The
   default is one ray type with a miss record without a program and one empty hit group.
@@ -113,6 +113,15 @@ max_registers, device)` compiles all programs into one module and builds the sha
   the default is `USER` if an exception program is supplied, otherwise `NONE`.
   For example, `exception_flags=wo.ExceptionFlags.STACK_OVERFLOW | wo.ExceptionFlags.TRACE_DEPTH`
   enables those debugging checks. Include `USER` when using `optix_throw_exception`.
+- `module_options` sets Warp module options (`wp.set_module_options`) for the pipeline's module,
+  for example `module_options={"fast_math": True}`. Options not given there come from the Warp
+  modules of the programs' kernels, which must agree; a conflict raises `ValueError` naming the
+  option, rather than silently using one kernel's setting. As in Warp, `"mode": "debug"` (or
+  `wp.config.mode = "debug"`) makes the programs debuggable: OptiX then compiles them unoptimized
+  with full debug information, for source-level debugging in Nsight.
+- `max_trace_depth` bounds recursive `optix_trace` calls, `max_traversable_depth` the depth of the
+  traversable graph, and `max_callable_depth` how deeply callables call callables (default 1). They
+  size the pipeline's stack.
 
 `wo.launch(pipeline, dim, inputs=None, outputs=None, *, device=None, stream=None, record_cmd=False)`
 mirrors `wp.launch`: `inputs` and `outputs` are concatenated into the raygen arguments, and a raygen
