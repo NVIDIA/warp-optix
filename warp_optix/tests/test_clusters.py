@@ -236,6 +236,14 @@ def test_cluster_capacity_keeps_id_without_synchronizing(supported, monkeypatch)
             wo.launch(pipeline, dim=2, inputs=[accel, result])
             np.testing.assert_allclose(result.numpy()[:, :2], [[4, 0], [4, 1]])
 
+            # Validating in-place rebuilds confirm the handle did not move, since its fixed
+            # placement is observed rather than documented OptiX behavior.
+            assert not accel.rebuild()
+            accel._id ^= 0x80
+            with pytest.raises(RuntimeError, match="handle moved"):
+                accel.rebuild()
+            assert accel.id == handle
+
             assert accel.rebuild(
                 grid_sizes=wp.array([[8, 8], [8, 8], [1, 1]], dtype=wp.vec2i),
                 vertex_offsets=wp.array([0, 81, 0], dtype=int),

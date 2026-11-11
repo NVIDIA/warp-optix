@@ -338,7 +338,10 @@ class ClusterAccel:
     synchronizes the stream. ``validate=False`` skips these checks for trusted
     GPU-generated grids; an out-of-range grid size or vertex offset then faults
     on the GPU. Rebuilds within the capacity then do not synchronize; only
-    allocating rebuilds read the new traversable handle back. Builds and
+    allocating rebuilds read the new traversable handle back. Keeping ``id``
+    across in-place rebuilds relies on observed OptiX behavior rather than a
+    documented guarantee, so validating rebuilds also confirm the handle is
+    unchanged and raise ``RuntimeError`` otherwise. Builds and
     traversals on different streams need explicit ordering, as with ``wo.Accel``.
     Cluster structures support rebuilds, not refits or compaction.
     """
@@ -510,11 +513,21 @@ class ClusterAccel:
             wp.launch(_gas_args, 1, inputs=[count, wp.uint64(build.clas.handles.ptr), build.gas_args])
             build.gas.build(build.gas_args)
             previous = getattr(self, "_id", None)
+            # The single GAS of an implicit-destination build has been observed to land at a
+            # fixed offset in its output buffer, so the handle only changes with that buffer
+            # and is read back (synchronizing the stream) only after an allocation. OptiX does
+            # not document this placement, so validating rebuilds, which synchronize anyway,
+            # check that the handle is unchanged.
             if reallocated:
-                # The single GAS of an implicit-destination build lands at the start of its
-                # output buffer, so the handle only changes with that buffer and is read
-                # back (synchronizing the stream) only after an allocation.
                 self._id = int(build.gas.handles.numpy()[0])
+            elif validate:
+                handle = int(build.gas.handles.numpy()[0])
+                if handle != self._id:
+                    stale, self._id = self._id, handle
+                    raise RuntimeError(
+                        f"Cluster GAS handle moved during an in-place rebuild ({stale:#x} -> {handle:#x}); "
+                        "in-place rebuilds with validate=False are unsafe with this driver"
+                    )
             self.points, self.grid_sizes, self.vertex_offsets = points, grids, offsets
             self.cluster_ids, self.sbt_offsets = ids, sbt
         return previous is not None and self._id != previous
