@@ -3,6 +3,8 @@
 
 """Owned cluster builds. Descriptor packing and memory management stay internal."""
 
+from __future__ import annotations
+
 import ctypes
 import sys
 
@@ -121,7 +123,7 @@ def _build_input(kind, count, size=8, truncate=0, max_sbt_index=0):
     return result
 
 
-def _primitive_flags(geometry_flags):
+def _primitive_flags(geometry_flags: GeometryFlags | int) -> int:
     """Translate OptixGeometryFlags into OptixClusterAccelPrimitiveFlags, whose bits differ."""
     flags = int(geometry_flags)
     result = 0
@@ -134,7 +136,7 @@ def _primitive_flags(geometry_flags):
             flags &= ~int(geometry)
             result |= int(primitive)
     if flags:
-        raise ValueError("Unsupported geometry_flags for cluster templates")
+        raise ValueError("Unsupported geometry flags for cluster templates")
     return result
 
 
@@ -231,7 +233,7 @@ class _ClusterBuild:
         self.gas_args = wp.empty(1, dtype=_GasArgs)
 
 
-def cluster_capabilities(device=None):
+def cluster_capabilities(device: wp.DeviceLike = None) -> dict[str, int]:
     """Return Cluster API support and device limits, without allocating geometry."""
     context, stream = resolve(device)
     with wp.ScopedDevice(context.device), wp.ScopedStream(stream, sync_enter=False):
@@ -245,18 +247,21 @@ class ClusterTemplates:
     created automatically by ``ClusterAccel``; create this object explicitly
     to share templates across structures. ``position_truncate_bits`` controls
     position mantissa truncation during CLAS construction. ``max_sbt_index``
-    bounds per-cluster SBT offsets. Unsupported hardware raises an error.
+    bounds per-cluster SBT offsets. ``flags`` are the geometry flags of every
+    cluster, as in :func:`triangles`. Templates hold no input arrays, so
+    ``device``/``stream`` follow the usual contract, like :class:`Accel`.
+    Unsupported hardware raises an error.
     """
 
     def __init__(
         self,
-        max_edge_segments=8,
+        max_edge_segments: int = 8,
         *,
-        position_truncate_bits=0,
-        max_sbt_index=0,
-        geometry_flags=GeometryFlags.DISABLE_ANYHIT,
-        device=None,
-        stream=None,
+        position_truncate_bits: int = 0,
+        max_sbt_index: int = 0,
+        flags: GeometryFlags = GeometryFlags.DISABLE_ANYHIT,
+        device: wp.DeviceLike = None,
+        stream: wp.Stream | None = None,
     ):
         self._closed = True
         self._context, stream = resolve(device, stream)
@@ -266,7 +271,7 @@ class ClusterTemplates:
             raise ValueError("position_truncate_bits must lie in [0, 23]")
         if not isinstance(max_sbt_index, int) or not 0 <= max_sbt_index <= 0xFFFFFF:
             raise ValueError("max_sbt_index must fit in 24 bits")
-        primitive_flags = _primitive_flags(geometry_flags)
+        primitive_flags = _primitive_flags(flags)
         self.max_edge_segments = max_edge_segments
         self.position_truncate_bits = position_truncate_bits
         self.max_sbt_index = max_sbt_index
@@ -277,25 +282,25 @@ class ClusterTemplates:
         self._closed = False
 
     @property
-    def device(self):
+    def device(self) -> wp.Device:
         return self._context.device
 
     @property
-    def closed(self):
+    def closed(self) -> bool:
         return self._closed
 
-    def close(self):
+    def close(self) -> None:
         """Release this owner's references. Existing structures retain their templates."""
         self._closed = True
         self._state = None
         self._ready = None
 
-    def __enter__(self):
+    def __enter__(self) -> ClusterTemplates:
         if self.closed:
             raise RuntimeError("ClusterTemplates is closed")
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exc) -> None:
         self.close()
 
 
@@ -308,9 +313,9 @@ class ClusterAccel:
     grid are row-major with width varying fastest. The default cluster ID is
     its array index; optional ``cluster_ids`` and ``sbt_offsets`` are uint32 arrays.
     Nonzero SBT offsets require shared templates with a sufficient ``max_sbt_index``.
-    ``max_edge_segments``, ``position_truncate_bits`` and ``geometry_flags``
-    configure the templates created when ``templates`` is omitted; combining
-    them with ``templates`` is an error.
+    ``max_edge_segments``, ``position_truncate_bits`` and ``flags`` configure
+    the templates created when ``templates`` is omitted; combining them with
+    ``templates`` is an error.
 
     Construction builds the structure. Mutate the arrays and call ``rebuild()``;
     pass replacement arrays to ``rebuild`` when grid counts change. Pass this
@@ -319,53 +324,60 @@ class ClusterAccel:
     acceleration buffers are retained automatically. This API always uses the
     Cluster API, and never falls back to ordinary triangle geometry.
 
-    Buffers are sized for the worst case of the largest cluster count built so
-    far and are reused by rebuilds. A rebuild with more clusters than that
-    allocates new buffers and may change ``id``: rewrite instance records that
-    reference it and rebuild the instance structure, and set it again on recorded
-    launches (``record_cmd=True``). Instance structures and recorded launches keep
-    every buffer they may reference alive, also after this object is closed.
+    Unlike ``wo.Accel``, ``id`` can change on ``rebuild()``. Buffers are sized
+    for the worst case of :attr:`capacity` clusters and are reused, keeping
+    ``id``, by rebuilds with at most that many clusters. A rebuild with more
+    clusters grows the capacity, allocates new buffers, changes ``id`` and
+    returns ``True``: rewrite instance records that reference it and rebuild the
+    instance structure, and set it again on recorded launches (``record_cmd=True``).
+    Pass ``capacity`` to reserve room for the largest expected cluster count up
+    front, so that ``id`` stays fixed. Instance structures and recorded launches
+    keep every buffer they may reference alive, also after this object is closed.
 
-    ``validate=False`` skips host bounds checks for trusted GPU-generated grids;
-    an out-of-range grid size or vertex offset then faults on the GPU.
-    Each rebuild synchronizes the stream once, to read the traversable handle;
-    validation adds further copies. Builds and traversals on different streams
-    need explicit ordering, as with ``wo.Accel``. Cluster structures support
-    rebuilds, not refits or compaction.
+    ``validate=True`` reads the grids back to check bounds on the host, which
+    synchronizes the stream. ``validate=False`` skips these checks for trusted
+    GPU-generated grids; an out-of-range grid size or vertex offset then faults
+    on the GPU. Rebuilds within the capacity then do not synchronize; only
+    allocating rebuilds read the new traversable handle back. Builds and
+    traversals on different streams need explicit ordering, as with ``wo.Accel``.
+    Cluster structures support rebuilds, not refits or compaction.
     """
 
     def __init__(
         self,
-        points,
-        grid_sizes,
-        vertex_offsets,
+        points: wp.array[wp.vec3],
+        grid_sizes: wp.array[wp.vec2i],
+        vertex_offsets: wp.array[wp.int32],
         *,
-        templates=None,
-        max_edge_segments=None,
-        position_truncate_bits=None,
-        geometry_flags=None,
-        cluster_ids=None,
-        sbt_offsets=None,
-        validate=True,
-        stream=None,
+        templates: ClusterTemplates | None = None,
+        max_edge_segments: int | None = None,
+        position_truncate_bits: int | None = None,
+        flags: GeometryFlags | None = None,
+        cluster_ids: wp.array[wp.uint32] | None = None,
+        sbt_offsets: wp.array[wp.uint32] | None = None,
+        capacity: int | None = None,
+        validate: bool = True,
+        stream: wp.Stream | None = None,
     ):
         self._closed = True
         if not isinstance(points, wp.array):
             raise TypeError("points must be a Warp array")
         if templates is not None and (
-            max_edge_segments is not None or position_truncate_bits is not None or geometry_flags is not None
+            max_edge_segments is not None or position_truncate_bits is not None or flags is not None
         ):
             raise ValueError(
-                "max_edge_segments, position_truncate_bits and geometry_flags configure new templates; "
+                "max_edge_segments, position_truncate_bits and flags configure new templates; "
                 "set them on the ClusterTemplates instead"
             )
+        if capacity is not None and (not isinstance(capacity, int) or capacity < 1):
+            raise ValueError("capacity must be a positive integer")
         self._context, stream = resolve(points.device, stream)
         with wp.ScopedDevice(self.device), wp.ScopedStream(stream, sync_enter=False):
             if templates is None:
                 templates = ClusterTemplates(
                     8 if max_edge_segments is None else max_edge_segments,
                     position_truncate_bits=0 if position_truncate_bits is None else position_truncate_bits,
-                    geometry_flags=GeometryFlags.DISABLE_ANYHIT if geometry_flags is None else geometry_flags,
+                    flags=GeometryFlags.DISABLE_ANYHIT if flags is None else flags,
                     device=self.device,
                     stream=stream,
                 )
@@ -375,7 +387,10 @@ class ClusterAccel:
                 raise ValueError("Templates and points must use the same CUDA device")
             stream.wait_event(templates._ready)
             self._templates = templates._state
+            if capacity is not None and capacity > self._templates.capabilities["max_clusters_per_gas"]:
+                raise ValueError("capacity exceeds the device's per-GAS cluster limit")
             self._build = None
+            self._reserve = capacity
             # Shared with instance structures, which retain it rather than a snapshot. It only
             # grows when buffers are reallocated, so any handle ever returned stays valid.
             self._memory = [self._templates.output]
@@ -391,34 +406,44 @@ class ClusterAccel:
                 raise
 
     @property
-    def device(self):
+    def device(self) -> wp.Device:
         return self._context.device
 
     @property
-    def closed(self):
+    def closed(self) -> bool:
         return self._closed
 
     @property
-    def id(self):
+    def id(self) -> int:
+        """Traversable handle; changes only when a rebuild exceeds :attr:`capacity`."""
         self._check_open()
         return self._id
 
-    def _check_open(self):
+    @property
+    def capacity(self) -> int:
+        """Number of clusters the current buffers hold; rebuilds up to this count keep :attr:`id`."""
+        self._check_open()
+        return self._build.capacity
+
+    def _check_open(self) -> None:
         if self.closed:
             raise RuntimeError("ClusterAccel is closed")
 
     def rebuild(
         self,
         *,
-        points=None,
-        grid_sizes=None,
-        vertex_offsets=None,
-        cluster_ids=None,
-        sbt_offsets=None,
-        validate=True,
-        stream=None,
-    ):
-        """Rebuild current grids, optionally replacing arrays when topology changes."""
+        points: wp.array[wp.vec3] | None = None,
+        grid_sizes: wp.array[wp.vec2i] | None = None,
+        vertex_offsets: wp.array[wp.int32] | None = None,
+        cluster_ids: wp.array[wp.uint32] | None = None,
+        sbt_offsets: wp.array[wp.uint32] | None = None,
+        validate: bool = True,
+        stream: wp.Stream | None = None,
+    ) -> bool:
+        """Rebuild current grids, optionally replacing arrays when topology changes.
+
+        Returns ``True`` when the rebuild exceeded :attr:`capacity` and changed :attr:`id`.
+        """
         self._check_open()
         _, stream = resolve(self.device, stream)
         points = self.points if points is None else points
@@ -462,9 +487,13 @@ class ClusterAccel:
                 if sbt.size and np.any(sbt.numpy() > templates.max_sbt_index):
                     raise ValueError("SBT offsets exceed the templates' max_sbt_index")
             build = self._build
-            if build is None or count > build.capacity:
-                # Grow geometrically, so that incremental growth reallocates rarely.
-                capacity = count if build is None else min(max(count, build.capacity * 3 // 2), limit)
+            reallocated = build is None or count > build.capacity
+            if reallocated:
+                if build is None:
+                    capacity = max(count, self._reserve or 0)
+                else:
+                    # Grow geometrically, so that incremental growth reallocates rarely.
+                    capacity = min(max(count, build.capacity * 3 // 2), limit)
                 build = _ClusterBuild(self._context, templates, capacity)
                 # Nothing else retains the buffers when no instance structure holds this list.
                 if sys.getrefcount(self._memory) <= 2:
@@ -480,11 +509,17 @@ class ClusterAccel:
             build.clas.build(build.args, build.count)
             wp.launch(_gas_args, 1, inputs=[count, wp.uint64(build.clas.handles.ptr), build.gas_args])
             build.gas.build(build.gas_args)
-            self._id = int(build.gas.handles.numpy()[0])
+            previous = getattr(self, "_id", None)
+            if reallocated:
+                # The single GAS of an implicit-destination build lands at the start of its
+                # output buffer, so the handle only changes with that buffer and is read
+                # back (synchronizing the stream) only after an allocation.
+                self._id = int(build.gas.handles.numpy()[0])
             self.points, self.grid_sizes, self.vertex_offsets = points, grids, offsets
             self.cluster_ids, self.sbt_offsets = ids, sbt
+        return previous is not None and self._id != previous
 
-    def close(self):
+    def close(self) -> None:
         if self.closed:
             return
         self._closed = True
@@ -492,9 +527,9 @@ class ClusterAccel:
         self._build = self._templates = self._empty = None
         self.points = self.grid_sizes = self.vertex_offsets = self.cluster_ids = self.sbt_offsets = None
 
-    def __enter__(self):
+    def __enter__(self) -> ClusterAccel:
         self._check_open()
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exc) -> None:
         self.close()

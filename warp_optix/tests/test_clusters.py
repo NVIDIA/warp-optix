@@ -153,7 +153,7 @@ def test_cluster_geometry_flags_control_anyhit(supported, flags, expected):
     points = wp.array(grid_points(), dtype=wp.vec3)
     grids = wp.array([[2, 2], [2, 2]], dtype=wp.vec2i)
     offsets = wp.array([0, 9], dtype=int)
-    with wo.ClusterAccel(points, grids, offsets, max_edge_segments=2, geometry_flags=flags) as accel:
+    with wo.ClusterAccel(points, grids, offsets, max_edge_segments=2, flags=flags) as accel:
         with wo.Pipeline(
             query_grids,
             sbt=wo.SbtLayout(hit_groups={"grid": wo.HitGroup(any_hit=ignore_grid)}),
@@ -187,17 +187,18 @@ def test_instanced_cluster_rebuilds_keep_memory_alive_after_close(supported):
         result = wp.empty(2, dtype=wp.vec3)
         # Larger grids with the same count rebuild in place and keep the handle.
         handle = accel.id
-        accel.rebuild(grid_sizes=wp.array([[8, 8], [8, 8]], dtype=wp.vec2i))
+        assert not accel.rebuild(grid_sizes=wp.array([[8, 8], [8, 8]], dtype=wp.vec2i))
         assert accel.id == handle
         scene.rebuild()
         wo.launch(pipeline, dim=2, inputs=[scene, result])
         np.testing.assert_allclose(result.numpy(), [[4, 0, 7], [4, 1, 7]])
         # More clusters reallocate: rewrite the records and rebuild the instance structure.
-        accel.rebuild(
+        assert accel.rebuild(
             grid_sizes=wp.array([[8, 8], [8, 8], [1, 1]], dtype=wp.vec2i),
             vertex_offsets=wp.array([0, 81, 0], dtype=int),
             cluster_ids=wp.array([5, 6, 7], dtype=wp.uint32),
         )
+        assert accel.id != handle
         wp.launch(place_grid, 1, inputs=[wp.uint64(accel.id), records])
         scene.rebuild()
         retained = [buffer.size for buffer in accel._memory]
@@ -208,6 +209,38 @@ def test_instanced_cluster_rebuilds_keep_memory_alive_after_close(supported):
         np.testing.assert_allclose(result.numpy(), [[4, 5, 7], [4, 6, 7]])
         del junk
     scene.close()
+
+
+def test_cluster_capacity_keeps_id_without_synchronizing(supported, monkeypatch):
+    points = wp.array(fine_points(), dtype=wp.vec3)
+    grids = wp.array([[8, 8], [8, 8]], dtype=wp.vec2i)
+    offsets = wp.array([0, 81], dtype=int)
+    with pytest.raises(ValueError, match="capacity"):
+        wo.ClusterAccel(points, grids, offsets, capacity=0)
+    with wo.ClusterAccel(points, grids[:1], offsets[:1], capacity=2) as accel:
+        assert accel.capacity == 2
+        handle = accel.id
+        with wo.Pipeline(query_grids, clustered_geometry=True) as pipeline:
+            result = wp.empty(2, dtype=wp.vec3)
+            wo.launch(pipeline, dim=2, inputs=[accel, result])
+            np.testing.assert_allclose(result.numpy()[:, 0], [4, -1])
+
+            # Growing within the reserved capacity neither reads back nor changes the handle.
+            def no_readback(self):
+                raise AssertionError("rebuild synchronized")
+
+            with monkeypatch.context() as patch:
+                patch.setattr(wp.array, "numpy", no_readback)
+                assert not accel.rebuild(grid_sizes=grids, vertex_offsets=offsets, validate=False)
+            assert accel.id == handle
+            wo.launch(pipeline, dim=2, inputs=[accel, result])
+            np.testing.assert_allclose(result.numpy()[:, :2], [[4, 0], [4, 1]])
+
+            assert accel.rebuild(
+                grid_sizes=wp.array([[8, 8], [8, 8], [1, 1]], dtype=wp.vec2i),
+                vertex_offsets=wp.array([0, 81, 0], dtype=int),
+            )
+            assert accel.capacity >= 3 and accel.id != handle
 
 
 def test_cluster_accel_requires_clustered_pipeline_and_unambiguous_templates(supported):
@@ -287,5 +320,5 @@ def test_cluster_geometry_flags_map_by_name(supported):
     assert _primitive_flags(n.GEOMETRY_FLAG_DISABLE_TRIANGLE_FACE_CULLING) == int(
         n.CLUSTER_ACCEL_PRIMITIVE_FLAG_DISABLE_TRIANGLE_FACE_CULLING
     )
-    with pytest.raises(ValueError, match="geometry_flags"):
-        wo.ClusterTemplates(2, geometry_flags=8)
+    with pytest.raises(ValueError, match="geometry flags"):
+        wo.ClusterTemplates(2, flags=8)

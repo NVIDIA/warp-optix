@@ -461,7 +461,7 @@ class Launch:
     different streams are ordered on the GPU; use separate ``Launch`` objects for
     independent concurrent launches. Acceleration structures are packed as their
     ``id`` when set: set them again after a rebuild that changes the ``id``, such as
-    a ``ClusterAccel`` rebuild with more clusters. Like ``wp.array``, the parameter block is
+    a ``ClusterAccel`` rebuild beyond its ``capacity``. Like ``wp.array``, the parameter block is
     freed in stream order when the last reference is dropped. Set them
     with :meth:`set_param_at_index`, :meth:`set_param_by_name`, or
     :meth:`set_params`; names and indices are the launch-parameter fields (the
