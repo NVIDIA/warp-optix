@@ -31,6 +31,9 @@ from warp_optix._src.accel import curves as curves
 from warp_optix._src.accel import instances as instances
 from warp_optix._src.accel import make_instance as make_instance
 from warp_optix._src.accel import triangles as triangles
+from warp_optix._src.clusters import ClusterAccel as ClusterAccel
+from warp_optix._src.clusters import ClusterTemplates as ClusterTemplates
+from warp_optix._src.clusters import cluster_capabilities as cluster_capabilities
 from warp_optix._src.context import get_context as get_context
 from warp_optix._src.enums import BuildFlags as BuildFlags
 from warp_optix._src.enums import ExceptionFlags as ExceptionFlags
@@ -58,6 +61,8 @@ __all__ = [
     "AccelQueryRay",
     "BuildFlags",
     "BuildInput",
+    "ClusterAccel",
+    "ClusterTemplates",
     "ExceptionFlags",
     "GeometryFlags",
     "HitGroup",
@@ -74,6 +79,7 @@ __all__ = [
     "TraversableGraphFlags",
     "aabbs",
     "compact",
+    "cluster_capabilities",
     "accel_query_ray",
     "accel_query_ray_anyhit",
     "config",

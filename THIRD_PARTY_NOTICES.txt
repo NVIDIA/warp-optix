@@ -32,7 +32,7 @@ Runtime dependency: pyoptix==9.1.1. License: BSD-3-Clause.
 Copyright (c) 2022, NVIDIA CORPORATION. All rights reserved.
 warp-optix depends on the separately installed PyOptiX package for standard
 bindings. src/extension.cpp contains supplemental bindings derived from
-otk-pyoptix; src/pyoptix_compat.h contains four upstream wrapper definitions
+otk-pyoptix; src/pyoptix_compat.h contains upstream wrapper definitions
 for ABI access. These files and the otk-pyoptix-derived CMakeLists.txt are
 licensed under BSD-3-Clause. Full terms are in LICENSE.txt.
 

@@ -129,6 +129,17 @@ WP_OPTIX_SCALAR(float, optix_hit_object_get_ray_tmin, optixHitObjectGetRayTmin)
 WP_OPTIX_SCALAR(float, optix_hit_object_get_ray_tmax, optixHitObjectGetRayTmax)
 WP_OPTIX_SCALAR(uint32, optix_hit_object_get_primitive_index, optixHitObjectGetPrimitiveIndex)
 WP_OPTIX_SCALAR(uint32, optix_hit_object_get_instance_id, optixHitObjectGetInstanceId)
+WP_OPTIX_SCALAR(uint32, optix_get_cluster_id, optixGetClusterId)
+// OptiX 9.1's optixHitObjectGetClusterId uses non-volatile inline assembly.
+// NVRTC can hoist that read outside a traversal loop, yielding the initial
+// invalid ID for every hit. Like the other hit-object state queries, it must
+// be a volatile read at its call site.
+inline CUDA_CALLABLE_DEVICE uint32 optix_hit_object_get_cluster_id()
+{
+    uint32 id;
+    asm volatile("call (%0), _optix_hitobject_get_cluster_id, ();" : "=r"(id));
+    return id;
+}
 WP_OPTIX_SCALAR(uint32, optix_hit_object_get_instance_index, optixHitObjectGetInstanceIndex)
 WP_OPTIX_SCALAR(uint32, optix_hit_object_get_sbt_gas_index, optixHitObjectGetSbtGASIndex)
 WP_OPTIX_SCALAR(uint32, optix_hit_object_get_hit_kind, optixHitObjectGetHitKind)

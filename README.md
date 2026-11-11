@@ -110,6 +110,23 @@ motion = native.MotionOptions(numKeys=2, flags=native.MOTION_FLAG_NONE, timeBegi
 blurred = wo.Accel([wo.triangles([points, later], indices)], motion=motion)
 ```
 
+Dynamic tessellation can use OptiX grid clusters through the owned API:
+
+```python
+# CUDA arrays: vec3 points, vec2i grid sizes (in quads), int32 vertex offsets.
+surface = wo.ClusterAccel(points, grid_sizes, vertex_offsets)
+pipeline = wo.Pipeline(render, clustered_geometry=True)
+wo.launch(pipeline, dim=(height, width), inputs=[surface, image])
+surface.rebuild()  # after changing the device arrays
+```
+
+`ClusterAccel` manages templates, CLAS/GAS builds, scratch memory and lifetimes.
+It can also be instanced with `wo.instances`. Ray queries expose `hit.cluster_id`;
+there are no compiler workarounds in user code. See the
+[cluster example](examples/example_clusters.py) for an animated parametric knot,
+generated directly in Warp. It uses the standard installation, with no additional
+geometry library or build step.
+
 ## 1. Ray queries in a Warp kernel
 
 Ray queries are the simplest way to trace a scene. `wo.accel_query_ray` works like

@@ -228,6 +228,7 @@ void validate_pyoptix_bindings(py::module_ upstream) {
     // Validate all shared layouts before any upstream object reaches this
     // extension. PyOptiX remains the sole owner of these native types.
     require_upstream_type<pyoptix::DeviceContext>(upstream.attr("DeviceContext"));
+    require_upstream_type<pyoptix::PipelineCompileOptions>(upstream.attr("PipelineCompileOptions"));
     require_upstream_type<pyoptix::ModuleCompileBoundValueEntry>(upstream.attr("ModuleCompileBoundValueEntry"));
     require_upstream_type<pyoptix::PayloadType>(upstream.attr("PayloadType"));
     require_upstream_type<pyoptix::ModuleCompileOptions>(upstream.attr("ModuleCompileOptions"));
@@ -238,11 +239,14 @@ void validate_pyoptix_bindings(py::module_ upstream) {
 
 } // namespace
 
+#include "clusters.h"
+
 PYBIND11_MODULE(_ext, m) {
     m.doc() = "Additional OptiX bindings for the pyoptix dependency";
     m.def("optix_version", &optix_version, "OptiX SDK version used to compile this supplemental extension.");
     m.def("validate_pyoptix_bindings", &validate_pyoptix_bindings);
     m.def("sync_module_options", &sync_module_options);
+    bind_clusters(m);
     m.def("getCoopVecProperty", [](const pyoptix::DeviceContext& context) {
         ensure_optix_initialized();
         uint32_t flags = 0;

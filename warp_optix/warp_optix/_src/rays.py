@@ -32,6 +32,7 @@ class AccelQueryRay:
         instance_id: User id of the hit instance (``0xFFFFFFFF`` when querying a geometry acceleration
             structure directly, which has no instance).
         primitive_index: Index of the hit primitive within its build input.
+        cluster_id: User-defined CLASS ID, or ``0xFFFFFFFF`` for ordinary geometry.
     """
 
     result: wp.bool
@@ -40,6 +41,7 @@ class AccelQueryRay:
     v: float
     instance_id: wp.uint32
     primitive_index: wp.uint32
+    cluster_id: wp.uint32
 
 
 @wp.func
@@ -88,6 +90,7 @@ def accel_query_ray(
         # Other primitives (e.g. built-in spheres) have no hit parameters; u and v stay 0.
         query.instance_id = wp.optix_hit_object_get_instance_id()
         query.primitive_index = wp.optix_hit_object_get_primitive_index()
+        query.cluster_id = wp.optix_hit_object_get_cluster_id()
     return query
 
 

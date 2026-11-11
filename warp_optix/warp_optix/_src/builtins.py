@@ -26,6 +26,8 @@ _Int = wp.Int
 
 # Argument-free state queries: name -> (return type, doc).
 _QUERIES = {
+    "optix_get_cluster_id": (wp.uint32, "User-defined cluster ID of the current hit."),
+    "optix_hit_object_get_cluster_id": (wp.uint32, "User-defined cluster ID of the hit object."),
     "optix_get_launch_index": (wp.vec3ui, "Launch index (x, y, z) of this thread."),
     "optix_get_launch_dimensions": (wp.vec3ui, "Launch dimensions (x, y, z)."),
     "optix_get_world_ray_origin": (wp.vec3, "World-space origin of the current ray."),

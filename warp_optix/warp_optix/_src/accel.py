@@ -23,6 +23,7 @@ import warp as wp
 from warp._src import context as _warp_context
 
 from warp_optix import config, native
+from warp_optix._src.clusters import ClusterAccel
 from warp_optix._src.context import CAPTURE_ERROR, resolve
 from warp_optix._src.enums import BuildFlags, GeometryFlags, PrimitiveType
 
@@ -373,7 +374,7 @@ def curves(
     return BuildInput(descriptor, (*point_keys, *width_keys, indices))
 
 
-def instances(records: wp.array, children: Sequence[Accel]) -> BuildInput:
+def instances(records: wp.array, children: Sequence[Accel | ClusterAccel]) -> BuildInput:
     """Instance input over ``records`` that reference structures in ``children``.
 
     The instance structure keeps ``children`` alive, so they may be closed or
@@ -385,8 +386,8 @@ def instances(records: wp.array, children: Sequence[Accel]) -> BuildInput:
         raise ValueError("records must be a contiguous CUDA array of Instance")
     children = tuple(children)
     for child in children:
-        if not isinstance(child, Accel):
-            raise TypeError("children must be warp_optix.Accel objects")
+        if not isinstance(child, (Accel, ClusterAccel)):
+            raise TypeError("children must be warp_optix.Accel or warp_optix.ClusterAccel objects")
         if child.device != records.device:
             raise ValueError("children must be on the device of the records")
     return BuildInput(

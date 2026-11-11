@@ -21,6 +21,7 @@ from warp._src import context as _warp_context
 from warp_optix import native
 from warp_optix._src.accel import Accel
 from warp_optix._src.addon import build_options
+from warp_optix._src.clusters import ClusterAccel
 from warp_optix._src.context import CAPTURE_ERROR, native_objects, resolve
 from warp_optix._src.enums import ExceptionFlags, PrimitiveType, TraversableGraphFlags
 from warp_optix._src.program import ProgramKind, as_program, params_struct
@@ -70,6 +71,9 @@ class Pipeline:
     :meth:`close` or ``with``. Device memory is freed in stream order, like
     ``wp.array``; the native OptiX objects are destroyed once the launches
     submitted before the release have finished.
+
+    Set ``clustered_geometry=True`` when tracing ``ClusterAccel`` geometry,
+    either directly or through an instance acceleration structure.
     """
 
     def __init__(
@@ -88,6 +92,7 @@ class Pipeline:
         max_callable_depth: int = 1,
         graph_flags: TraversableGraphFlags = TraversableGraphFlags.ALLOW_ANY,
         motion_blur: bool = False,
+        clustered_geometry: bool = False,
         max_registers: int = native.COMPILE_DEFAULT_MAX_REGISTER_COUNT,
         module_options: dict | None = None,
         device: wp.DeviceLike = None,
@@ -154,6 +159,7 @@ class Pipeline:
                 usesPrimitiveTypeFlags=_primitive_flags(hit_groups),
             )
             # OptiX accepts full debug information only without optimization.
+            native.setAllowClusteredGeometry(pipeline_options, clustered_geometry)
             debug = (options["mode"] or wp.config.mode) == "debug"
             compile_options = native.ModuleCompileOptions(
                 maxRegisterCount=max_registers,
@@ -383,9 +389,11 @@ class _ParamsStorage:
         self.dirty = True
 
     def set(self, context, name: str, value) -> None:
-        """Set one parameter; an ``Accel`` is passed as its id and retained."""
+        """Set one parameter; acceleration structures are passed as ids and retained."""
         retained = value
-        if isinstance(value, Accel):
+        if isinstance(value, (Accel, ClusterAccel)):
+            if value.device != context.device:
+                raise ValueError("Acceleration structure and pipeline must use the same CUDA device")
             value = wp.uint64(value.id)
         elif isinstance(value, wp.array):
             if value.device != context.device:
@@ -488,7 +496,7 @@ def launch(
 
     Pass raygen arguments as ``inputs`` and ``outputs``, concatenated as in
     ``wp.launch``, or ``inputs=[struct]`` with an
-    explicit ``params_type``. ``wo.Accel`` objects in ``inputs`` are passed as
+    explicit ``params_type``. ``wo.Accel`` and ``wo.ClusterAccel`` objects in ``inputs`` are passed as
     their ``id``. As with ``wp.launch``, keep resources alive while submitted
     work may use them. ``device`` defaults to the pipeline's device; a different
     device is rejected. Parameter storage is separate for each CUDA stream.
