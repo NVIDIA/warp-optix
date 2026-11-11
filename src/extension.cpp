@@ -235,6 +235,15 @@ void validate_pyoptix_bindings(py::module_ upstream) {
     require_upstream_type<OptixDenoiserGuideLayer>(upstream.attr("DenoiserGuideLayer"));
     require_upstream_type<OptixDenoiserParams>(upstream.attr("DenoiserParams"));
     require_upstream_type<OptixDenoiserSizes>(upstream.attr("DenoiserSizes"));
+
+    // Sizes alone cannot detect reordered members. setAllowClusteredGeometry writes
+    // through the mirrored PipelineCompileOptions, so also check its field placement.
+    py::object probe = upstream.attr("PipelineCompileOptions")(py::arg("numPayloadValues") = 5,
+                                                               py::arg("pipelineLaunchParamsVariableName") = "probe");
+    const auto& options = probe.cast<const pyoptix::PipelineCompileOptions&>();
+    if (options.pipelineLaunchParamsVariableName != "probe" || options.options.numPayloadValues != 5) {
+        throw py::import_error("warp-optix requires the pyoptix 9.1.1 PipelineCompileOptions layout.");
+    }
 }
 
 } // namespace

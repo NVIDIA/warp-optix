@@ -121,9 +121,8 @@ surface.rebuild()  # after changing the device arrays
 ```
 
 `ClusterAccel` manages templates, CLAS/GAS builds, scratch memory and lifetimes.
-It can also be instanced with `wo.instances`. Ray queries expose `hit.cluster_id`;
-there are no compiler workarounds in user code. See the
-[cluster example](examples/example_clusters.py) for an animated parametric knot,
+It can also be instanced with `wo.instances`, and ray queries expose `hit.cluster_id`.
+See the [cluster example](examples/example_clusters.py) for an animated parametric knot,
 generated directly in Warp. It uses the standard installation, with no additional
 geometry library or build step.
 

@@ -158,8 +158,8 @@ class Pipeline:
                 pipelineLaunchParamsVariableName="params",
                 usesPrimitiveTypeFlags=_primitive_flags(hit_groups),
             )
-            # OptiX accepts full debug information only without optimization.
             native.setAllowClusteredGeometry(pipeline_options, clustered_geometry)
+            # OptiX accepts full debug information only without optimization.
             debug = (options["mode"] or wp.config.mode) == "debug"
             compile_options = native.ModuleCompileOptions(
                 maxRegisterCount=max_registers,
@@ -241,6 +241,7 @@ class Pipeline:
         self._tid_ndim = tid_ndim
         self._params_type = params
         self._explicit_params = params_type is not None
+        self._clustered_geometry = bool(clustered_geometry)
         self._sbt_layout = layout
         self._buffers: dict[int, _ParamsStorage] = {}  # automatic parameter storage per CUDA stream
         self._streams: dict[int, wp.Stream] = {}  # streams launched on, by CUDA stream handle
@@ -342,6 +343,13 @@ class Pipeline:
                 self._buffers.pop(key, None)
 
 
+def _check_clustered(pipeline: Pipeline, value) -> None:
+    # Without allowClusteredGeometry OptiX silently misses every cluster. This catches the
+    # direct use; a cluster structure reached through an instance structure cannot be checked.
+    if isinstance(value, ClusterAccel) and not pipeline._clustered_geometry:
+        raise ValueError("Tracing a ClusterAccel requires a Pipeline created with clustered_geometry=True")
+
+
 class _ParamsStorage:
     """A device launch-parameter block, its host copy, and the inputs referenced by it.
 
@@ -385,6 +393,7 @@ class _ParamsStorage:
                 raise TypeError(f"The raygen program takes {len(names)} arguments, but {len(values)} were given")
             self.inputs = {}
             for name, value in zip(names, values):
+                _check_clustered(pipeline, value)
                 self.set(context, name, value)
         self.dirty = True
 
@@ -475,6 +484,7 @@ class Launch:
         """Set the launch-parameter field ``name``."""
         if name not in self._fields:
             raise KeyError(f"The launch parameters have no field {name!r}")
+        _check_clustered(self.pipeline, value)
         self._storage.set(self._context, name, value)
 
     def launch(self, stream: wp.Stream | None = None) -> None:

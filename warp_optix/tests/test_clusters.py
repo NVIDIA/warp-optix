@@ -162,3 +162,65 @@ def test_cluster_geometry_flags_control_anyhit(supported, flags, expected):
             result = wp.empty(2, dtype=wp.vec3)
             wo.launch(pipeline, dim=2, inputs=[accel, result])
             np.testing.assert_allclose(result.numpy()[:, 0], expected)
+
+
+def fine_points():
+    # Two 8x8-quad patches; their first four vertices also form a 1x1-quad grid.
+    axis = np.linspace(-1.0, 1.0, 9)
+    return np.array([[x + 4 * c, y, 0] for c in range(2) for y in axis for x in axis], dtype=np.float32)
+
+
+def overwrite_freed_memory(sizes):
+    # Reuse freed blocks, so that traversal of released memory produces wrong results.
+    return [wp.full(size, 0xFF, dtype=wp.uint8) for size in sizes for _ in range(8)]
+
+
+def test_instanced_cluster_rebuilds_keep_memory_alive_after_close(supported):
+    points = wp.array(fine_points(), dtype=wp.vec3)
+    offsets = wp.array([0, 81], dtype=int)
+    templates = wo.ClusterTemplates(8)
+    accel = wo.ClusterAccel(points, wp.array([[1, 1], [1, 1]], dtype=wp.vec2i), offsets, templates=templates)
+    records = wp.empty(1, dtype=wo.Instance)
+    wp.launch(place_grid, 1, inputs=[wp.uint64(accel.id), records])
+    scene = wo.Accel([wo.instances(records, [accel])])
+    with wo.Pipeline(query_grids, clustered_geometry=True) as pipeline:
+        result = wp.empty(2, dtype=wp.vec3)
+        # Larger grids with the same count rebuild in place and keep the handle.
+        handle = accel.id
+        accel.rebuild(grid_sizes=wp.array([[8, 8], [8, 8]], dtype=wp.vec2i))
+        assert accel.id == handle
+        scene.rebuild()
+        wo.launch(pipeline, dim=2, inputs=[scene, result])
+        np.testing.assert_allclose(result.numpy(), [[4, 0, 7], [4, 1, 7]])
+        # More clusters reallocate: rewrite the records and rebuild the instance structure.
+        accel.rebuild(
+            grid_sizes=wp.array([[8, 8], [8, 8], [1, 1]], dtype=wp.vec2i),
+            vertex_offsets=wp.array([0, 81, 0], dtype=int),
+            cluster_ids=wp.array([5, 6, 7], dtype=wp.uint32),
+        )
+        wp.launch(place_grid, 1, inputs=[wp.uint64(accel.id), records])
+        scene.rebuild()
+        retained = [buffer.size for buffer in accel._memory]
+        accel.close()
+        templates.close()
+        junk = overwrite_freed_memory(retained)
+        wo.launch(pipeline, dim=2, inputs=[scene, result])
+        np.testing.assert_allclose(result.numpy(), [[4, 5, 7], [4, 6, 7]])
+        del junk
+    scene.close()
+
+
+def test_cluster_accel_requires_clustered_pipeline_and_unambiguous_templates(supported):
+    points = wp.array(grid_points(), dtype=wp.vec3)
+    grids = wp.array([[2, 2]], dtype=wp.vec2i)
+    offsets = wp.array([0], dtype=int)
+    with wo.ClusterAccel(points, grids, offsets, max_edge_segments=2) as accel:
+        with wo.Pipeline(query_grids) as pipeline:
+            result = wp.empty(2, dtype=wp.vec3)
+            with pytest.raises(ValueError, match="clustered_geometry"):
+                wo.launch(pipeline, dim=2, inputs=[accel, result])
+            with pytest.raises(ValueError, match="clustered_geometry"):
+                wo.launch(pipeline, dim=2, inputs=[accel, result], record_cmd=True)
+    with wo.ClusterTemplates(2) as templates:
+        with pytest.raises(ValueError, match="ClusterTemplates"):
+            wo.ClusterAccel(points, grids, offsets, templates=templates, max_edge_segments=2)

@@ -315,6 +315,7 @@ class Example:
         self.signature = None
         self.accumulated_frames = 0
         self.topology = None
+        self.built = None
 
     def draw(self, image, frame, elapsed):
         args = self.args
@@ -330,19 +331,22 @@ class Example:
             self.offsets = wp.array(np.arange(count, dtype=np.int32) * vertices_per_grid, dtype=int)
             self.topology = topology
             print(f"{count} clusters, {2 * count * args.cluster_size**2:,} triangles")
-        wp.launch(
-            evaluate_grids,
-            (args.along * args.around, (args.cluster_size + 1) ** 2),
-            inputs=[args.along, args.around, args.cluster_size, self.time, self.points],
-        )
-        if self.accel is None:
-            self.accel = wo.ClusterAccel(
-                self.points, self.grid_sizes, self.offsets, templates=self.templates, validate=False
+        # A paused, unchanged surface keeps its structure: rebuilding would only cost time.
+        if (topology, self.time) != self.built:
+            wp.launch(
+                evaluate_grids,
+                (args.along * args.around, (args.cluster_size + 1) ** 2),
+                inputs=[args.along, args.around, args.cluster_size, self.time, self.points],
             )
-        else:
-            self.accel.rebuild(
-                points=self.points, grid_sizes=self.grid_sizes, vertex_offsets=self.offsets, validate=False
-            )
+            if self.accel is None:
+                self.accel = wo.ClusterAccel(
+                    self.points, self.grid_sizes, self.offsets, templates=self.templates, validate=False
+                )
+            else:
+                self.accel.rebuild(
+                    points=self.points, grid_sizes=self.grid_sizes, vertex_offsets=self.offsets, validate=False
+                )
+            self.built = (topology, self.time)
         signature = (topology, self.width, self.height, self.yaw, self.pitch, self.distance, self.time, self.mode)
         if signature != self.signature:
             self.accumulated_frames = 0

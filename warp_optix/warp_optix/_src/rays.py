@@ -32,7 +32,7 @@ class AccelQueryRay:
         instance_id: User id of the hit instance (``0xFFFFFFFF`` when querying a geometry acceleration
             structure directly, which has no instance).
         primitive_index: Index of the hit primitive within its build input.
-        cluster_id: User-defined CLASS ID, or ``0xFFFFFFFF`` for ordinary geometry.
+        cluster_id: User-defined cluster (CLAS) ID, or ``0xFFFFFFFF`` for ordinary geometry.
     """
 
     result: wp.bool

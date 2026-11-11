@@ -27,65 +27,75 @@ inline void bind_clusters(py::module_& m) {
         return result;
     });
 
+    // clang-format off
 #define CLUSTER_FIELD(type, field) .def_readwrite(#field, &type::field)
     py::class_<OptixClusterAccelBuildInputTriangles>(m, "ClusterAccelBuildInputTriangles")
-        .def(py::init<>()) CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles, flags)
-            CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles, maxArgCount)
-                CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles, vertexFormat)
-                    CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles, maxSbtIndexValue)
-                        CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles, maxUniqueSbtIndexCountPerArg)
-                            CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles, maxTriangleCountPerArg)
-                                CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles, maxVertexCountPerArg)
-                                    CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles, maxTotalTriangleCount)
-                                        CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles, maxTotalVertexCount)
-                                            CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles,
-                                                          minPositionTruncateBitCount);
+        .def(py::init<>())
+        CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles, flags)
+        CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles, maxArgCount)
+        CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles, vertexFormat)
+        CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles, maxSbtIndexValue)
+        CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles, maxUniqueSbtIndexCountPerArg)
+        CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles, maxTriangleCountPerArg)
+        CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles, maxVertexCountPerArg)
+        CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles, maxTotalTriangleCount)
+        CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles, maxTotalVertexCount)
+        CLUSTER_FIELD(OptixClusterAccelBuildInputTriangles, minPositionTruncateBitCount);
     py::class_<OptixClusterAccelBuildInputGrids>(m, "ClusterAccelBuildInputGrids")
-        .def(py::init<>()) CLUSTER_FIELD(OptixClusterAccelBuildInputGrids, flags)
-            CLUSTER_FIELD(OptixClusterAccelBuildInputGrids, maxArgCount)
-                CLUSTER_FIELD(OptixClusterAccelBuildInputGrids, vertexFormat)
-                    CLUSTER_FIELD(OptixClusterAccelBuildInputGrids, maxSbtIndexValue)
-                        CLUSTER_FIELD(OptixClusterAccelBuildInputGrids, maxWidth)
-                            CLUSTER_FIELD(OptixClusterAccelBuildInputGrids, maxHeight);
+        .def(py::init<>())
+        CLUSTER_FIELD(OptixClusterAccelBuildInputGrids, flags)
+        CLUSTER_FIELD(OptixClusterAccelBuildInputGrids, maxArgCount)
+        CLUSTER_FIELD(OptixClusterAccelBuildInputGrids, vertexFormat)
+        CLUSTER_FIELD(OptixClusterAccelBuildInputGrids, maxSbtIndexValue)
+        CLUSTER_FIELD(OptixClusterAccelBuildInputGrids, maxWidth)
+        CLUSTER_FIELD(OptixClusterAccelBuildInputGrids, maxHeight);
     py::class_<OptixClusterAccelBuildInputClusters>(m, "ClusterAccelBuildInputClusters")
-        .def(py::init<>()) CLUSTER_FIELD(OptixClusterAccelBuildInputClusters, flags)
-            CLUSTER_FIELD(OptixClusterAccelBuildInputClusters, maxArgCount)
-                CLUSTER_FIELD(OptixClusterAccelBuildInputClusters, maxTotalClusterCount)
-                    CLUSTER_FIELD(OptixClusterAccelBuildInputClusters, maxClusterCountPerArg);
+        .def(py::init<>())
+        CLUSTER_FIELD(OptixClusterAccelBuildInputClusters, flags)
+        CLUSTER_FIELD(OptixClusterAccelBuildInputClusters, maxArgCount)
+        CLUSTER_FIELD(OptixClusterAccelBuildInputClusters, maxTotalClusterCount)
+        CLUSTER_FIELD(OptixClusterAccelBuildInputClusters, maxClusterCountPerArg);
     py::class_<OptixClusterAccelBuildInput>(m, "ClusterAccelBuildInput")
-        .def(py::init<>()) CLUSTER_FIELD(OptixClusterAccelBuildInput, type)
-            CLUSTER_FIELD(OptixClusterAccelBuildInput, triangles) CLUSTER_FIELD(OptixClusterAccelBuildInput, grids)
-                CLUSTER_FIELD(OptixClusterAccelBuildInput, clusters);
+        .def(py::init<>())
+        CLUSTER_FIELD(OptixClusterAccelBuildInput, type)
+        CLUSTER_FIELD(OptixClusterAccelBuildInput, triangles)
+        CLUSTER_FIELD(OptixClusterAccelBuildInput, grids)
+        CLUSTER_FIELD(OptixClusterAccelBuildInput, clusters);
 
     py::class_<OptixClusterAccelBuildModeDescImplicitDest>(m, "ClusterAccelBuildModeDescImplicitDest")
-        .def(py::init<>()) CLUSTER_FIELD(OptixClusterAccelBuildModeDescImplicitDest, outputBuffer)
-            CLUSTER_FIELD(OptixClusterAccelBuildModeDescImplicitDest, outputBufferSizeInBytes)
-                CLUSTER_FIELD(OptixClusterAccelBuildModeDescImplicitDest, tempBuffer)
-                    CLUSTER_FIELD(OptixClusterAccelBuildModeDescImplicitDest, tempBufferSizeInBytes)
-                        CLUSTER_FIELD(OptixClusterAccelBuildModeDescImplicitDest, outputHandlesBuffer)
-                            CLUSTER_FIELD(OptixClusterAccelBuildModeDescImplicitDest, outputHandlesStrideInBytes)
-                                CLUSTER_FIELD(OptixClusterAccelBuildModeDescImplicitDest, outputSizesBuffer)
-                                    CLUSTER_FIELD(OptixClusterAccelBuildModeDescImplicitDest, outputSizesStrideInBytes);
+        .def(py::init<>())
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescImplicitDest, outputBuffer)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescImplicitDest, outputBufferSizeInBytes)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescImplicitDest, tempBuffer)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescImplicitDest, tempBufferSizeInBytes)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescImplicitDest, outputHandlesBuffer)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescImplicitDest, outputHandlesStrideInBytes)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescImplicitDest, outputSizesBuffer)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescImplicitDest, outputSizesStrideInBytes);
     py::class_<OptixClusterAccelBuildModeDescExplicitDest>(m, "ClusterAccelBuildModeDescExplicitDest")
-        .def(py::init<>()) CLUSTER_FIELD(OptixClusterAccelBuildModeDescExplicitDest, tempBuffer)
-            CLUSTER_FIELD(OptixClusterAccelBuildModeDescExplicitDest, tempBufferSizeInBytes)
-                CLUSTER_FIELD(OptixClusterAccelBuildModeDescExplicitDest, destAddressesBuffer)
-                    CLUSTER_FIELD(OptixClusterAccelBuildModeDescExplicitDest, destAddressesStrideInBytes)
-                        CLUSTER_FIELD(OptixClusterAccelBuildModeDescExplicitDest, outputHandlesBuffer)
-                            CLUSTER_FIELD(OptixClusterAccelBuildModeDescExplicitDest, outputHandlesStrideInBytes)
-                                CLUSTER_FIELD(OptixClusterAccelBuildModeDescExplicitDest, outputSizesBuffer)
-                                    CLUSTER_FIELD(OptixClusterAccelBuildModeDescExplicitDest, outputSizesStrideInBytes);
+        .def(py::init<>())
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescExplicitDest, tempBuffer)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescExplicitDest, tempBufferSizeInBytes)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescExplicitDest, destAddressesBuffer)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescExplicitDest, destAddressesStrideInBytes)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescExplicitDest, outputHandlesBuffer)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescExplicitDest, outputHandlesStrideInBytes)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescExplicitDest, outputSizesBuffer)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescExplicitDest, outputSizesStrideInBytes);
     py::class_<OptixClusterAccelBuildModeDescGetSize>(m, "ClusterAccelBuildModeDescGetSize")
-        .def(py::init<>()) CLUSTER_FIELD(OptixClusterAccelBuildModeDescGetSize, outputSizesBuffer)
-            CLUSTER_FIELD(OptixClusterAccelBuildModeDescGetSize, outputSizesStrideInBytes)
-                CLUSTER_FIELD(OptixClusterAccelBuildModeDescGetSize, tempBuffer)
-                    CLUSTER_FIELD(OptixClusterAccelBuildModeDescGetSize, tempBufferSizeInBytes);
+        .def(py::init<>())
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescGetSize, outputSizesBuffer)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescGetSize, outputSizesStrideInBytes)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescGetSize, tempBuffer)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDescGetSize, tempBufferSizeInBytes);
     py::class_<OptixClusterAccelBuildModeDesc>(m, "ClusterAccelBuildModeDesc")
-        .def(py::init<>()) CLUSTER_FIELD(OptixClusterAccelBuildModeDesc, mode)
-            CLUSTER_FIELD(OptixClusterAccelBuildModeDesc, implicitDest)
-                CLUSTER_FIELD(OptixClusterAccelBuildModeDesc, explicitDest)
-                    CLUSTER_FIELD(OptixClusterAccelBuildModeDesc, getSize);
+        .def(py::init<>())
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDesc, mode)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDesc, implicitDest)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDesc, explicitDest)
+        CLUSTER_FIELD(OptixClusterAccelBuildModeDesc, getSize);
 #undef CLUSTER_FIELD
+    // clang-format on
 
     py::enum_<OptixClusterAccelBuildType>(m, "ClusterAccelBuildType")
         .value("CLUSTER_ACCEL_BUILD_TYPE_GASES_FROM_CLUSTERS", OPTIX_CLUSTER_ACCEL_BUILD_TYPE_GASES_FROM_CLUSTERS)
@@ -123,13 +133,14 @@ inline void bind_clusters(py::module_& m) {
     m.def(
         "clusterAccelBuild",
         [](const pyoptix::DeviceContext& context, uintptr_t stream, const OptixClusterAccelBuildModeDesc& mode,
-           const OptixClusterAccelBuildInput& input, uintptr_t args, uintptr_t count, unsigned int stride) {
+           const OptixClusterAccelBuildInput& input, uintptr_t args, uintptr_t args_count, unsigned int stride) {
             ensure_optix_initialized();
             // Device descriptors and their pointees follow the native API's lifetime contract.
             // The caller retains them and all output allocations until stream completion.
+            // args_count is a device pointer to a uint32 argument count; 0 uses maxArgCount.
             PYOPTIX_CHECK(optixClusterAccelBuild(context.deviceContext, reinterpret_cast<CUstream>(stream), &mode,
-                                                 &input, args, count, stride));
+                                                 &input, args, args_count, stride));
         },
-        py::arg("context"), py::arg("stream"), py::arg("mode"), py::arg("input"), py::arg("args"), py::arg("count") = 0,
-        py::arg("stride") = 0);
+        py::arg("context"), py::arg("stream"), py::arg("mode"), py::arg("input"), py::arg("args"),
+        py::arg("args_count") = 0, py::arg("stride") = 0);
 }
