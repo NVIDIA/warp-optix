@@ -21,6 +21,7 @@ from warp._src import context as _warp_context
 from warp_optix import native
 from warp_optix._src.accel import Accel
 from warp_optix._src.addon import build_options
+from warp_optix._src.clusters import ClusterAccel
 from warp_optix._src.context import CAPTURE_ERROR, native_objects, resolve
 from warp_optix._src.enums import ExceptionFlags, PrimitiveType, TraversableGraphFlags
 from warp_optix._src.program import ProgramKind, as_program, params_struct
@@ -70,6 +71,9 @@ class Pipeline:
     :meth:`close` or ``with``. Device memory is freed in stream order, like
     ``wp.array``; the native OptiX objects are destroyed once the launches
     submitted before the release have finished.
+
+    Set ``clustered_geometry=True`` when tracing ``ClusterAccel`` geometry,
+    either directly or through an instance acceleration structure.
     """
 
     def __init__(
@@ -88,6 +92,7 @@ class Pipeline:
         max_callable_depth: int = 1,
         graph_flags: TraversableGraphFlags = TraversableGraphFlags.ALLOW_ANY,
         motion_blur: bool = False,
+        clustered_geometry: bool = False,
         max_registers: int = native.COMPILE_DEFAULT_MAX_REGISTER_COUNT,
         module_options: dict | None = None,
         device: wp.DeviceLike = None,
@@ -153,6 +158,7 @@ class Pipeline:
                 pipelineLaunchParamsVariableName="params",
                 usesPrimitiveTypeFlags=_primitive_flags(hit_groups),
             )
+            native.setAllowClusteredGeometry(pipeline_options, clustered_geometry)
             # OptiX accepts full debug information only without optimization.
             debug = (options["mode"] or wp.config.mode) == "debug"
             compile_options = native.ModuleCompileOptions(
@@ -235,6 +241,7 @@ class Pipeline:
         self._tid_ndim = tid_ndim
         self._params_type = params
         self._explicit_params = params_type is not None
+        self._clustered_geometry = bool(clustered_geometry)
         self._sbt_layout = layout
         self._buffers: dict[int, _ParamsStorage] = {}  # automatic parameter storage per CUDA stream
         self._streams: dict[int, wp.Stream] = {}  # streams launched on, by CUDA stream handle
@@ -336,6 +343,14 @@ class Pipeline:
                 self._buffers.pop(key, None)
 
 
+def _check_clustered(pipeline: Pipeline, value) -> None:
+    # Without allowClusteredGeometry OptiX silently misses every cluster. Structures passed as
+    # objects are checked, also when cluster geometry is nested in instance structures.
+    clusters = isinstance(value, ClusterAccel) or (isinstance(value, Accel) and value._has_clusters)
+    if clusters and not pipeline._clustered_geometry:
+        raise ValueError("Tracing ClusterAccel geometry requires a Pipeline created with clustered_geometry=True")
+
+
 class _ParamsStorage:
     """A device launch-parameter block, its host copy, and the inputs referenced by it.
 
@@ -344,9 +359,9 @@ class _ParamsStorage:
     does not form a reference cycle and ``del pipeline`` releases it at once.
     """
 
-    __slots__ = ("allocated", "data", "dirty", "host", "inputs", "reset_host", "stream")
+    __slots__ = ("allocated", "data", "dirty", "host", "inputs", "recorded", "reset_host", "stream")
 
-    def __init__(self, params_type, device: wp.Device):
+    def __init__(self, params_type, device: wp.Device, recorded: bool = False):
         self.data = wp.empty(1, dtype=params_type, device=device)
         self.host = params_type()
         self.inputs: dict = {}
@@ -355,6 +370,8 @@ class _ParamsStorage:
         # The allocation is ordered on the current stream: the first use waits for it, not for later work there.
         self.allocated: wp.Event | None = wp.get_stream(device).record_event()
         self.stream: wp.Stream | None = None
+        # A recorded launch replays packed handles until its parameters are set again.
+        self.recorded = recorded
 
     def pack(self, pipeline: Pipeline, context, values) -> None:
         """Pack ``values`` (the raygen arguments, or one ``params_type`` instance) into the host copy."""
@@ -379,13 +396,20 @@ class _ParamsStorage:
                 raise TypeError(f"The raygen program takes {len(names)} arguments, but {len(values)} were given")
             self.inputs = {}
             for name, value in zip(names, values):
+                _check_clustered(pipeline, value)
                 self.set(context, name, value)
         self.dirty = True
 
     def set(self, context, name: str, value) -> None:
-        """Set one parameter; an ``Accel`` is passed as its id and retained."""
+        """Set one parameter; acceleration structures are passed as ids and retained."""
         retained = value
-        if isinstance(value, Accel):
+        if isinstance(value, (Accel, ClusterAccel)):
+            if value.device != context.device:
+                raise ValueError("Acceleration structure and pipeline must use the same CUDA device")
+            if self.recorded and isinstance(value, ClusterAccel):
+                # A rebuild that grows a cluster structure replaces its buffers unless something
+                # else holds its memory list. Hold it, so that replays never reach freed memory.
+                retained = (value, value._memory)
             value = wp.uint64(value.id)
         elif isinstance(value, wp.array):
             if value.device != context.device:
@@ -435,7 +459,9 @@ class Launch:
     packed once and kept in this object's own parameter block; :meth:`launch`
     copies them to the device only after they change, then launches. Replays on
     different streams are ordered on the GPU; use separate ``Launch`` objects for
-    independent concurrent launches. Like ``wp.array``, the parameter block is
+    independent concurrent launches. Acceleration structures are packed as their
+    ``id`` when set: set them again after a rebuild that changes the ``id``, such as
+    a ``ClusterAccel`` rebuild beyond its ``capacity``. Like ``wp.array``, the parameter block is
     freed in stream order when the last reference is dropped. Set them
     with :meth:`set_param_at_index`, :meth:`set_param_by_name`, or
     :meth:`set_params`; names and indices are the launch-parameter fields (the
@@ -445,7 +471,7 @@ class Launch:
     def __init__(self, pipeline: Pipeline, dim, inputs, context):
         self.pipeline = pipeline
         self._context = context
-        self._storage = _ParamsStorage(pipeline.params_type, context.device)
+        self._storage = _ParamsStorage(pipeline.params_type, context.device, recorded=True)
         self._fields = tuple(pipeline.params_type.vars)
         self.set_dim(dim)
         self.set_params(inputs)
@@ -467,6 +493,7 @@ class Launch:
         """Set the launch-parameter field ``name``."""
         if name not in self._fields:
             raise KeyError(f"The launch parameters have no field {name!r}")
+        _check_clustered(self.pipeline, value)
         self._storage.set(self._context, name, value)
 
     def launch(self, stream: wp.Stream | None = None) -> None:
@@ -488,7 +515,7 @@ def launch(
 
     Pass raygen arguments as ``inputs`` and ``outputs``, concatenated as in
     ``wp.launch``, or ``inputs=[struct]`` with an
-    explicit ``params_type``. ``wo.Accel`` objects in ``inputs`` are passed as
+    explicit ``params_type``. ``wo.Accel`` and ``wo.ClusterAccel`` objects in ``inputs`` are passed as
     their ``id``. As with ``wp.launch``, keep resources alive while submitted
     work may use them. ``device`` defaults to the pipeline's device; a different
     device is rejected. Parameter storage is separate for each CUDA stream.

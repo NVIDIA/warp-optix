@@ -30,6 +30,51 @@ def test_ray_tracing_examples_write_their_images(name, tmp_path, monkeypatch):
         assert output.stat().st_size > 0
 
 
+def test_cluster_example_animates_rebuilds_and_accumulates(monkeypatch):
+    import warp_optix as wo
+
+    if not wo.cluster_capabilities()["flags"]:
+        pytest.skip("Cluster API unsupported")
+    monkeypatch.syspath_prepend(str(EXAMPLES))
+    module = importlib.import_module("example_clusters")
+    args = SimpleNamespace(
+        width=64,
+        height=48,
+        along=16,
+        around=4,
+        cluster_size=4,
+        truncate=0,
+        distance=5.8,
+        time=0.0,
+        view="clusters",
+        animate=1.0,
+        samples=1,
+    )
+    app = module.Example(args)
+    image = wp.empty(args.width * args.height, dtype=wp.uint32)
+    try:
+        app.draw(image, 0, 0.0)
+        initial = app.points.numpy()
+        assert np.count_nonzero(app.hit_ids.numpy() >= 0) > 50
+        app.draw(image, 1, 1.0)
+        assert np.max(np.abs(app.points.numpy() - initial)) > 0.001
+        args.along = 24
+        app.draw(image, 2, 2.0)
+        ids = app.hit_ids.numpy()
+        assert app.grid_sizes.size == args.along * args.around
+        assert np.unique(ids[ids >= 0]).size > 4
+        assert ids.max() < app.grid_sizes.size
+        assert np.isfinite(app.points.numpy()).all()
+        app.paused = True
+        app.draw(image, 3, 3.0)
+        assert app.accumulated_frames == 2
+        app.yaw += 0.1
+        app.draw(image, 4, 4.0)
+        assert app.accumulated_frames == 1
+    finally:
+        app.close()
+
+
 @pytest.fixture
 def pathtracing(monkeypatch):
     monkeypatch.syspath_prepend(str(EXAMPLES))
