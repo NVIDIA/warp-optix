@@ -10,6 +10,7 @@ inline void bind_clusters(py::module_& m) {
     });
     m.def("getClusterProperties", [](const pyoptix::DeviceContext& context) {
         ensure_optix_initialized();
+        // Every key is present; the limits stay 0 on devices without the Cluster API.
         py::dict result;
         for (auto [name, property] :
              {std::pair{"flags", OPTIX_DEVICE_PROPERTY_CLUSTER_ACCEL},
@@ -19,10 +20,9 @@ inline void bind_clusters(py::module_& m) {
               {"max_sbt_index", OPTIX_DEVICE_PROPERTY_LIMIT_MAX_CLUSTER_SBT_INDEX},
               {"max_clusters_per_gas", OPTIX_DEVICE_PROPERTY_LIMIT_MAX_CLUSTERS_PER_GAS}}) {
             unsigned int value = 0;
-            PYOPTIX_CHECK(optixDeviceContextGetProperty(context.deviceContext, property, &value, sizeof(value)));
+            if (property == OPTIX_DEVICE_PROPERTY_CLUSTER_ACCEL || result["flags"].cast<unsigned int>() != 0)
+                PYOPTIX_CHECK(optixDeviceContextGetProperty(context.deviceContext, property, &value, sizeof(value)));
             result[name] = value;
-            if (property == OPTIX_DEVICE_PROPERTY_CLUSTER_ACCEL && value == 0)
-                break;
         }
         return result;
     });
@@ -119,6 +119,17 @@ inline void bind_clusters(py::module_& m) {
         .value("CLUSTER_ACCEL_BUILD_FLAG_ALLOW_OPACITY_MICROMAPS",
                OPTIX_CLUSTER_ACCEL_BUILD_FLAG_ALLOW_OPACITY_MICROMAPS)
         .export_values();
+    py::enum_<OptixClusterAccelPrimitiveFlags>(m, "ClusterAccelPrimitiveFlags", py::arithmetic())
+        .value("CLUSTER_ACCEL_PRIMITIVE_FLAG_NONE", OPTIX_CLUSTER_ACCEL_PRIMITIVE_FLAG_NONE)
+        .value("CLUSTER_ACCEL_PRIMITIVE_FLAG_DISABLE_TRIANGLE_FACE_CULLING",
+               OPTIX_CLUSTER_ACCEL_PRIMITIVE_FLAG_DISABLE_TRIANGLE_FACE_CULLING)
+        .value("CLUSTER_ACCEL_PRIMITIVE_FLAG_REQUIRE_SINGLE_ANYHIT_CALL",
+               OPTIX_CLUSTER_ACCEL_PRIMITIVE_FLAG_REQUIRE_SINGLE_ANYHIT_CALL)
+        .value("CLUSTER_ACCEL_PRIMITIVE_FLAG_DISABLE_ANYHIT", OPTIX_CLUSTER_ACCEL_PRIMITIVE_FLAG_DISABLE_ANYHIT)
+        .export_values();
+    // PyOptiX 9.1.1 lacks this geometry flag; the backend adds it to its GeometryFlags enum.
+    m.attr("GEOMETRY_FLAG_DISABLE_TRIANGLE_FACE_CULLING") =
+        static_cast<unsigned int>(OPTIX_GEOMETRY_FLAG_DISABLE_TRIANGLE_FACE_CULLING);
 
     m.def(
         "clusterAccelComputeMemoryUsage",

@@ -224,3 +224,68 @@ def test_cluster_accel_requires_clustered_pipeline_and_unambiguous_templates(sup
     with wo.ClusterTemplates(2) as templates:
         with pytest.raises(ValueError, match="ClusterTemplates"):
             wo.ClusterAccel(points, grids, offsets, templates=templates, max_edge_segments=2)
+
+
+def test_recorded_launch_keeps_replaced_cluster_memory_alive(supported):
+    points = wp.array(fine_points(), dtype=wp.vec3)
+    accel = wo.ClusterAccel(
+        points,
+        wp.array([[8, 8], [8, 8]], dtype=wp.vec2i),
+        wp.array([0, 81], dtype=int),
+        cluster_ids=wp.array([42, 99], dtype=wp.uint32),
+    )
+    with wo.Pipeline(query_grids, clustered_geometry=True) as pipeline:
+        result = wp.empty(2, dtype=wp.vec3)
+        recorded = wo.launch(pipeline, dim=2, inputs=[accel, result], record_cmd=True)
+        retained = [buffer.size for buffer in accel._memory]
+        # Growing reallocates; the recorded launch still holds the previous handle.
+        accel.rebuild(
+            grid_sizes=wp.array([[8, 8], [8, 8], [8, 8]], dtype=wp.vec2i),
+            vertex_offsets=wp.array([0, 81, 0], dtype=int),
+            cluster_ids=wp.array([1, 2, 3], dtype=wp.uint32),
+        )
+        accel.close()
+        junk = overwrite_freed_memory(retained)
+        recorded.launch()
+        np.testing.assert_allclose(result.numpy()[:, :2], [[4, 42], [4, 99]])
+        del junk
+
+
+def test_cluster_capabilities_have_a_stable_shape():
+    keys = {"flags", "max_vertices", "max_triangles", "max_grid_resolution", "max_sbt_index", "max_clusters_per_gas"}
+    assert set(wo.cluster_capabilities()) == keys
+
+
+def test_instanced_clusters_require_clustered_pipeline(supported):
+    points = wp.array(grid_points(), dtype=wp.vec3)
+    with wo.ClusterAccel(points, wp.array([[2, 2]], dtype=wp.vec2i), wp.array([0], dtype=int)) as accel:
+        records = wp.empty(1, dtype=wo.Instance)
+        wp.launch(place_grid, 1, inputs=[wp.uint64(accel.id), records])
+        with wo.Accel([wo.instances(records, [accel])]) as scene:
+            outer = wp.empty(1, dtype=wo.Instance)
+            wp.launch(place_grid, 1, inputs=[wp.uint64(scene.id), outer])
+            with wo.Accel([wo.instances(outer, [scene])]) as nested:
+                result = wp.empty(2, dtype=wp.vec3)
+                with wo.Pipeline(query_grids) as pipeline:
+                    for structure in (scene, nested):
+                        with pytest.raises(ValueError, match="clustered_geometry"):
+                            wo.launch(pipeline, dim=2, inputs=[structure, result])
+                with wo.Pipeline(query_grids, clustered_geometry=True) as pipeline:
+                    wo.launch(pipeline, dim=2, inputs=[scene, result])
+                    np.testing.assert_allclose(result.numpy()[0], [4, 0, 7])
+
+
+def test_cluster_geometry_flags_map_by_name(supported):
+    from warp_optix._src.clusters import _primitive_flags
+
+    from warp_optix import native as n
+
+    assert _primitive_flags(wo.GeometryFlags.DISABLE_ANYHIT) == int(n.CLUSTER_ACCEL_PRIMITIVE_FLAG_DISABLE_ANYHIT)
+    assert _primitive_flags(wo.GeometryFlags.REQUIRE_SINGLE_ANYHIT_CALL) == int(
+        n.CLUSTER_ACCEL_PRIMITIVE_FLAG_REQUIRE_SINGLE_ANYHIT_CALL
+    )
+    assert _primitive_flags(n.GEOMETRY_FLAG_DISABLE_TRIANGLE_FACE_CULLING) == int(
+        n.CLUSTER_ACCEL_PRIMITIVE_FLAG_DISABLE_TRIANGLE_FACE_CULLING
+    )
+    with pytest.raises(ValueError, match="geometry_flags"):
+        wo.ClusterTemplates(2, geometry_flags=8)

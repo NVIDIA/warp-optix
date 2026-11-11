@@ -457,11 +457,13 @@ class Accel:
         native_inputs = [item.native for item in inputs]
         with wp.ScopedDevice(context.device), wp.ScopedStream(stream, sync_enter=False):
             children = {}
+            has_clusters = False
             for item in inputs:
                 if item.instance_children is not None:
                     for child in item.instance_children:
                         child._check_open()
                         children[child._id] = child._memory
+                        has_clusters |= isinstance(child, ClusterAccel) or child._has_clusters
                     if config.verify_instances:
                         wp.synchronize_stream(stream)
                         child_ids = np.unique(item.instance_records.numpy()["traversable"]).tolist()
@@ -509,6 +511,8 @@ class Accel:
         self._refit_options = build_options(native.BUILD_OPERATION_UPDATE) if flags & BuildFlags.ALLOW_UPDATE else None
         # Retain every level of instance memory even when child objects are closed.
         self._memory = (buffer, *children.values())
+        # Traversal reaches cluster geometry: launches need clustered_geometry=True.
+        self._has_clusters = has_clusters
         self._closed = False
         if compact:
             _compact([self], context, stream)

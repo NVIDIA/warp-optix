@@ -344,10 +344,11 @@ class Pipeline:
 
 
 def _check_clustered(pipeline: Pipeline, value) -> None:
-    # Without allowClusteredGeometry OptiX silently misses every cluster. This catches the
-    # direct use; a cluster structure reached through an instance structure cannot be checked.
-    if isinstance(value, ClusterAccel) and not pipeline._clustered_geometry:
-        raise ValueError("Tracing a ClusterAccel requires a Pipeline created with clustered_geometry=True")
+    # Without allowClusteredGeometry OptiX silently misses every cluster. Structures passed as
+    # objects are checked, also when cluster geometry is nested in instance structures.
+    clusters = isinstance(value, ClusterAccel) or (isinstance(value, Accel) and value._has_clusters)
+    if clusters and not pipeline._clustered_geometry:
+        raise ValueError("Tracing ClusterAccel geometry requires a Pipeline created with clustered_geometry=True")
 
 
 class _ParamsStorage:
@@ -358,9 +359,9 @@ class _ParamsStorage:
     does not form a reference cycle and ``del pipeline`` releases it at once.
     """
 
-    __slots__ = ("allocated", "data", "dirty", "host", "inputs", "reset_host", "stream")
+    __slots__ = ("allocated", "data", "dirty", "host", "inputs", "recorded", "reset_host", "stream")
 
-    def __init__(self, params_type, device: wp.Device):
+    def __init__(self, params_type, device: wp.Device, recorded: bool = False):
         self.data = wp.empty(1, dtype=params_type, device=device)
         self.host = params_type()
         self.inputs: dict = {}
@@ -369,6 +370,8 @@ class _ParamsStorage:
         # The allocation is ordered on the current stream: the first use waits for it, not for later work there.
         self.allocated: wp.Event | None = wp.get_stream(device).record_event()
         self.stream: wp.Stream | None = None
+        # A recorded launch replays packed handles until its parameters are set again.
+        self.recorded = recorded
 
     def pack(self, pipeline: Pipeline, context, values) -> None:
         """Pack ``values`` (the raygen arguments, or one ``params_type`` instance) into the host copy."""
@@ -403,6 +406,10 @@ class _ParamsStorage:
         if isinstance(value, (Accel, ClusterAccel)):
             if value.device != context.device:
                 raise ValueError("Acceleration structure and pipeline must use the same CUDA device")
+            if self.recorded and isinstance(value, ClusterAccel):
+                # A rebuild that grows a cluster structure replaces its buffers unless something
+                # else holds its memory list. Hold it, so that replays never reach freed memory.
+                retained = (value, value._memory)
             value = wp.uint64(value.id)
         elif isinstance(value, wp.array):
             if value.device != context.device:
@@ -452,7 +459,9 @@ class Launch:
     packed once and kept in this object's own parameter block; :meth:`launch`
     copies them to the device only after they change, then launches. Replays on
     different streams are ordered on the GPU; use separate ``Launch`` objects for
-    independent concurrent launches. Like ``wp.array``, the parameter block is
+    independent concurrent launches. Acceleration structures are packed as their
+    ``id`` when set: set them again after a rebuild that changes the ``id``, such as
+    a ``ClusterAccel`` rebuild with more clusters. Like ``wp.array``, the parameter block is
     freed in stream order when the last reference is dropped. Set them
     with :meth:`set_param_at_index`, :meth:`set_param_by_name`, or
     :meth:`set_params`; names and indices are the launch-parameter fields (the
@@ -462,7 +471,7 @@ class Launch:
     def __init__(self, pipeline: Pipeline, dim, inputs, context):
         self.pipeline = pipeline
         self._context = context
-        self._storage = _ParamsStorage(pipeline.params_type, context.device)
+        self._storage = _ParamsStorage(pipeline.params_type, context.device, recorded=True)
         self._fields = tuple(pipeline.params_type.vars)
         self.set_dim(dim)
         self.set_params(inputs)

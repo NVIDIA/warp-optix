@@ -121,6 +121,23 @@ def _build_input(kind, count, size=8, truncate=0, max_sbt_index=0):
     return result
 
 
+def _primitive_flags(geometry_flags):
+    """Translate OptixGeometryFlags into OptixClusterAccelPrimitiveFlags, whose bits differ."""
+    flags = int(geometry_flags)
+    result = 0
+    for geometry, primitive in (
+        (n.GEOMETRY_FLAG_DISABLE_ANYHIT, n.CLUSTER_ACCEL_PRIMITIVE_FLAG_DISABLE_ANYHIT),
+        (n.GEOMETRY_FLAG_REQUIRE_SINGLE_ANYHIT_CALL, n.CLUSTER_ACCEL_PRIMITIVE_FLAG_REQUIRE_SINGLE_ANYHIT_CALL),
+        (n.GEOMETRY_FLAG_DISABLE_TRIANGLE_FACE_CULLING, n.CLUSTER_ACCEL_PRIMITIVE_FLAG_DISABLE_TRIANGLE_FACE_CULLING),
+    ):
+        if flags & int(geometry):
+            flags &= ~int(geometry)
+            result |= int(primitive)
+    if flags:
+        raise ValueError("Unsupported geometry_flags for cluster templates")
+    return result
+
+
 class _ImplicitBuild:
     """An implicit-destination build whose buffers fit ``capacity`` arguments of ``desc``.
 
@@ -162,7 +179,7 @@ class _ImplicitBuild:
 class _TemplateState:
     """Device state of a :class:`ClusterTemplates`, shared by the structures instantiating it."""
 
-    def __init__(self, size, truncate, max_sbt_index, geometry_flags):
+    def __init__(self, size, truncate, max_sbt_index, primitive_flags):
         context = get_context()
         props = n.getClusterProperties(context.native)
         if not props["flags"]:
@@ -185,9 +202,6 @@ class _TemplateState:
             context, _build_input(n.CLUSTER_ACCEL_BUILD_TYPE_TEMPLATES_FROM_GRIDS, count, size, 0, max_sbt_index), count
         )
         grid_args = wp.empty(count, dtype=_GridArgs)
-        flags = int(geometry_flags)
-        # OptixGeometryFlags -> OptixClusterAccelPrimitiveFlags: bits 0 and 2 swap.
-        primitive_flags = ((flags & 1) << 2) | (flags & 2) | ((flags & 4) >> 2)
         wp.launch(_grid_args, count, inputs=[size, truncate, primitive_flags, grid_args])
         build.build(grid_args)
         # The arguments and scratch are freed in stream order after the build.
@@ -252,13 +266,12 @@ class ClusterTemplates:
             raise ValueError("position_truncate_bits must lie in [0, 23]")
         if not isinstance(max_sbt_index, int) or not 0 <= max_sbt_index <= 0xFFFFFF:
             raise ValueError("max_sbt_index must fit in 24 bits")
-        if int(geometry_flags) & ~7:
-            raise ValueError("Unsupported geometry_flags for cluster templates")
+        primitive_flags = _primitive_flags(geometry_flags)
         self.max_edge_segments = max_edge_segments
         self.position_truncate_bits = position_truncate_bits
         self.max_sbt_index = max_sbt_index
         with wp.ScopedDevice(self.device), wp.ScopedStream(stream, sync_enter=False):
-            self._state = _TemplateState(max_edge_segments, position_truncate_bits, max_sbt_index, geometry_flags)
+            self._state = _TemplateState(max_edge_segments, position_truncate_bits, max_sbt_index, primitive_flags)
             self._ready = stream.record_event()
         self.capabilities = self._state.capabilities
         self._closed = False
@@ -309,7 +322,8 @@ class ClusterAccel:
     Buffers are sized for the worst case of the largest cluster count built so
     far and are reused by rebuilds. A rebuild with more clusters than that
     allocates new buffers and may change ``id``: rewrite instance records that
-    reference it and rebuild the instance structure. Instance structures keep
+    reference it and rebuild the instance structure, and set it again on recorded
+    launches (``record_cmd=True``). Instance structures and recorded launches keep
     every buffer they may reference alive, also after this object is closed.
 
     ``validate=False`` skips host bounds checks for trusted GPU-generated grids;
