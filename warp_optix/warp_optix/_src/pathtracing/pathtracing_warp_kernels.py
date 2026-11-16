@@ -2595,8 +2595,6 @@ def _evaluate_material_from_payload(
     # shading normal.  Ng is used for geometric hemisphere tests and ray
     # offsets; replacing it with the tangent-space normal can reject valid
     # lighting samples and self-intersect strongly normal-mapped surfaces.
-    # This matches mat_eval_common.glsl in the reference C# renderer, which
-    # assigns pbrMat.Ng from state.Ng before changing only pbrMat.N.
     ng = n
     t = tangent - n * wp.dot(n, tangent)
     t_len_sq = wp.dot(t, t)

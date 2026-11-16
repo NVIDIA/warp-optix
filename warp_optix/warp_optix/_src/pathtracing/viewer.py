@@ -1260,7 +1260,7 @@ class ViewerBackend:
         return float(self._current_fps)
 
     def register_ui_callback(self, callback: Callable, position: str = "options"):
-        """Register an ImGui callback, matching the hybrid viewer API."""
+        """Register a callback to add application controls to the ImGui panel."""
         self._ui_callbacks.append((callback, str(position)))
 
     def enable_imgui(self, enabled: bool = True):
@@ -1418,14 +1418,14 @@ class ViewerBackend:
         return self._max_instances
 
     def notify_transforms_updated(self, count: int = -1):
-        """Compatibility hook for the old bridge-specific transform VBO API."""
+        """Warn that transform updates must use Warp arrays via log_instances()."""
         del count
         if not self._warned_transform_vbo:
             logger.warning("No transform GL buffer is exposed; update Warp transforms with log_instances()")
             self._warned_transform_vbo = True
 
     def is_gpu_transform_available(self) -> bool:
-        """The old Vulkan-backed GL transform buffer is not used by this backend."""
+        """Return False because this backend does not expose a GL transform buffer."""
         return False
 
     def set_sun_direction(self, x: float, y: float, z: float, intensity: float = 1.0):
@@ -1461,7 +1461,7 @@ class ViewerBackend:
         )
 
     def set_time_of_day(self, preset: str):
-        """Apply one of the physical-sky presets used by the hybrid viewer."""
+        """Apply a physical-sky preset for the requested time of day."""
         presets = {
             "dawn": (
                 5.0,
