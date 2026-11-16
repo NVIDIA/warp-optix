@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 #pragma once
 
-// PyOptiX 9.1.0 does not export native handles or a C API. These four
+// PyOptiX 9.1.1 does not export native handles or a C API. These four
 // upstream wrapper definitions provide a deliberately version-pinned pybind11
 // bridge. No PyOptiX types are registered by our extension. At import we verify
 // the registered type identities, sizes, and binding ABI before accessing them.

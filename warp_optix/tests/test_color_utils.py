@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
-from warp_optix.pathtracing.color_utils import (
+from warp_optix._src.pathtracing.color_utils import (
     srgb_to_linear_rgb,
     srgb_to_linear_u8,
 )
-from warp_optix.pathtracing.scene import Scene
+from warp_optix._src.pathtracing.scene import Scene
 
 
 def test_u8_srgb_lookup_matches_float_conversion():

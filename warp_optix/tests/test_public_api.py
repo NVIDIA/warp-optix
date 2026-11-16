@@ -11,12 +11,14 @@ from warp_optix import native
 
 
 def test_import_boundary_in_fresh_process(tmp_path):
+    # warp_optix is imported before optix; test_backend_dependency covers the other order.
     subprocess.run(
         [
             sys.executable,
             "-c",
             """
 import sys
+from importlib.metadata import version
 
 import warp_optix as wo
 import warp as wp
@@ -25,23 +27,19 @@ assert 'warp_nn' not in sys.modules
 assert 'pyglet' not in sys.modules
 assert 'imgui_bundle' not in sys.modules
 assert wp._src.context.runtime is None
-assert wo.__version__ == '0.2.0'
+assert wo.__version__ == version('warp-optix')
 from warp_optix import native
 assert native.version() == (9, 1, 0)
-assert native.DeviceContext is optix.DeviceContext
-assert native.Module is optix.Module
+for name in ('DeviceContext', 'Module', 'ProgramGroup', 'Pipeline', 'Denoiser',
+             'BuildInputTriangleArray', 'Image2D', 'ModuleCompileOptions'):
+    assert getattr(native, name) is getattr(optix, name), name
+assert sys.modules['optix'] is optix and optix.__spec__.name == 'optix'
 assert 'warp_optix._bindings' not in sys.modules
 """,
         ],
         cwd=tmp_path,
         check=True,
     )
-
-
-def test_public_enums_match_bundled_sdk():
-    assert int(wo.PrimitiveType.ROUND_LINEAR) == int(native.PRIMITIVE_TYPE_ROUND_LINEAR)
-    flags = wo.BuildFlags.PREFER_FAST_TRACE | wo.BuildFlags.ALLOW_UPDATE
-    assert int(flags) == int(native.BUILD_FLAG_PREFER_FAST_TRACE) | int(native.BUILD_FLAG_ALLOW_UPDATE)
 
 
 def test_public_surface():
@@ -53,19 +51,19 @@ def test_public_surface():
         "ExceptionFlags",
         "GeometryFlags",
         "HitGroup",
-        "HitGroupHandle",
         "HitKind",
         "Instance",
         "InstanceFlags",
-        "LaunchParams",
+        "Launch",
         "Pipeline",
         "PrimitiveType",
         "ProgramKind",
         "RayFlags",
-        "SbtBuilder",
+        "Record",
         "SbtLayout",
         "TraversableGraphFlags",
         "aabbs",
+        "compact",
         "accel_query_ray",
         "accel_query_ray_anyhit",
         "config",
@@ -77,61 +75,23 @@ def test_public_surface():
         "make_instance",
         "triangles",
     }
-    assert all(hasattr(wo, name) for name in wo.__all__)
-    removed = [
-        "create_context",
-        "destroy_context",
-        "Context",
-        "build_accel",
-        "update_accel",
-        "create_pipeline",
-        "write_launch_params",
-        "create_launch_params_buffer",
-        "LaunchParamsBuffer",
-        "optix_kernel",
-        "OptixKernelType",
-        "closest_hit",
-        "any_hit",
-        "Hit",
-        "MISS",
-        "constants",
-    ]
-    assert [name for name in removed if hasattr(wo, name)] == []
-    assert wo.config.validation is False or wo.config.validation is True
-    assert isinstance(wo.config.log_level, int)
-    assert [kind.name for kind in wo.ProgramKind] == [
-        "RAYGEN",
-        "MISS",
-        "CLOSEST_HIT",
-        "ANY_HIT",
-        "INTERSECTION",
-        "EXCEPTION",
-        "DIRECT_CALLABLE",
-        "CONTINUATION_CALLABLE",
-    ]
+    # Each public module exports exactly its __all__; everything else lives in warp_optix._src.
+    # Submodules become package attributes once imported: `gl` and `pathtracing` are opt-in extras
+    # and `native` is the advanced PyOptiX escape hatch, so none of them is in `wo.__all__`.
+    import warp_optix.gl
+    import warp_optix.pathtracing
+
+    for module in (wo, warp_optix.gl, warp_optix.pathtracing):
+        names = {name for name in vars(module) if not name.startswith("_")} - {"gl", "native", "pathtracing"}
+        assert names == set(module.__all__), module.__name__
 
 
-def test_ray_flags_and_hit_kinds_match_native():
-    for member in wo.RayFlags.__members__.values():
-        if member.name == "FORCE_OPACITY_MICROMAP_2_STATE":
-            assert int(member) == 1 << 10  # From optix_types.h; not exposed by PyOptiX 9.1.
-            continue
-        assert int(member) == int(getattr(native, f"RAY_FLAG_{member.name}")), member
-    assert set(wo.RayFlags.__members__) >= {
-        "NONE",
-        "DISABLE_ANYHIT",
-        "ENFORCE_ANYHIT",
-        "TERMINATE_ON_FIRST_HIT",
-        "DISABLE_CLOSESTHIT",
-        "CULL_BACK_FACING_TRIANGLES",
-        "CULL_FRONT_FACING_TRIANGLES",
-        "CULL_DISABLED_ANYHIT",
-        "CULL_ENFORCED_ANYHIT",
-    }
-    assert [member.name for member in wo.HitKind] == ["TRIANGLE_FRONT_FACE", "TRIANGLE_BACK_FACE"]
-    for member in wo.HitKind:
-        assert int(member) == int(getattr(native, f"HIT_KIND_{member.name}"))
+def test_enums_match_native():
+    # Not exposed by PyOptiX 9.1; their values come from optix_types.h.
+    from_header = {"FORCE_OPACITY_MICROMAP_2_STATE"} | {m.name for m in wo.PrimitiveType if m.name.endswith("_ROCAPS")}
     for enum, prefix in (
+        (wo.RayFlags, "RAY_FLAG_"),
+        (wo.HitKind, "HIT_KIND_"),
         (wo.GeometryFlags, "GEOMETRY_FLAG_"),
         (wo.InstanceFlags, "INSTANCE_FLAG_"),
         (wo.BuildFlags, "BUILD_FLAG_"),
@@ -140,4 +100,5 @@ def test_ray_flags_and_hit_kinds_match_native():
         (wo.PrimitiveType, "PRIMITIVE_TYPE_"),
     ):
         for member in enum.__members__.values():
-            assert int(member) == int(getattr(native, prefix + member.name)), member
+            if member.name not in from_header:
+                assert int(member) == int(getattr(native, prefix + member.name)), member

@@ -1,6 +1,7 @@
 # Maintaining the PyOptiX dependency
 
-`pyproject.toml` pins `pyoptix==9.1.0`. PyOptiX owns the standard native types,
+`pyproject.toml` pins `pyoptix==9.1.1`, which wraps OptiX SDK 9.1.0 and
+publishes manylinux_2_28 and Windows wheels built with pybind11 3.x. PyOptiX owns the standard native types,
 contexts, geometry, pipelines, launches, and denoisers. The warp-optix
 extension supplies supplemental bindings.
 
@@ -9,21 +10,25 @@ CMake downloads the OptiX headers as an archive of the immutable
 checks the actual `OPTIX_VERSION` in `optix.h` and a digest of every header file
 before compiling, including when a local copy is supplied through
 `FETCHCONTENT_SOURCE_DIR_OPTIX_HEADERS`, which must therefore be unmodified. A
-pin change must update the commit, archive hash, and header digest in
-`CMakeLists.txt` together. A compiler assertion
-also protects the 9.1.0 wrapper bridge against unexpected include paths or a
+pin change to a new SDK must update the SDK version, commit, archive hash, and
+header digest in `CMakeLists.txt` together; CMake rejects a pin whose
+major.minor differs from the pinned headers. A compiler assertion
+also protects the OptiX 9.1.0 wrapper bridge against unexpected include paths or a
 pin change without updating the bridge. At import, the versions compiled into
 PyOptiX (`optix.version()`) and our extension (`_ext.optix_version()`) must both
-be 9.1.0. Mismatches raise `ImportError` before upstream types are modified.
+be 9.1.0. Mismatches raise `ImportError` before upstream objects are used.
 An isolated build does not inspect the user's installed PyOptiX binary; the
 import check catches dependency binaries built with different headers.
 
 `src/extension.cpp` registers only additional cooperative-vector types
-and operations. `_backend.py` composes these with the dependency and repairs
-two upstream 9.1.0 bugs: ignored module compile metadata and a missing module
-in continuation-only callable descriptors. Temporal denoiser properties are
-added to the existing upstream types, so upstream functions accept them.
-Importing this package leaves `sys.modules["optix"]` pointing to real PyOptiX.
+and operations. `_src/backend.py` composes these with the dependency without
+modifying the `optix` module: importing this package leaves PyOptiX's module
+and types exactly as they were. Upstream 9.1.1 gaps are handled locally:
+`native.moduleCreate`/`native.builtinISModuleGet` forward the module compile
+metadata that upstream `ModuleCompileOptions.sync()` drops, the pipeline sets
+`ProgramGroupDesc.callablesModuleCC` after construction, the OptiX denoiser
+uses private extension helpers for the unbound temporal denoiser fields, and
+cooperative-vector operations are module functions that take the context.
 
 The dependency does not expose native handles or a C interface.
 `src/pyoptix_compat.h` contains four upstream wrapper definitions
@@ -47,12 +52,12 @@ When updating PyOptiX:
 5. Inspect wheels: `warp_optix/_ext` is expected; `warp_optix/_bindings`,
    `optix/_optix`, and a top-level replacement `optix` package are not.
 
-Runnable samples live in `examples_warp/`; dependency and supplemental-binding regressions live
+Runnable samples live in `examples/`; dependency and supplemental-binding regressions live
 in `warp_optix/tests`. Licenses for extracted binding code are retained.
 OptiX SDK 9.1.0 headers are fetched for compilation and installed unmodified
 under `warp_optix/include`, together with the upstream SDK license, in every
 wheel. Runtime lookup uses the package directory or, for editable
 installs, the native extension's directory. No separate SDK install is required.
-Before public release, obtain written confirmation for redistribution of the
-source headers from the OptiX owner and legal review. The SDK terms remain
-separate from the Apache-2.0 and BSD-3-Clause source licenses.
+Redistribution of these unmodified headers in the public warp-optix pip package
+has been approved. The SDK terms remain separate from the Apache-2.0 and
+BSD-3-Clause source licenses.

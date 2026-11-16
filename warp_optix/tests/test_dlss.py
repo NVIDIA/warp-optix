@@ -8,9 +8,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 import warp as wp
+from warp_optix._src.pathtracing import denoising as denoising_module
+from warp_optix._src.pathtracing.pathtracing_viewer import Renderer
 from warp_optix.pathtracing import DenoiserInputs, DlssDenoiser, dlss_rr_available, dlss_rr_requirements
-from warp_optix.pathtracing import denoising as denoising_module
-from warp_optix.pathtracing.pathtracing_viewer import Renderer
 
 from warp_optix import native
 
@@ -110,7 +110,7 @@ class _FakeStream:
 def test_renderer_auto_never_selects_dlss(monkeypatch):
     # DLSS is opt-in because its license restricts some deployments: 'auto' must
     # not even query it, and an explicit request on an unsupported system fails.
-    module = __import__("warp_optix.pathtracing.pathtracing_viewer", fromlist=["x"])
+    module = __import__("warp_optix._src.pathtracing.pathtracing_viewer", fromlist=["x"])
     queries = []
 
     def requirements(device):
@@ -126,7 +126,7 @@ def test_renderer_auto_never_selects_dlss(monkeypatch):
     renderer.dlss_quality = "dlaa"
     renderer.optix_upscale = False
     renderer.denoiser = "auto"
-    renderer._optix = object()
+    renderer._device = object()
     renderer._optix_denoiser = None
     renderer._dlss_denoiser = None
     renderer._sync_prev_camera_matrices_to_current = lambda: None

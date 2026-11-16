@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from warp_optix._src.pathtracing import pathtracing_warp_kernels as pwk
 from warp_optix.pathtracing import Curve, Mesh, PathTracer, Scene
 
 
@@ -31,8 +32,13 @@ def test_curve_default_topology_and_sbt_slot(
     assert curve.basis == basis
     assert curve.primitive_type == primitive_type
     assert curve.control_point_count == control_points
-    assert curve.sbt_offset == sbt_offset
+    assert pwk.SBT.get_sbt_offset(curve.hit_group) == sbt_offset
     assert curve.geometry_type == geometry_type
+    # Dynamic curves are built with other flags, which their hit group's built-in intersector must declare.
+    dynamic_curve = Curve(points, radii=0.1, basis=basis, dynamic=True)
+    assert pwk.SBT.get_sbt_offset(dynamic_curve.hit_group) == sbt_offset + 4
+    for geometry, flags in ((curve, pwk.STATIC_BUILD_FLAGS), (dynamic_curve, pwk.DYNAMIC_BUILD_FLAGS)):
+        assert {group.build_flags for group in pwk.SBT.hit_groups[geometry.hit_group].values()} == {flags}
 
 
 def test_curve_accepts_scalar_radius_disjoint_segments_and_per_primitive_materials():

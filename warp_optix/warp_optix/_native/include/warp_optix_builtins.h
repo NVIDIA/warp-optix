@@ -454,6 +454,12 @@ template <typename Payload> inline CUDA_CALLABLE_DEVICE void optix_store_payload
         optix_set_payload_index(i, packed.words[i]);
 }
 
+// The record data follows the 16-byte aligned record header, so any Warp struct is suitably aligned.
+template <typename Data> inline CUDA_CALLABLE_DEVICE void optix_load_sbt_data(Data& data)
+{
+    data = *reinterpret_cast<const Data*>(optixGetSbtDataPointer());
+}
+
 // ---------------------------------------------------------------------------
 // Cooperative vectors. OptiX uses CUDA's global half type, while Warp uses its
 // own ABI-compatible wp::half; the adapters below keep Warp code on wp.vector.

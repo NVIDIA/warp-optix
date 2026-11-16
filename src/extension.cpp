@@ -11,7 +11,11 @@
 static_assert(OPTIX_VERSION == 90100, "OptiX SDK version mismatch: the PyOptiX wrapper bridge requires OptiX 9.1.0");
 #include <optix_stubs.h>
 #include <optix_function_table_definition.h>
-#include <cuda_runtime.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 #include <algorithm>
 #include <array>
 #include <climits>
@@ -69,12 +73,33 @@ size_t network_extent(const std::vector<OptixCoopVecMatrixDescription>& layers, 
 
 // Raw device pointers arrive from Python as integers, so verify that they lie in a
 // live CUDA allocation that covers `requiredBytes` before OptiX reads or writes them.
+// The driver is resolved at runtime, like OptiX itself, so that building needs only
+// cuda.h and the wheel links no CUDA library. Warp has already loaded the driver.
+using PointerGetAttributeFn = CUresult(CUDAAPI*)(void*, CUpointer_attribute, CUdeviceptr);
+
+PointerGetAttributeFn pointer_get_attribute() {
+    static const PointerGetAttributeFn function = [] {
+#ifdef _WIN32
+        HMODULE driver = LoadLibraryExA("nvcuda.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        return driver ? reinterpret_cast<PointerGetAttributeFn>(GetProcAddress(driver, "cuPointerGetAttribute"))
+                      : nullptr;
+#else
+        void* driver = dlopen("libcuda.so.1", RTLD_NOW | RTLD_LOCAL);
+        return driver ? reinterpret_cast<PointerGetAttributeFn>(dlsym(driver, "cuPointerGetAttribute")) : nullptr;
+#endif
+    }();
+    if (!function)
+        throw std::runtime_error("Cannot load cuPointerGetAttribute from the NVIDIA driver library");
+    return function;
+}
+
 void require_device_range(uintptr_t ptr, size_t requiredBytes, const char* name) {
     CUdeviceptr rangeStart = 0;
     size_t rangeSize = 0;
     const CUdeviceptr devicePtr = static_cast<CUdeviceptr>(ptr);
-    if (cuPointerGetAttribute(&rangeStart, CU_POINTER_ATTRIBUTE_RANGE_START_ADDR, devicePtr) != CUDA_SUCCESS ||
-        cuPointerGetAttribute(&rangeSize, CU_POINTER_ATTRIBUTE_RANGE_SIZE, devicePtr) != CUDA_SUCCESS)
+    const PointerGetAttributeFn getAttribute = pointer_get_attribute();
+    if (getAttribute(&rangeStart, CU_POINTER_ATTRIBUTE_RANGE_START_ADDR, devicePtr) != CUDA_SUCCESS ||
+        getAttribute(&rangeSize, CU_POINTER_ATTRIBUTE_RANGE_SIZE, devicePtr) != CUDA_SUCCESS)
         throw py::value_error(std::string(name) + " is not a CUDA device allocation");
     const size_t available = static_cast<size_t>(rangeStart + rangeSize - devicePtr);
     if (requiredBytes > available)
@@ -167,23 +192,13 @@ template <typename T> void require_upstream_type(py::handle cls) {
     const auto* registered = py::detail::get_type_info(typeid(T), false);
     const auto* actual = py::detail::get_type_info(reinterpret_cast<PyTypeObject*>(cls.ptr()));
     if (!registered || registered != actual || registered->type_size != sizeof(T)) {
-        throw py::import_error("warp-optix requires ABI-compatible pyoptix 9.1.0 bindings. "
+        throw py::import_error("warp-optix requires ABI-compatible pyoptix 9.1.1 bindings. "
                                "Rebuild pyoptix and warp-optix using the same pybind11 major version and C++ ABI.");
     }
 }
 
-template <typename T, typename Field> void add_field(py::handle cls, const char* name, Field T::* member) {
-    if (py::hasattr(cls, name))
-        return;
-    cls.attr(name) =
-        py::module_::import("builtins")
-            .attr("property")(
-                py::cpp_function([member](const T& self) { return self.*member; }, py::is_method(cls)),
-                py::cpp_function([member](T& self, const Field& value) { self.*member = value; }, py::is_method(cls)));
-}
-
 void sync_module_options(pyoptix::ModuleCompileOptions& options) {
-    // Upstream 9.1.0's sync() returns before forwarding this metadata.
+    // Upstream 9.1.1's sync() returns before forwarding this metadata.
     options.boundValues.clear();
     options.boundValues.reserve(options.pyboundValues.size());
     for (auto& value : options.pyboundValues) {
@@ -202,7 +217,7 @@ void sync_module_options(pyoptix::ModuleCompileOptions& options) {
     options.options.numPayloadTypes = static_cast<unsigned int>(options.payloadTypes.size());
 }
 
-void install_pyoptix_extensions(py::module_ upstream) {
+void validate_pyoptix_bindings(py::module_ upstream) {
     const py::tuple upstream_version = upstream.attr("version")();
     if (!upstream_version.equal(optix_version())) {
         throw py::import_error("OptiX SDK version mismatch: pyoptix was compiled with " +
@@ -210,8 +225,8 @@ void install_pyoptix_extensions(py::module_ upstream) {
                                py::str(optix_version()).cast<std::string>() +
                                ". Rebuild both packages with matching OptiX headers.");
     }
-    // Validate all shared layouts before installing any descriptors or reading
-    // an upstream object. PyOptiX remains the sole owner of these native types.
+    // Validate all shared layouts before any upstream object reaches this
+    // extension. PyOptiX remains the sole owner of these native types.
     require_upstream_type<pyoptix::DeviceContext>(upstream.attr("DeviceContext"));
     require_upstream_type<pyoptix::ModuleCompileBoundValueEntry>(upstream.attr("ModuleCompileBoundValueEntry"));
     require_upstream_type<pyoptix::PayloadType>(upstream.attr("PayloadType"));
@@ -219,33 +234,6 @@ void install_pyoptix_extensions(py::module_ upstream) {
     require_upstream_type<OptixDenoiserGuideLayer>(upstream.attr("DenoiserGuideLayer"));
     require_upstream_type<OptixDenoiserParams>(upstream.attr("DenoiserParams"));
     require_upstream_type<OptixDenoiserSizes>(upstream.attr("DenoiserSizes"));
-
-    auto context = upstream.attr("DeviceContext");
-    // Supplemental bindings only add missing API; never replace PyOptiX methods.
-    for (const char* name : {"coopVecMatrixComputeSize", "coopVecMatrixConvert"}) {
-        if (py::hasattr(context, name) && !py::hasattr(upstream, "_warp_optix_native_extensions_installed"))
-            throw py::import_error(std::string("pyoptix already defines DeviceContext.") + name +
-                                   "; refusing to replace it");
-    }
-    context.attr("coopVecMatrixComputeSize") =
-        py::cpp_function(&warp_optix_ext::coopVecMatrixComputeSize, py::is_method(context), py::arg("N"), py::arg("K"),
-                         py::arg("elementType"), py::arg("layout"), py::arg("rowColumnStrideInBytes") = 0u);
-    context.attr("coopVecMatrixConvert") =
-        py::cpp_function(&warp_optix_ext::coopVecMatrixConvert, py::is_method(context), py::arg("stream"),
-                         py::arg("inputLayers"), py::arg("inputNetworks"), py::arg("outputLayers"),
-                         py::arg("outputNetworks"), py::arg("inputNetworkStrideInBytes") = 0u,
-                         py::arg("outputNetworkStrideInBytes") = 0u, py::arg("numNetworks") = 1u);
-
-    auto guides = upstream.attr("DenoiserGuideLayer");
-    add_field(guides, "previousOutputInternalGuideLayer", &OptixDenoiserGuideLayer::previousOutputInternalGuideLayer);
-    add_field(guides, "outputInternalGuideLayer", &OptixDenoiserGuideLayer::outputInternalGuideLayer);
-    add_field(upstream.attr("DenoiserParams"), "temporalModeUsePreviousLayers",
-              &OptixDenoiserParams::temporalModeUsePreviousLayers);
-    auto sizes = upstream.attr("DenoiserSizes");
-    add_field(sizes, "computeIntensitySizeInBytes", &OptixDenoiserSizes::computeIntensitySizeInBytes);
-    add_field(sizes, "computeAverageColorSizeInBytes", &OptixDenoiserSizes::computeAverageColorSizeInBytes);
-    add_field(sizes, "internalGuideLayerPixelSizeInBytes", &OptixDenoiserSizes::internalGuideLayerPixelSizeInBytes);
-    upstream.attr("_warp_optix_native_extensions_installed") = true;
 }
 
 } // namespace
@@ -263,14 +251,31 @@ PYBIND11_MODULE(_ext, m) {
     m.attr("DLSS_ENABLED") = false;
 #endif
     m.def("optix_version", &optix_version, "OptiX SDK version used to compile this supplemental extension.");
-    m.def("install_pyoptix_extensions", &install_pyoptix_extensions);
+    m.def("validate_pyoptix_bindings", &validate_pyoptix_bindings);
     m.def("sync_module_options", &sync_module_options);
-    m.def("coop_vec_property", [](const pyoptix::DeviceContext& context) {
+    m.def("getCoopVecProperty", [](const pyoptix::DeviceContext& context) {
         ensure_optix_initialized();
         uint32_t flags = 0;
         PYOPTIX_CHECK(optixDeviceContextGetProperty(context.deviceContext, OPTIX_DEVICE_PROPERTY_COOP_VEC, &flags,
                                                     sizeof(flags)));
         return flags;
+    });
+    m.def("coopVecMatrixComputeSize", &warp_optix_ext::coopVecMatrixComputeSize, py::arg("context"), py::arg("N"),
+          py::arg("K"), py::arg("elementType"), py::arg("layout"), py::arg("rowColumnStrideInBytes") = 0u);
+    m.def("coopVecMatrixConvert", &warp_optix_ext::coopVecMatrixConvert, py::arg("context"), py::arg("stream"),
+          py::arg("inputLayers"), py::arg("inputNetworks"), py::arg("outputLayers"), py::arg("outputNetworks"),
+          py::arg("inputNetworkStrideInBytes") = 0u, py::arg("outputNetworkStrideInBytes") = 0u,
+          py::arg("numNetworks") = 1u);
+    // PyOptiX 9.1.1 does not bind these temporal-denoiser fields.
+    m.def("set_internal_guide_layers",
+          [](OptixDenoiserGuideLayer& guides, const OptixImage2D& previousOutput, const OptixImage2D& output) {
+              guides.previousOutputInternalGuideLayer = previousOutput;
+              guides.outputInternalGuideLayer = output;
+          });
+    m.def("set_temporal_mode_use_previous_layers",
+          [](OptixDenoiserParams& params, unsigned int value) { params.temporalModeUsePreviousLayers = value; });
+    m.def("denoiser_temporal_sizes", [](const OptixDenoiserSizes& sizes) {
+        return py::make_tuple(sizes.computeAverageColorSizeInBytes, sizes.internalGuideLayerPixelSizeInBytes);
     });
     // Our private OptiX dispatch table is initialized lazily: importing the
     // package must also work on machines without an NVIDIA driver.
@@ -309,7 +314,6 @@ PYBIND11_MODULE(_ext, m) {
         .def_readwrite("rowColumnStrideInBytes", &OptixCoopVecMatrixDescription::rowColumnStrideInBytes)
         .def_readwrite("sizeInBytes", &OptixCoopVecMatrixDescription::sizeInBytes);
 
-    m.attr("DEVICE_PROPERTY_COOP_VEC") = py::int_(static_cast<unsigned int>(OPTIX_DEVICE_PROPERTY_COOP_VEC));
     m.attr("PRIMITIVE_TYPE_ROUND_CATMULLROM") =
         py::int_(static_cast<unsigned int>(OPTIX_PRIMITIVE_TYPE_ROUND_CATMULLROM));
     m.attr("PRIMITIVE_TYPE_FLAT_QUADRATIC_BSPLINE") =

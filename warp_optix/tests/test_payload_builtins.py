@@ -69,7 +69,8 @@ def test_indexed_payload_builtins_match_numbered_forms():
     gas = triangle_gas()
     results = []
     for hit, miss in ((indexed_hit, indexed_miss), (numbered_hit, numbered_miss)):
-        pipeline = wo.Pipeline(payload_raygen, miss=[miss], hit_groups=[wo.HitGroup(closest_hit=hit)], payload_words=3)
+        sbt = wo.SbtLayout(miss=miss, hit_groups={"triangles": wo.HitGroup(closest_hit=hit)})
+        pipeline = wo.Pipeline(payload_raygen, sbt=sbt, payload_words=3)
         output = wp.zeros((2, 3), dtype=wp.uint32, device="cuda")
         wo.launch(pipeline, 2, [gas, output])
         results.append(output.numpy())
@@ -125,7 +126,7 @@ def test_constant_payload_index_compiles_to_the_numbered_intrinsic(monkeypatch):
 
     monkeypatch.setattr(wp, "compile_aot_module", capture)
     for miss in (ptx_indexed_miss, ptx_numbered_miss):
-        pipeline = wo.Pipeline(ptx_raygen, miss=[miss], payload_words=3)
+        pipeline = wo.Pipeline(ptx_raygen, sbt=wo.SbtLayout(miss=miss), payload_words=3)
         pipeline.close()
     assert len(compiled) == 2
     indexed, numbered = (_entry(ptx, "__miss__") for ptx in compiled)
