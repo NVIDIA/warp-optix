@@ -99,8 +99,12 @@ def accel_query_ray_anyhit(
     max_t: float,
     min_t: float = 0.0,
     mask: wp.Int = 0xFF,
+    flags: wp.Int = 0,
 ) -> bool:
-    """Return whether anything intersects the ray in ``[min_t, max_t]``, stopping at the first hit."""
-    flags = RayFlags.TERMINATE_ON_FIRST_HIT | RayFlags.DISABLE_CLOSESTHIT | RayFlags.DISABLE_ANYHIT
-    wp.optix_traverse(id, start, dir, max_t, min_t, 0.0, mask, flags)
+    """Return whether anything intersects the ray in ``[min_t, max_t]``, stopping at the first hit.
+
+    ``flags`` takes further :class:`RayFlags`, such as face culling.
+    """
+    required = wp.static(int(RayFlags.TERMINATE_ON_FIRST_HIT | RayFlags.DISABLE_CLOSESTHIT | RayFlags.DISABLE_ANYHIT))
+    wp.optix_traverse(id, start, dir, max_t, min_t, 0.0, mask, wp.uint32(flags) | wp.uint32(required))
     return wp.optix_hit_object_is_hit()

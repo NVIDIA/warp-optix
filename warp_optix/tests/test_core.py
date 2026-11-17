@@ -360,7 +360,7 @@ def triangle_query_raygen(
     max_ts: wp.array[float],
     results: wp.array2d[float],
     any_hit: wp.array[int],
-    flag_hits: wp.array[int],
+    flag_hits: wp.array2d[int],
 ):
     i = wp.tid()
     start = wp.vec3(0.2, 0.3, 5.0)
@@ -373,7 +373,8 @@ def triangle_query_raygen(
         flags = wo.RayFlags.CULL_BACK_FACING_TRIANGLES
     elif i == 3:
         flags = wo.RayFlags.CULL_FRONT_FACING_TRIANGLES | wo.RayFlags.DISABLE_ANYHIT
-    flag_hits[i] = int(wo.accel_query_ray(scene, start, direction, 100.0, 0.0, 0xFF, flags).result)
+    flag_hits[i, 0] = int(wo.accel_query_ray(scene, start, direction, 100.0, 0.0, 0xFF, flags).result)
+    flag_hits[i, 1] = int(wo.accel_query_ray_anyhit(scene, start, direction, 100.0, 0.0, 0xFF, flags))
     query = wo.accel_query_ray(scene, start, direction, max_ts[i], min_ts[i])
     results[i, 0] = 0.0
     if query.result:
@@ -394,7 +395,7 @@ def test_accel_query_ray_reports_hits_respects_interval_and_ray_flags():
     max_ts = wp.array([100.0, 4.0, 100.0, 5.1], dtype=float, device=device)
     results = wp.full((4, 5), -7.0, dtype=float, device=device)
     any_hit = wp.empty(4, dtype=int, device=device)
-    flag_hits = wp.empty(4, dtype=int, device=device)
+    flag_hits = wp.empty((4, 2), dtype=int, device=device)
     pipeline = wo.Pipeline(triangle_query_raygen, device=device)
     wo.launch(pipeline, dim=4, inputs=[gas, min_ts, max_ts, results, any_hit, flag_hits])
     out = results.numpy()
@@ -403,7 +404,8 @@ def test_accel_query_ray_reports_hits_respects_interval_and_ray_flags():
     np.testing.assert_allclose(out[3], [1.0, 5.0, 0.2, 0.3, 0.0], atol=1e-5)
     assert out[1, 0] == 0.0 and out[2, 0] == 0.0
     np.testing.assert_array_equal(any_hit.numpy(), [1, 0, 0, 1])
-    np.testing.assert_array_equal(flag_hits.numpy(), [1, 0, 1, 0])
+    # The any-hit query takes the same culling flags.
+    np.testing.assert_array_equal(flag_hits.numpy(), [[1, 1], [0, 0], [1, 1], [0, 0]])
 
 
 # ---------------------------------------------------------------------------
