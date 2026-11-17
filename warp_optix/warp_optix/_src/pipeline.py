@@ -377,9 +377,19 @@ class _ParamsStorage:
             values = tuple(values)
             if len(values) != len(names):
                 raise TypeError(f"The raygen program takes {len(names)} arguments, but {len(values)} were given")
+            inputs = self.inputs
             self.inputs = {}
             for name, value in zip(names, values):
-                self.set(context, name, value)
+                previous = inputs.get(name, self)
+                # The host copy already holds an unchanged array, None or Python scalar. Structs and
+                # accels are set again, since they can change in place.
+                if (value is previous and (value is None or isinstance(value, wp.array))) or (
+                    type(value) in (int, float, bool) and type(previous) is type(value) and value == previous
+                ):
+                    self.inputs[name] = value
+                else:
+                    self.set(context, name, value)
+            return
         self.dirty = True
 
     def set(self, context, name: str, value) -> None:
