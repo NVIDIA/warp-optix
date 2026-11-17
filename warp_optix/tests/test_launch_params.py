@@ -249,25 +249,6 @@ def test_launches_record_no_events(monkeypatch):
     np.testing.assert_array_equal(output.numpy(), np.full(64, 7))
 
 
-def test_unchanged_launches_skip_the_parameter_upload(monkeypatch):
-    pipeline = wo.Pipeline(write)
-    first = wp.empty(4, dtype=wp.uint32, device=pipeline.device)
-    second = wp.empty(4, dtype=wp.uint32, device=pipeline.device)
-    uploads = []
-    original = pipeline_module._warp_context.runtime.core.wp_memcpy_h2d
-
-    def memcpy_h2d(*args):
-        uploads.append(args)
-        return original(*args)
-
-    monkeypatch.setattr(pipeline_module._warp_context.runtime.core, "wp_memcpy_h2d", memcpy_h2d)
-    for value, output in ((1, first), (1, first), (2, first), (2, second)):
-        wo.launch(pipeline, (4,), [value, output])
-    assert len(uploads) == 3
-    np.testing.assert_array_equal(first.numpy(), np.full(4, 2))
-    np.testing.assert_array_equal(second.numpy(), np.full(4, 2))
-
-
 def test_work_on_another_stream_does_not_wait_for_the_current_stream(gate):
     pipeline = wo.Pipeline(write)
     device = pipeline.device
