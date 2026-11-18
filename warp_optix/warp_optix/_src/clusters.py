@@ -147,7 +147,7 @@ class _ImplicitBuild:
     reuse every buffer, and neither sizes nor offsets are read back to the host.
     """
 
-    def __init__(self, context, desc, capacity):
+    def __init__(self, context, desc, capacity, *, handles=None):
         self.context = context
         self.desc = desc
         output, scratch = n.clusterAccelComputeMemoryUsage(
@@ -155,7 +155,7 @@ class _ImplicitBuild:
         )
         self.output = wp.empty(output, dtype=wp.uint8)
         self.scratch = wp.empty(scratch, dtype=wp.uint8)
-        self.handles = wp.empty(capacity, dtype=wp.uint64)
+        self.handles = wp.empty(capacity, dtype=wp.uint64) if handles is None else handles
 
     def build(self, args, count=None):
         """Build from device ``args``; ``count`` is an optional device uint32 array overriding ``maxArgCount``."""
@@ -214,7 +214,7 @@ class _TemplateState:
 class _ClusterBuild:
     """CLAS and GAS buffers for up to ``capacity`` clusters."""
 
-    def __init__(self, context, templates, capacity):
+    def __init__(self, context, templates, capacity, gas_handles):
         self.capacity = capacity
         self.clas = _ImplicitBuild(
             context,
@@ -227,7 +227,9 @@ class _ClusterBuild:
             ),
             capacity,
         )
-        self.gas = _ImplicitBuild(context, _build_input(n.CLUSTER_ACCEL_BUILD_TYPE_GASES_FROM_CLUSTERS, capacity), 1)
+        self.gas = _ImplicitBuild(
+            context, _build_input(n.CLUSTER_ACCEL_BUILD_TYPE_GASES_FROM_CLUSTERS, capacity), 1, handles=gas_handles
+        )
         self.args = wp.empty(capacity, dtype=_TemplateArgs)
         self.count = wp.empty(1, dtype=wp.uint32)
         self.gas_args = wp.empty(1, dtype=_GasArgs)
@@ -338,10 +340,11 @@ class ClusterAccel:
     ``validate=True`` reads the grids back to check bounds on the host, which
     synchronizes the stream. ``validate=False`` skips these checks for trusted
     GPU-generated grids; an out-of-range grid size or vertex offset then faults
-    on the GPU. Every rebuild reads the returned traversable handle back,
-    synchronizing the stream even with ``validate=False``: OptiX does not
-    guarantee that implicit-destination builds keep the same handle. Builds and
-    traversals on different streams need explicit ordering, as with ``wo.Accel``.
+    on the GPU. Use :meth:`rebuild` when the CPU needs the new handle or a
+    change flag, and :meth:`rebuild_async` with :attr:`device_handle` for
+    per-frame rendering that can consume the handle on the GPU. Order each
+    rebuild after prior traversals and before the next traversals, using the
+    same stream or explicit dependencies across streams.
     Cluster structures support rebuilds, not refits or compaction.
     """
 
@@ -397,6 +400,10 @@ class ClusterAccel:
             # grows when buffers are reallocated, so referenced output buffers stay alive.
             self._memory = [self._templates.output]
             self._empty = wp.empty(0, dtype=wp.uint32)
+            self._device_handle = wp.empty(1, dtype=wp.uint64)
+            self._host_handle = wp.empty(1, dtype=wp.uint64, device="cpu", pinned=True)
+            self._handle_stream: wp.Stream | None = None
+            self._id: int | None = None
             self.points, self.grid_sizes, self.vertex_offsets = points, grid_sizes, vertex_offsets
             self.cluster_ids = self._empty if cluster_ids is None else cluster_ids
             self.sbt_offsets = self._empty if sbt_offsets is None else sbt_offsets
@@ -417,9 +424,26 @@ class ClusterAccel:
 
     @property
     def id(self) -> int:
-        """Traversable handle returned by the latest rebuild."""
+        """Latest traversable handle as a Python integer; waits after an async rebuild."""
         self._check_open()
+        if self._handle_stream is not None:
+            wp.copy(self._host_handle, self._device_handle, stream=self._handle_stream)
+            wp.synchronize_stream(self._handle_stream)
+            self._id = int(self._host_handle.numpy()[0])
+            self._handle_stream = None
+        assert self._id is not None
         return self._id
+
+    @property
+    def device_handle(self) -> wp.array[wp.uint64]:
+        """One-element CUDA array holding the latest handle. Treat it as read-only.
+
+        The array stays the same across rebuilds, including capacity growth.
+        Read element zero in GPU code and keep this owner open while submitting
+        work that uses it. The array alone does not own the geometry.
+        """
+        self._check_open()
+        return self._device_handle
 
     @property
     def capacity(self) -> int:
@@ -447,6 +471,39 @@ class ClusterAccel:
         Synchronizes the stream to read :attr:`id`, even with ``validate=False``.
         Returns ``True`` when :attr:`id` changed; update instance records and
         recorded launch parameters that reference the previous handle.
+        """
+        previous = self.id if self._build is not None else None
+        self.rebuild_async(
+            points=points,
+            grid_sizes=grid_sizes,
+            vertex_offsets=vertex_offsets,
+            cluster_ids=cluster_ids,
+            sbt_offsets=sbt_offsets,
+            validate=validate,
+            stream=stream,
+        )
+        handle = self.id
+        return previous is not None and handle != previous
+
+    def rebuild_async(
+        self,
+        *,
+        points: wp.array[wp.vec3] | None = None,
+        grid_sizes: wp.array[wp.vec2i] | None = None,
+        vertex_offsets: wp.array[wp.int32] | None = None,
+        cluster_ids: wp.array[wp.uint32] | None = None,
+        sbt_offsets: wp.array[wp.uint32] | None = None,
+        validate: bool = True,
+        stream: wp.Stream | None = None,
+    ) -> None:
+        """Enqueue a rebuild with the same input options as :meth:`rebuild`.
+
+        Read :attr:`device_handle` in subsequent GPU work on the same stream
+        or use a stream dependency. There is no handle readback or change flag.
+        ``validate=True`` still waits for input checks; use ``validate=False``
+        for trusted GPU inputs. Reserve capacity to avoid allocations in the
+        frame loop. Reading :attr:`id` later waits for the latest handle. If
+        you switch back to host handles, refresh any cached handles before use.
         """
         self._check_open()
         _, stream = resolve(self.device, stream)
@@ -498,12 +555,7 @@ class ClusterAccel:
                 else:
                     # Grow geometrically, so that incremental growth reallocates rarely.
                     capacity = min(max(count, build.capacity * 3 // 2), limit)
-                build = _ClusterBuild(self._context, templates, capacity)
-                # Nothing else retains the buffers when no instance structure holds this list.
-                if sys.getrefcount(self._memory) <= 2:
-                    self._memory = [templates.output]
-                self._memory.extend((build.clas.output, build.gas.output))
-                self._build = build
+                build = _ClusterBuild(self._context, templates, capacity, self._device_handle)
             wp.launch(
                 _pack_args,
                 count,
@@ -513,20 +565,22 @@ class ClusterAccel:
             build.clas.build(build.args, build.count)
             wp.launch(_gas_args, 1, inputs=[count, wp.uint64(build.clas.handles.ptr), build.gas_args])
             build.gas.build(build.gas_args)
-            previous = getattr(self, "_id", None)
-            # Implicit destinations do not guarantee stable placement, even when the output
-            # buffer is reused. Always consume OptiX's returned handle, independently of
-            # whether the caller requested validation of the input arrays.
-            self._id = int(build.gas.handles.numpy()[0])
+            if reallocated:
+                # Nothing else retains the buffers when no instance structure holds this list.
+                if sys.getrefcount(self._memory) <= 2:
+                    self._memory = [templates.output]
+                self._memory.extend((build.clas.output, build.gas.output))
+                self._build = build
+            self._handle_stream = stream
             self.points, self.grid_sizes, self.vertex_offsets = points, grids, offsets
             self.cluster_ids, self.sbt_offsets = ids, sbt
-        return previous is not None and self._id != previous
 
     def close(self) -> None:
         if self.closed:
             return
         self._closed = True
         self._memory = []
+        self._device_handle = self._host_handle = self._handle_stream = None
         self._build = self._templates = self._empty = None
         self.points = self.grid_sizes = self.vertex_offsets = self.cluster_ids = self.sbt_offsets = None
 

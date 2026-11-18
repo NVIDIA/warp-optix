@@ -122,6 +122,9 @@ surface.rebuild()  # after changing the device arrays
 
 `ClusterAccel` manages templates, CLAS/GAS builds, scratch memory and lifetimes.
 It can also be instanced with `wo.instances`, and ray queries expose `hit.cluster_id`.
+Use `rebuild()` to get a host-side handle change flag in exchange for a stream wait.
+For per-frame rendering, use `rebuild_async(validate=False)` with trusted inputs and
+read `accel.device_handle[0]` in raygen on the build stream (or use a stream dependency).
 See the [cluster example](examples/example_clusters.py) for an animated parametric knot,
 generated directly in Warp. It uses the standard installation, with no additional
 geometry library or build step.

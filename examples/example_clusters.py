@@ -153,7 +153,7 @@ def cluster_color(cluster: int) -> wp.vec3:
 
 @wp.kernel(module="unique", enable_backward=False)
 def render(
-    scene: wp.uint64,
+    scene_handle: wp.array[wp.uint64],
     along: int,
     around: int,
     time: float,
@@ -171,6 +171,7 @@ def render(
     image: wp.array[wp.uint32],
     hit_ids: wp.array[int],
 ):
+    scene = scene_handle[0]
     y, x = wp.tid()
     pixel = y * width + x
     hit_ids[pixel] = -1
@@ -343,7 +344,7 @@ class Example:
                     self.points, self.grid_sizes, self.offsets, templates=self.templates, validate=False
                 )
             else:
-                self.accel.rebuild(
+                self.accel.rebuild_async(
                     points=self.points, grid_sizes=self.grid_sizes, vertex_offsets=self.offsets, validate=False
                 )
             self.built = (topology, self.time)
@@ -370,7 +371,7 @@ class Example:
             self.pipeline,
             dim=(self.height, self.width),
             inputs=[
-                self.accel,
+                self.accel.device_handle,
                 args.along,
                 args.around,
                 self.time,

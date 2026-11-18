@@ -461,8 +461,7 @@ class Accel:
             for item in inputs:
                 if item.instance_children is not None:
                     for child in item.instance_children:
-                        child._check_open()
-                        children[child._id] = child._memory
+                        children[child.id] = child._memory
                         has_clusters |= isinstance(child, ClusterAccel) or child._has_clusters
                     if config.verify_instances:
                         wp.synchronize_stream(stream)

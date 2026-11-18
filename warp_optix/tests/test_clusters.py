@@ -22,6 +22,13 @@ def query_grids(scene: wp.uint64, output: wp.array[wp.vec3]):
 
 
 @wp.kernel(module="unique")
+def query_device_handle(handle: wp.array[wp.uint64], output: wp.array[wp.vec3]):
+    i = wp.tid()
+    q = wo.accel_query_ray(handle[0], wp.vec3(4.0 * float(i), 0.0, 4.0), wp.vec3(0.0, 0.0, -1.0), 100.0)
+    output[i] = wp.vec3(q.t, float(q.cluster_id), 0.0) if q.result else wp.vec3(-1.0)
+
+
+@wp.kernel(module="unique")
 def query_loop(scene: wp.uint64, output: wp.array[wp.vec2ui]):
     # Hit-object state must be read anew after each traversal, even inside a loop.
     for i in range(2):
@@ -274,6 +281,44 @@ def test_cluster_rebuild_reports_moved_handle_within_capacity(supported, monkeyp
             result = wp.empty(2, dtype=wp.vec3)
             wo.launch(pipeline, dim=2, inputs=[accel, result])
             np.testing.assert_allclose(result.numpy()[:, :2], [[4, 42], [4, 99]])
+
+
+def test_async_cluster_rebuild_feeds_gpu_handle_across_capacity_growth(supported, monkeypatch):
+    points = wp.array(grid_points(), dtype=wp.vec3)
+    grids = wp.array([[2, 2], [2, 2]], dtype=wp.vec2i)
+    offsets = wp.array([0, 9], dtype=int)
+    ids = wp.array([42, 99], dtype=wp.uint32)
+    first = wp.empty(2, dtype=wp.vec3)
+    second = wp.empty_like(first)
+    producer, consumer = wp.Stream(), wp.Stream()
+    producer.wait_stream(wp.get_stream())
+    with (
+        wo.ClusterAccel(points, grids[:1], offsets[:1], stream=producer) as accel,
+        wo.Pipeline(query_device_handle, clustered_geometry=True) as pipeline,
+    ):
+        handle = accel.device_handle
+        recorded = wo.launch(pipeline, dim=2, inputs=[handle, first], record_cmd=True)
+
+        def no_readback(*args, **kwargs):
+            pytest.fail("Async rebuild with trusted inputs read device memory on the host")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(wp.array, "numpy", no_readback)
+            patch.setattr(wp, "synchronize_stream", no_readback)
+            accel.rebuild_async(cluster_ids=ids[:1], validate=False, stream=producer)
+            recorded.launch(stream=producer)
+            accel.rebuild_async(
+                grid_sizes=grids, vertex_offsets=offsets, cluster_ids=ids, validate=False, stream=producer
+            )
+            assert accel.capacity >= 2 and accel.device_handle is handle
+            consumer.wait_stream(producer)
+            recorded.set_param_by_name("output", second)
+            recorded.launch(stream=consumer)
+        # Read the latest handle through the host API while a different stream is current.
+        with wp.ScopedStream(consumer, sync_enter=False):
+            assert accel.id == int(handle.numpy()[0])
+            np.testing.assert_allclose(first.numpy()[:, :2], [[4, 42], [-1, -1]])
+            np.testing.assert_allclose(second.numpy()[:, :2], [[4, 42], [4, 99]])
 
 
 def test_cluster_accel_requires_clustered_pipeline_and_unambiguous_templates(supported):
