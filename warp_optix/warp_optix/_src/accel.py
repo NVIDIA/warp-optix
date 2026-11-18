@@ -23,7 +23,7 @@ import warp as wp
 from warp._src import context as _warp_context
 
 from warp_optix import config, native
-from warp_optix._src.clusters import ClusterAccel
+from warp_optix._src.clusters import ClusterAccel, ClusterAccelBatch
 from warp_optix._src.context import CAPTURE_ERROR, resolve
 from warp_optix._src.enums import BuildFlags, GeometryFlags, PrimitiveType
 
@@ -48,6 +48,14 @@ class Instance:
 
 
 assert ctypes.sizeof(Instance.ctype) == 80, "Instance must match OptixInstance"
+
+
+@wp.kernel(enable_backward=False)
+def _write_instance_handles(handles: wp.array[wp.uint64], records: wp.array[Instance]):
+    i = wp.tid()
+    record = records[i]
+    record.traversable = handles[i]
+    records[i] = record
 
 
 @wp.func
@@ -151,7 +159,7 @@ class BuildInput:
     native: object
     arrays: tuple
     instance_records: wp.array | None = None
-    instance_children: tuple[Accel, ...] | None = None
+    instance_children: tuple[Accel | ClusterAccel | ClusterAccelBatch, ...] | None = None
     prepare: Callable[[wp.Stream], None] | None = None
 
     @property
@@ -374,20 +382,22 @@ def curves(
     return BuildInput(descriptor, (*point_keys, *width_keys, indices))
 
 
-def instances(records: wp.array, children: Sequence[Accel | ClusterAccel]) -> BuildInput:
+def instances(records: wp.array, children: Sequence[Accel | ClusterAccel | ClusterAccelBatch]) -> BuildInput:
     """Instance input over ``records`` that reference structures in ``children``.
 
     The instance structure keeps ``children`` alive, so they may be closed or
     dropped while it is in use; builds never read the GPU-written records back
-    (set ``config.verify_instances`` to check them). Child ids must stay unchanged
-    on refits and rebuilds.
+    (set ``config.verify_instances`` to check them at construction). Include the
+    whole :class:`ClusterAccelBatch` when records point to its GASes. After any
+    child build, refresh changed handles and rebuild the IAS. Refitting an IAS
+    requires its child handles to stay unchanged.
     """
     if records.dtype is not Instance or not records.device.is_cuda or not records.is_contiguous:
         raise ValueError("records must be a contiguous CUDA array of Instance")
     children = tuple(children)
     for child in children:
-        if not isinstance(child, (Accel, ClusterAccel)):
-            raise TypeError("children must be warp_optix.Accel or warp_optix.ClusterAccel objects")
+        if not isinstance(child, (Accel, ClusterAccel, ClusterAccelBatch)):
+            raise TypeError("children must be Accel, ClusterAccel or ClusterAccelBatch objects")
         if child.device != records.device:
             raise ValueError("children must be on the device of the records")
     return BuildInput(
@@ -457,16 +467,20 @@ class Accel:
         native_inputs = [item.native for item in inputs]
         with wp.ScopedDevice(context.device), wp.ScopedStream(stream, sync_enter=False):
             children = {}
+            verified_ids = set() if config.verify_instances else None
             has_clusters = False
             for item in inputs:
                 if item.instance_children is not None:
                     for child in item.instance_children:
-                        children[child.id] = child._memory
-                        has_clusters |= isinstance(child, ClusterAccel) or child._has_clusters
-                    if config.verify_instances:
+                        child._check_open()
+                        children[id(child)] = child._memory
+                        has_clusters |= isinstance(child, (ClusterAccel, ClusterAccelBatch)) or child._has_clusters
+                        if verified_ids is not None:
+                            verified_ids.update(child.ids if isinstance(child, ClusterAccelBatch) else (child.id,))
+                    if verified_ids is not None:
                         wp.synchronize_stream(stream)
                         child_ids = np.unique(item.instance_records.numpy()["traversable"]).tolist()
-                        if any(child_id and child_id not in children for child_id in child_ids):
+                        if any(child_id and child_id not in verified_ids for child_id in child_ids):
                             raise ValueError("Instance records reference a structure missing from children")
                 if item.prepare is not None:
                     item.prepare(stream)

@@ -32,6 +32,7 @@ from warp_optix._src.accel import instances as instances
 from warp_optix._src.accel import make_instance as make_instance
 from warp_optix._src.accel import triangles as triangles
 from warp_optix._src.clusters import ClusterAccel as ClusterAccel
+from warp_optix._src.clusters import ClusterAccelBatch as ClusterAccelBatch
 from warp_optix._src.clusters import ClusterTemplates as ClusterTemplates
 from warp_optix._src.clusters import cluster_capabilities as cluster_capabilities
 from warp_optix._src.context import get_context as get_context
@@ -62,6 +63,7 @@ __all__ = [
     "BuildFlags",
     "BuildInput",
     "ClusterAccel",
+    "ClusterAccelBatch",
     "ClusterTemplates",
     "ExceptionFlags",
     "GeometryFlags",

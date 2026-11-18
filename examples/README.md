@@ -95,6 +95,20 @@ quantization. The knot is evaluated on the GPU every frame. `ClusterAccel` owns
 templates, argument packing and acceleration buffers. The floor is intersected
 analytically; shadow and visibility rays traverse the actual cluster geometry.
 
+[`example_deforming_objects.py`](example_deforming_objects.py) updates many
+independently deforming bodies and traces one verification ray per body. Use
+`clusters` for separate GASes built in one batch. The per-GAS cluster counts stay
+fixed while vertices, grid dimensions and offsets can change in place. Use
+`triangles` to combine fixed triangle topology in one OptiX refit, or `warp` for
+one grouped Warp mesh refit with body-local queries. Group bodies by update rate
+if some move much less often, and rebuild refitted trees if traversal degrades.
+
+```bash
+python examples/example_deforming_objects.py --mode clusters --bodies 1000
+python examples/example_deforming_objects.py --mode triangles --bodies 1000
+python examples/example_deforming_objects.py --mode warp --bodies 1000
+```
+
 ## Neural texture compression
 
 [`neural_texture/`](neural_texture/README.md) trains a compressed neural texture with

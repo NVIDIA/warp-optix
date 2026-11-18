@@ -75,6 +75,22 @@ def test_cluster_example_animates_rebuilds_and_accumulates(monkeypatch):
         app.close()
 
 
+@pytest.mark.parametrize("mode", ["clusters", "triangles", "warp"])
+def test_deforming_objects_example_updates_all_bodies(mode, monkeypatch):
+    import warp_optix as wo
+
+    if mode == "clusters" and not wo.cluster_capabilities()["flags"]:
+        pytest.skip("Cluster API unsupported")
+    monkeypatch.syspath_prepend(str(EXAMPLES))
+    example = importlib.import_module("example_deforming_objects")
+    bodies, frames = 8, 2
+    distances = example.run(mode, bodies, frames)
+    phase = 0.013 * np.arange(bodies) + 0.1 * frames
+    # The ray lands 64% of the way between the vertices at x=0.25 and x=0.50.
+    expected = 2.0 - 0.15 * (0.36 * np.sin(phase + 0.1) + 0.64 * np.sin(phase + 0.2))
+    np.testing.assert_allclose(distances, expected, atol=2e-5)
+
+
 @pytest.fixture
 def pathtracing(monkeypatch):
     monkeypatch.syspath_prepend(str(EXAMPLES))

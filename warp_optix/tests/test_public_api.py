@@ -49,6 +49,7 @@ def test_public_surface():
         "BuildFlags",
         "BuildInput",
         "ClusterAccel",
+        "ClusterAccelBatch",
         "ClusterTemplates",
         "ExceptionFlags",
         "GeometryFlags",

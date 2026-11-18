@@ -41,6 +41,12 @@ def place_grid(child: wp.uint64, records: wp.array[wo.Instance]):
     records[0] = wo.make_instance(wp.transform_identity(), child, 7)
 
 
+@wp.kernel(enable_backward=False)
+def init_batch_records(records: wp.array[wo.Instance]):
+    i = wp.tid()
+    records[i] = wo.make_instance(wp.transform_identity(), wp.uint64(0), 40 + i)
+
+
 @wp.struct
 class Payload:
     value: wp.uint32
@@ -319,6 +325,70 @@ def test_async_cluster_rebuild_feeds_gpu_handle_across_capacity_growth(supported
             assert accel.id == int(handle.numpy()[0])
             np.testing.assert_allclose(first.numpy()[:, :2], [[4, 42], [-1, -1]])
             np.testing.assert_allclose(second.numpy()[:, :2], [[4, 42], [4, 99]])
+
+
+def test_cluster_batch_builds_and_rebuilds_instanced_gases(supported, monkeypatch):
+    verts = np.array([[x + 4 * c, y, 0] for c in range(3) for y in (-1, 0, 1) for x in (-1, 0, 1)], dtype=np.float32)
+    points = wp.array(verts, dtype=wp.vec3)
+    grids = wp.array([[2, 2]] * 3, dtype=wp.vec2i)
+    offsets = wp.array([0, 9, 18], dtype=wp.int32)
+    records = wp.empty(2, dtype=wo.Instance)
+    result = wp.empty(3, dtype=wp.vec3)
+    wp.launch(init_batch_records, records.size, inputs=[records])
+
+    def no_readback(*args, **kwargs):
+        pytest.fail("Batch fast path waited for the host")
+
+    with wo.ClusterTemplates(2) as templates:
+        with wo.ClusterAccelBatch(points, grids, offsets, (1, 2), templates=templates) as batch:
+            templates.close()
+            handles = batch.device_handles
+            with pytest.raises(ValueError, match="one contiguous Instance record"):
+                batch.write_instance_handles(records[:1])
+            with monkeypatch.context() as patch:
+                patch.setattr(wp.array, "numpy", no_readback)
+                patch.setattr(wp, "synchronize_stream", no_readback)
+                batch.write_instance_handles(records)
+                scene = wo.Accel([wo.instances(records, [batch])], flags=wo.BuildFlags.ALLOW_UPDATE)
+            with scene, wo.Pipeline(query_grids, clustered_geometry=True) as pipeline:
+                wo.launch(pipeline, dim=3, inputs=[scene, result])
+                np.testing.assert_allclose(result.numpy(), [[4, 0, 40], [4, 1, 41], [4, 2, 41]])
+                verts[:, 2] = [0.5] * 9 + [-0.5] * 18
+                wp.copy(points, wp.array(verts, dtype=wp.vec3))
+                consumer = wp.get_stream()
+                producer = wp.Stream()
+                producer.wait_stream(consumer)
+                with monkeypatch.context() as patch:
+                    patch.setattr(wp.array, "numpy", no_readback)
+                    patch.setattr(wp, "synchronize_stream", no_readback)
+                    batch.rebuild_async(validate=False, stream=producer)
+                    consumer.wait_stream(producer)
+                    batch.write_instance_handles(records)
+                    scene.rebuild()
+                    wo.launch(pipeline, dim=3, inputs=[scene, result])
+                assert batch.device_handles is handles
+                np.testing.assert_allclose(result.numpy(), [[3.5, 0, 40], [4.5, 1, 41], [4.5, 2, 41]])
+                previous = batch.ids
+                assert len(set(previous)) == 2 and all(previous)
+                assert batch.rebuild() == (batch.ids != previous)
+                batch.write_instance_handles(records)
+                monkeypatch.setattr(wo.config, "verify_instances", True)
+                with wo.Accel([wo.instances(records, [batch])]) as verified:
+                    batch.close()
+                    wo.launch(pipeline, dim=3, inputs=[verified, result])
+                    np.testing.assert_allclose(result.numpy(), [[3.5, 0, 40], [4.5, 1, 41], [4.5, 2, 41]])
+
+
+def test_cluster_batch_rejects_invalid_layout(supported):
+    points = wp.array(grid_points(), dtype=wp.vec3)
+    grids = wp.array([[2, 2], [2, 2]], dtype=wp.vec2i)
+    offsets = wp.array([0, 9], dtype=int)
+    with pytest.raises(ValueError, match="positive count"):
+        wo.ClusterAccelBatch(points, grids, offsets, (0, 2))
+    with pytest.raises(ValueError, match="one entry per cluster"):
+        wo.ClusterAccelBatch(points, grids, offsets, (1, 2))
+    with pytest.raises(ValueError, match="outside points"):
+        wo.ClusterAccelBatch(points, grids, wp.array([0, 12], dtype=int), (1, 1))
 
 
 def test_cluster_accel_requires_clustered_pipeline_and_unambiguous_templates(supported):

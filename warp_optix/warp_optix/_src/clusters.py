@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import ctypes
 import sys
+from collections.abc import Sequence
+from itertools import accumulate
+from operator import index
 
 import numpy as np
 import warp as wp
@@ -66,6 +69,16 @@ def _gas_args(count: int, handles: wp.uint64, args: wp.array[_GasArgs]):
 
 
 @wp.kernel(enable_backward=False)
+def _batch_gas_args(offsets: wp.array[wp.uint32], handles: wp.uint64, args: wp.array[_GasArgs]):
+    i = wp.tid()
+    start = offsets[i]
+    arg = _GasArgs()
+    arg.count = offsets[i + 1] - start
+    arg.handles = handles + wp.uint64(8) * wp.uint64(start)
+    args[i] = arg
+
+
+@wp.kernel(enable_backward=False)
 def _pack_args(
     points: wp.uint64,
     grids: wp.array[wp.vec2i],
@@ -90,7 +103,7 @@ def _pack_args(
     args[i] = a
 
 
-def _build_input(kind, count, size=8, truncate=0, max_sbt_index=0):
+def _build_input(kind, count, size=8, truncate=0, max_sbt_index=0, *, gas_count=1, max_clusters_per_gas=None):
     result = n.ClusterAccelBuildInput()
     result.type = kind
     if kind == n.CLUSTER_ACCEL_BUILD_TYPE_TEMPLATES_FROM_GRIDS:
@@ -105,9 +118,9 @@ def _build_input(kind, count, size=8, truncate=0, max_sbt_index=0):
     elif kind == n.CLUSTER_ACCEL_BUILD_TYPE_GASES_FROM_CLUSTERS:
         desc = n.ClusterAccelBuildInputClusters()
         desc.flags = n.CLUSTER_ACCEL_BUILD_FLAG_NONE
-        desc.maxArgCount = 1
+        desc.maxArgCount = gas_count
         desc.maxTotalClusterCount = count
-        desc.maxClusterCountPerArg = count
+        desc.maxClusterCountPerArg = count if max_clusters_per_gas is None else max_clusters_per_gas
         result.clusters = desc
     else:
         desc = n.ClusterAccelBuildInputTriangles()
@@ -138,6 +151,36 @@ def _primitive_flags(geometry_flags: GeometryFlags | int) -> int:
     if flags:
         raise ValueError("Unsupported geometry flags for cluster templates")
     return result
+
+
+def _check_cluster_arrays(device, count, points, grids, offsets, ids, sbt):
+    for name, value, dtype, optional in (
+        ("points", points, wp.vec3, False),
+        ("grid_sizes", grids, wp.vec2i, False),
+        ("vertex_offsets", offsets, wp.int32, False),
+        ("cluster_ids", ids, wp.uint32, True),
+        ("sbt_offsets", sbt, wp.uint32, True),
+    ):
+        if not isinstance(value, wp.array) or value.dtype != dtype or value.ndim != 1:
+            raise TypeError(f"{name} must be a one-dimensional Warp array of {dtype}")
+        if value.device != device or not value.is_contiguous:
+            raise ValueError(f"{name} must be contiguous and on {device}")
+        if name != "points" and value.size not in ((0, count) if optional else (count,)):
+            raise ValueError(f"{name} must have one entry per cluster")
+
+
+def _validate_cluster_values(templates, points, grids, offsets, ids, sbt):
+    host_grids = grids.numpy().astype(np.int64)
+    host_offsets = offsets.numpy().astype(np.int64)
+    if np.any(host_grids < 1) or np.any(host_grids > templates.size):
+        raise ValueError(f"Grid edge sizes must lie in [1, {templates.size}]")
+    ends = host_offsets + (host_grids[:, 0] + 1) * (host_grids[:, 1] + 1)
+    if np.any(host_offsets < 0) or np.any(ends > points.size):
+        raise ValueError("Grid vertices extend outside points")
+    if ids.size and np.any(ids.numpy() == 0xFFFFFFFF):
+        raise ValueError("0xFFFFFFFF is reserved as the invalid cluster ID")
+    if sbt.size and np.any(sbt.numpy() > templates.max_sbt_index):
+        raise ValueError("SBT offsets exceed the templates' max_sbt_index")
 
 
 class _ImplicitBuild:
@@ -520,33 +563,11 @@ class ClusterAccel:
         limit = self._templates.capabilities["max_clusters_per_gas"]
         if count > limit:
             raise ValueError("Cluster count exceeds the device's per-GAS limit")
-        for name, value, dtype, optional in (
-            ("points", points, wp.vec3, False),
-            ("grid_sizes", grids, wp.vec2i, False),
-            ("vertex_offsets", offsets, wp.int32, False),
-            ("cluster_ids", ids, wp.uint32, True),
-            ("sbt_offsets", sbt, wp.uint32, True),
-        ):
-            if not isinstance(value, wp.array) or value.dtype != dtype or value.ndim != 1:
-                raise TypeError(f"{name} must be a one-dimensional Warp array of {dtype}")
-            if value.device != self.device or not value.is_contiguous:
-                raise ValueError(f"{name} must be contiguous and on {self.device}")
-            if name != "points" and value.size not in ((0, count) if optional else (count,)):
-                raise ValueError(f"{name} must have one entry per cluster")
+        _check_cluster_arrays(self.device, count, points, grids, offsets, ids, sbt)
         templates = self._templates
         with wp.ScopedDevice(self.device), wp.ScopedStream(stream, sync_enter=False):
             if validate:
-                host_grids = grids.numpy().astype(np.int64)
-                host_offsets = offsets.numpy().astype(np.int64)
-                if np.any(host_grids < 1) or np.any(host_grids > templates.size):
-                    raise ValueError(f"Grid edge sizes must lie in [1, {templates.size}]")
-                ends = host_offsets + (host_grids[:, 0] + 1) * (host_grids[:, 1] + 1)
-                if np.any(host_offsets < 0) or np.any(ends > points.size):
-                    raise ValueError("Grid vertices extend outside points")
-                if ids.size and np.any(ids.numpy() == 0xFFFFFFFF):
-                    raise ValueError("0xFFFFFFFF is reserved as the invalid cluster ID")
-                if sbt.size and np.any(sbt.numpy() > templates.max_sbt_index):
-                    raise ValueError("SBT offsets exceed the templates' max_sbt_index")
+                _validate_cluster_values(templates, points, grids, offsets, ids, sbt)
             build = self._build
             reallocated = build is None or count > build.capacity
             if reallocated:
@@ -585,6 +606,205 @@ class ClusterAccel:
         self.points = self.grid_sizes = self.vertex_offsets = self.cluster_ids = self.sbt_offsets = None
 
     def __enter__(self) -> ClusterAccel:
+        self._check_open()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+class ClusterAccelBatch:
+    """Owned multi-GAS build over packed Warp arrays, with one GAS per object.
+
+    ``cluster_counts`` contains the positive number of consecutive clusters in
+    each GAS. The counts and array shapes stay fixed for the lifetime of the
+    batch. Grid sizes, vertex offsets, IDs and SBT offsets use the same layout
+    as :class:`ClusterAccel`; default cluster IDs are indices in the packed arrays.
+    Mutate the arrays in place, then rebuild. Share :class:`ClusterTemplates`
+    to set grid limits or material options across batches.
+
+    Construction and :meth:`rebuild_async` enqueue a CLAS build and a multi-GAS
+    build. With trusted inputs and ``validate=False``, they skip host readback.
+    Use :attr:`device_handles` on the GPU or :attr:`ids` for a synchronized host
+    read. Order input writes, builds and traversal on one stream or with explicit
+    dependencies. Use separate batches for objects with different update rates.
+    """
+
+    def __init__(
+        self,
+        points: wp.array[wp.vec3],
+        grid_sizes: wp.array[wp.vec2i],
+        vertex_offsets: wp.array[wp.int32],
+        cluster_counts: Sequence[int],
+        *,
+        templates: ClusterTemplates | None = None,
+        cluster_ids: wp.array[wp.uint32] | None = None,
+        sbt_offsets: wp.array[wp.uint32] | None = None,
+        validate: bool = True,
+        stream: wp.Stream | None = None,
+    ):
+        self._closed = True
+        if not isinstance(points, wp.array):
+            raise TypeError("points must be a Warp array")
+        counts = tuple(map(index, cluster_counts))
+        if not counts or min(counts) <= 0:
+            raise ValueError("cluster_counts must contain a positive count for each GAS")
+        count = sum(counts)
+        self._context, stream = resolve(points.device, stream)
+        with wp.ScopedDevice(self.device), wp.ScopedStream(stream, sync_enter=False):
+            empty = wp.empty(0, dtype=wp.uint32)
+            ids = empty if cluster_ids is None else cluster_ids
+            sbt = empty if sbt_offsets is None else sbt_offsets
+            _check_cluster_arrays(self.device, count, points, grid_sizes, vertex_offsets, ids, sbt)
+            if templates is None:
+                templates = ClusterTemplates(device=self.device, stream=stream)
+            if not isinstance(templates, ClusterTemplates) or templates.closed:
+                raise ValueError("templates must be an open ClusterTemplates object")
+            if templates.device != self.device:
+                raise ValueError("Templates and points must use the same CUDA device")
+            state = templates._state
+            if max(counts) > state.capabilities["max_clusters_per_gas"]:
+                raise ValueError("Cluster count exceeds the device's per-GAS limit")
+            if count * max(2 * state.size**2, (state.size + 1) ** 2) > 0xFFFFFFFF:
+                raise ValueError("Batch exceeds the OptiX aggregate build limits; split it into smaller batches")
+            if validate:
+                _validate_cluster_values(state, points, grid_sizes, vertex_offsets, ids, sbt)
+            stream.wait_event(templates._ready)
+            self._cluster_counts = counts
+            self._inputs: tuple[wp.array, ...] = (points, grid_sizes, vertex_offsets, ids, sbt)
+            self._templates = state
+            self._args = wp.empty(count, dtype=_TemplateArgs)
+            self._gas_args = wp.empty(len(counts), dtype=_GasArgs)
+            self._clas = _ImplicitBuild(
+                self._context,
+                _build_input(
+                    n.CLUSTER_ACCEL_BUILD_TYPE_CLUSTERS_FROM_TEMPLATES,
+                    count,
+                    state.size,
+                    state.truncate,
+                    state.max_sbt_index,
+                ),
+                count,
+            )
+            self._gas = _ImplicitBuild(
+                self._context,
+                _build_input(
+                    n.CLUSTER_ACCEL_BUILD_TYPE_GASES_FROM_CLUSTERS,
+                    count,
+                    gas_count=len(counts),
+                    max_clusters_per_gas=max(counts),
+                ),
+                len(counts),
+            )
+            offsets = wp.array(list(accumulate(counts, initial=0)), dtype=wp.uint32)
+            wp.launch(_batch_gas_args, len(counts), inputs=[offsets, wp.uint64(self._clas.handles.ptr), self._gas_args])
+            self._memory = (state.output, self._clas.output, self._gas.output)
+            self._host_handles = None
+            self._ids = ()
+            self._handle_stream = None
+            self._closed = False
+            try:
+                self.rebuild_async(validate=False, stream=stream)
+            except BaseException:
+                self.close()
+                raise
+
+    @property
+    def device(self) -> wp.Device:
+        return self._context.device
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @property
+    def cluster_counts(self) -> tuple[int, ...]:
+        """Number of clusters in each GAS, in build order."""
+        return self._cluster_counts
+
+    @property
+    def device_handles(self) -> wp.array[wp.uint64]:
+        """Read-only device array of GAS handles, in ``cluster_counts`` order.
+
+        The array persists across rebuilds. Keep the batch alive while submitting
+        work with these handles; the array alone does not own the geometry.
+        """
+        self._check_open()
+        return self._gas.handles
+
+    @property
+    def ids(self) -> tuple[int, ...]:
+        """GAS handles in build order, waiting for a pending device readback."""
+        self._check_open()
+        if self._handle_stream is not None:
+            if self._host_handles is None:
+                self._host_handles = wp.empty(len(self.cluster_counts), dtype=wp.uint64, device="cpu", pinned=True)
+            wp.copy(self._host_handles, self.device_handles, stream=self._handle_stream)
+            wp.synchronize_stream(self._handle_stream)
+            self._ids = tuple(map(int, self._host_handles.numpy()))
+            self._handle_stream = None
+        return self._ids
+
+    def _check_open(self) -> None:
+        if self.closed:
+            raise RuntimeError("ClusterAccelBatch is closed")
+
+    def rebuild(self, *, validate: bool = True, stream: wp.Stream | None = None) -> bool:
+        """Rebuild and wait for the handles. Return whether any handle changed."""
+        previous = self.ids
+        self.rebuild_async(validate=validate, stream=stream)
+        return self.ids != previous
+
+    def rebuild_async(self, *, validate: bool = True, stream: wp.Stream | None = None) -> None:
+        """Rebuild all GASes from the current arrays, reusing device buffers.
+
+        ``validate=True`` reads descriptors back for bounds checks. With trusted
+        inputs, ``validate=False`` skips that wait. Rewrite instance records from
+        :attr:`device_handles` and rebuild the IAS before tracing it again.
+        """
+        self._check_open()
+        _, stream = resolve(self.device, stream)
+        points, grids, offsets, ids, sbt = self._inputs
+        state = self._templates
+        with wp.ScopedDevice(self.device), wp.ScopedStream(stream, sync_enter=False):
+            if validate:
+                _validate_cluster_values(state, points, grids, offsets, ids, sbt)
+            wp.launch(
+                _pack_args,
+                self._args.size,
+                inputs=[wp.uint64(points.ptr), grids, offsets, ids, sbt, state.handles, state.size, self._args],
+            )
+            self._clas.build(self._args)
+            self._gas.build(self._gas_args)
+            self._handle_stream = stream
+
+    def write_instance_handles(self, records: wp.array, *, stream: wp.Stream | None = None) -> None:
+        """Write one handle per ``Instance`` record in batch order, preserving other fields."""
+        from warp_optix._src.accel import Instance, _write_instance_handles
+
+        handles = self.device_handles
+        if (
+            not isinstance(records, wp.array)
+            or records.dtype is not Instance
+            or records.ndim != 1
+            or not records.is_contiguous
+            or records.device != self.device
+            or records.size != handles.size
+        ):
+            raise ValueError("Expected one contiguous Instance record per GAS on the batch device")
+        _, stream = resolve(self.device, stream)
+        wp.launch(_write_instance_handles, records.size, inputs=[handles, records], stream=stream)
+
+    def close(self) -> None:
+        """Release the batch. Existing instance structures retain its geometry buffers."""
+        if self.closed:
+            return
+        self._closed = True
+        self._memory = self._inputs = ()
+        self._clas = self._gas = self._args = self._gas_args = self._templates = None
+        self._handle_stream = self._host_handles = None
+
+    def __enter__(self) -> ClusterAccelBatch:
         self._check_open()
         return self
 

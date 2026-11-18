@@ -125,9 +125,17 @@ It can also be instanced with `wo.instances`, and ray queries expose `hit.cluste
 Use `rebuild()` to get a host-side handle change flag in exchange for a stream wait.
 For per-frame rendering, use `rebuild_async(validate=False)` with trusted inputs and
 read `accel.device_handle[0]` in raygen on the build stream (or use a stream dependency).
+For many independently deforming objects, `ClusterAccelBatch` builds one GAS per
+object from packed arrays and writes the handles to instance records on the GPU.
 See the [cluster example](examples/example_clusters.py) for an animated parametric knot,
 generated directly in Warp. It uses the standard installation, with no additional
 geometry library or build step.
+
+For fixed triangle connectivity, combine deforming bodies in one `wo.triangles`
+input and create the `Accel` with `BuildFlags.ALLOW_UPDATE`. Update the packed
+vertex array and call `refit()` once. Use a triangle-to-body lookup if hits need
+body IDs, or use `wp.Mesh(groups=...)` for group-restricted Warp queries. The
+[deforming objects example](examples/example_deforming_objects.py) runs all three paths.
 
 ## 1. Ray queries in a Warp kernel
 
