@@ -9,6 +9,7 @@ import ctypes
 import hashlib
 import itertools
 import logging
+import math
 import operator
 import os
 from collections.abc import Mapping, Sequence
@@ -359,12 +360,13 @@ class _ParamsStorage:
     does not form a reference cycle and ``del pipeline`` releases it at once.
     """
 
-    __slots__ = ("allocated", "data", "dirty", "host", "inputs", "recorded", "reset_host", "stream")
+    __slots__ = ("allocated", "data", "descriptors", "dirty", "host", "inputs", "recorded", "reset_host", "stream")
 
     def __init__(self, params_type, device: wp.Device, recorded: bool = False):
         self.data = wp.empty(1, dtype=params_type, device=device)
         self.host = params_type()
         self.inputs: dict = {}
+        self.descriptors: dict = {}
         self.reset_host = False
         self.dirty = False
         # The allocation is ordered on the current stream: the first use waits for it, not for later work there.
@@ -394,10 +396,28 @@ class _ParamsStorage:
             values = tuple(values)
             if len(values) != len(names):
                 raise TypeError(f"The raygen program takes {len(names)} arguments, but {len(values)} were given")
+            inputs = self.inputs
+            descriptors = self.descriptors
             self.inputs = {}
             for name, value in zip(names, values):
                 _check_clustered(pipeline, value)
-                self.set(context, name, value)
+                previous = inputs.get(name, self)
+                # The host copy already holds an unchanged array, None or Python scalar. Structs and
+                # accels are set again, since they can change in place. Warp recreates an array's
+                # ctype when its gradient changes, and 0.0 == -0.0.
+                if (
+                    value is previous
+                    and (value is None or (isinstance(value, wp.array) and value.ctype is descriptors.get(name)))
+                ) or (
+                    type(value) in (int, float, bool)
+                    and type(previous) is type(value)
+                    and value == previous
+                    and (value or math.copysign(1.0, value) == math.copysign(1.0, previous))
+                ):
+                    self.inputs[name] = value
+                else:
+                    self.set(context, name, value)
+            return
         self.dirty = True
 
     def set(self, context, name: str, value) -> None:
@@ -426,6 +446,8 @@ class _ParamsStorage:
                 self.dirty = True
                 return
         setattr(self.host, name, value)
+        if isinstance(value, wp.array):
+            self.descriptors[name] = value.ctype
         self.reset_host = True
         self.inputs[name] = retained
         self.dirty = True
