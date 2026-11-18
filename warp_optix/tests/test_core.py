@@ -408,6 +408,37 @@ def test_accel_query_ray_reports_hits_respects_interval_and_ray_flags():
     np.testing.assert_array_equal(flag_hits.numpy(), [[1, 1], [0, 0], [1, 1], [0, 0]])
 
 
+@wp.kernel(module="unique")
+def triangle_anyhit_flags_raygen(scene: wp.uint64, flags: wp.array[int], hits: wp.array[int]):
+    i = wp.tid()
+    start = wp.vec3(0.2, 0.3, 5.0)
+    direction = wp.vec3(0.0, 0.0, -1.0)
+    hits[i] = int(wo.accel_query_ray_anyhit(scene, start, direction, 100.0, flags=flags[i]))
+
+
+def test_accel_query_ray_anyhit_filters_incompatible_flags():
+    device = wp.get_device("cuda")
+    gas = triangle_gas(device)
+    front = wo.RayFlags.CULL_FRONT_FACING_TRIANGLES
+    back = wo.RayFlags.CULL_BACK_FACING_TRIANGLES
+    flags = wp.array(
+        [
+            wo.RayFlags.ENFORCE_ANYHIT,
+            wo.RayFlags.CULL_DISABLED_ANYHIT,
+            wo.RayFlags.CULL_ENFORCED_ANYHIT,
+            front | wo.RayFlags.ENFORCE_ANYHIT,
+            back | wo.RayFlags.CULL_ENFORCED_ANYHIT,
+            front | back,
+        ],
+        dtype=int,
+        device=device,
+    )
+    hits = wp.empty(len(flags), dtype=int, device=device)
+    with wo.Pipeline(triangle_anyhit_flags_raygen, device=device) as pipeline:
+        wo.launch(pipeline, len(flags), inputs=[gas, flags, hits])
+        np.testing.assert_array_equal(hits.numpy(), [1, 1, 1, 0, 1, 0])
+
+
 # ---------------------------------------------------------------------------
 # optix_trace with payload and programs
 # ---------------------------------------------------------------------------
