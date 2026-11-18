@@ -65,7 +65,7 @@ The optional interactive features are installed separately:
 pip install "warp-optix[pathtracing,ui]"
 ```
 
-The viewer follows the earlier hybrid viewer controls:
+The viewer provides these controls:
 
 - WASD or arrow keys move the camera; Q/E move along the model up axis.
 - Left drag looks around and the scroll wheel changes field of view.
@@ -81,10 +81,9 @@ the viewer.
 
 The backend accepts Warp arrays for meshes, transforms, colors, and material
 parameters. It handles X/Y/Z up-axis conversion, mesh and instance
-caching, visibility updates, and roughness/metallic PBR materials. Its default
-physical-sky values and sRGB-to-linear color conversion intentionally match
-the earlier hybrid viewer, including the light ground, slight haze, and soft
-horizon used for untextured simulation geometry.
+caching, visibility updates, and roughness/metallic PBR materials. It converts
+sRGB colors to linear space, and its default physical sky provides a light
+ground, slight haze, and soft horizon for untextured simulation geometry.
 
 The four material values passed to `log_instances()` are roughness, metallic,
 U subdivisions, and V subdivisions. Positive subdivision values enable a
@@ -265,9 +264,8 @@ across graph replays; a batch length of one is supported. The NumPy
 convenience method performs allocation/upload and is intentionally not the
 graph-capture path.
 
-The old hybrid viewer's Vulkan-backed OpenGL transform VBO was specific to its
-C# bridge. Compatibility queries remain available, but return unavailable;
-dynamic simulation transforms instead use Warp arrays through `log_instances()`
+An OpenGL transform VBO is not exposed; compatibility queries return unavailable.
+Dynamic simulation transforms use Warp arrays through `log_instances()`
 or `update_instance_transforms()` and trigger an OptiX TLAS refit. Transform
 matrix construction is vectorized before the retained OptiX instance buffer is
 updated. Window presentation uses CUDA/OpenGL interop with Warp's copy fallback
