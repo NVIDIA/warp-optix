@@ -325,23 +325,22 @@ class ClusterAccel:
     Cluster API, and never falls back to ordinary triangle geometry.
 
     Unlike ``wo.Accel``, ``id`` can change on ``rebuild()``. Buffers are sized
-    for the worst case of :attr:`capacity` clusters and are reused, keeping
-    ``id``, by rebuilds with at most that many clusters. A rebuild with more
-    clusters grows the capacity, allocates new buffers, changes ``id`` and
-    returns ``True``: rewrite instance records that reference it and rebuild the
-    instance structure, and set it again on recorded launches (``record_cmd=True``).
+    for the worst case of :attr:`capacity` clusters and are reused by rebuilds
+    with at most that many clusters. A rebuild with more clusters grows the
+    capacity and allocates new buffers. Any rebuild can change ``id`` and
+    returns ``True`` when it does: rewrite instance records that reference it,
+    rebuild the instance structure, and set it again on recorded launches
+    (``record_cmd=True``).
     Pass ``capacity`` to reserve room for the largest expected cluster count up
-    front, so that ``id`` stays fixed. Instance structures and recorded launches
+    front to avoid reallocations. Instance structures and recorded launches
     keep every buffer they may reference alive, also after this object is closed.
 
     ``validate=True`` reads the grids back to check bounds on the host, which
     synchronizes the stream. ``validate=False`` skips these checks for trusted
     GPU-generated grids; an out-of-range grid size or vertex offset then faults
-    on the GPU. Rebuilds within the capacity then do not synchronize; only
-    allocating rebuilds read the new traversable handle back. Keeping ``id``
-    across in-place rebuilds relies on observed OptiX behavior rather than a
-    documented guarantee, so validating rebuilds also confirm the handle is
-    unchanged and raise ``RuntimeError`` otherwise. Builds and
+    on the GPU. Every rebuild reads the returned traversable handle back,
+    synchronizing the stream even with ``validate=False``: OptiX does not
+    guarantee that implicit-destination builds keep the same handle. Builds and
     traversals on different streams need explicit ordering, as with ``wo.Accel``.
     Cluster structures support rebuilds, not refits or compaction.
     """
@@ -395,7 +394,7 @@ class ClusterAccel:
             self._build = None
             self._reserve = capacity
             # Shared with instance structures, which retain it rather than a snapshot. It only
-            # grows when buffers are reallocated, so any handle ever returned stays valid.
+            # grows when buffers are reallocated, so referenced output buffers stay alive.
             self._memory = [self._templates.output]
             self._empty = wp.empty(0, dtype=wp.uint32)
             self.points, self.grid_sizes, self.vertex_offsets = points, grid_sizes, vertex_offsets
@@ -418,13 +417,13 @@ class ClusterAccel:
 
     @property
     def id(self) -> int:
-        """Traversable handle; changes only when a rebuild exceeds :attr:`capacity`."""
+        """Traversable handle returned by the latest rebuild."""
         self._check_open()
         return self._id
 
     @property
     def capacity(self) -> int:
-        """Number of clusters the current buffers hold; rebuilds up to this count keep :attr:`id`."""
+        """Number of clusters the current buffers hold without reallocating."""
         self._check_open()
         return self._build.capacity
 
@@ -445,7 +444,9 @@ class ClusterAccel:
     ) -> bool:
         """Rebuild current grids, optionally replacing arrays when topology changes.
 
-        Returns ``True`` when the rebuild exceeded :attr:`capacity` and changed :attr:`id`.
+        Synchronizes the stream to read :attr:`id`, even with ``validate=False``.
+        Returns ``True`` when :attr:`id` changed; update instance records and
+        recorded launch parameters that reference the previous handle.
         """
         self._check_open()
         _, stream = resolve(self.device, stream)
@@ -513,21 +514,10 @@ class ClusterAccel:
             wp.launch(_gas_args, 1, inputs=[count, wp.uint64(build.clas.handles.ptr), build.gas_args])
             build.gas.build(build.gas_args)
             previous = getattr(self, "_id", None)
-            # The single GAS of an implicit-destination build has been observed to land at a
-            # fixed offset in its output buffer, so the handle only changes with that buffer
-            # and is read back (synchronizing the stream) only after an allocation. OptiX does
-            # not document this placement, so validating rebuilds, which synchronize anyway,
-            # check that the handle is unchanged.
-            if reallocated:
-                self._id = int(build.gas.handles.numpy()[0])
-            elif validate:
-                handle = int(build.gas.handles.numpy()[0])
-                if handle != self._id:
-                    stale, self._id = self._id, handle
-                    raise RuntimeError(
-                        f"Cluster GAS handle moved during an in-place rebuild ({stale:#x} -> {handle:#x}); "
-                        "in-place rebuilds with validate=False are unsafe with this driver"
-                    )
+            # Implicit destinations do not guarantee stable placement, even when the output
+            # buffer is reused. Always consume OptiX's returned handle, independently of
+            # whether the caller requested validation of the input arrays.
+            self._id = int(build.gas.handles.numpy()[0])
             self.points, self.grid_sizes, self.vertex_offsets = points, grids, offsets
             self.cluster_ids, self.sbt_offsets = ids, sbt
         return previous is not None and self._id != previous

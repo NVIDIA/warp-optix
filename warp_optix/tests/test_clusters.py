@@ -185,14 +185,14 @@ def test_instanced_cluster_rebuilds_keep_memory_alive_after_close(supported):
     scene = wo.Accel([wo.instances(records, [accel])])
     with wo.Pipeline(query_grids, clustered_geometry=True) as pipeline:
         result = wp.empty(2, dtype=wp.vec3)
-        # Larger grids with the same count rebuild in place and keep the handle.
-        handle = accel.id
-        assert not accel.rebuild(grid_sizes=wp.array([[8, 8], [8, 8]], dtype=wp.vec2i))
-        assert accel.id == handle
+        # Larger grids with the same count reuse the buffers, but may change the handle.
+        if accel.rebuild(grid_sizes=wp.array([[8, 8], [8, 8]], dtype=wp.vec2i)):
+            wp.launch(place_grid, 1, inputs=[wp.uint64(accel.id), records])
         scene.rebuild()
         wo.launch(pipeline, dim=2, inputs=[scene, result])
         np.testing.assert_allclose(result.numpy(), [[4, 0, 7], [4, 1, 7]])
         # More clusters reallocate: rewrite the records and rebuild the instance structure.
+        handle = accel.id
         assert accel.rebuild(
             grid_sizes=wp.array([[8, 8], [8, 8], [1, 1]], dtype=wp.vec2i),
             vertex_offsets=wp.array([0, 81, 0], dtype=int),
@@ -211,7 +211,7 @@ def test_instanced_cluster_rebuilds_keep_memory_alive_after_close(supported):
     scene.close()
 
 
-def test_cluster_capacity_keeps_id_without_synchronizing(supported, monkeypatch):
+def test_cluster_capacity_reuses_buffers_and_reads_handle(supported):
     points = wp.array(fine_points(), dtype=wp.vec3)
     grids = wp.array([[8, 8], [8, 8]], dtype=wp.vec2i)
     offsets = wp.array([0, 81], dtype=int)
@@ -225,30 +225,55 @@ def test_cluster_capacity_keeps_id_without_synchronizing(supported, monkeypatch)
             wo.launch(pipeline, dim=2, inputs=[accel, result])
             np.testing.assert_allclose(result.numpy()[:, 0], [4, -1])
 
-            # Growing within the reserved capacity neither reads back nor changes the handle.
-            def no_readback(self):
-                raise AssertionError("rebuild synchronized")
-
-            with monkeypatch.context() as patch:
-                patch.setattr(wp.array, "numpy", no_readback)
-                assert not accel.rebuild(grid_sizes=grids, vertex_offsets=offsets, validate=False)
-            assert accel.id == handle
+            # Growing within the reserved capacity reuses buffers and reads the returned handle.
+            build = accel._build
+            changed = accel.rebuild(grid_sizes=grids, vertex_offsets=offsets, validate=False)
+            assert accel._build is build
+            assert changed == (accel.id != handle)
+            assert accel.id == int(build.gas.handles.numpy()[0])
             wo.launch(pipeline, dim=2, inputs=[accel, result])
             np.testing.assert_allclose(result.numpy()[:, :2], [[4, 0], [4, 1]])
 
-            # Validating in-place rebuilds confirm the handle did not move, since its fixed
-            # placement is observed rather than documented OptiX behavior.
-            assert not accel.rebuild()
-            accel._id ^= 0x80
-            with pytest.raises(RuntimeError, match="handle moved"):
-                accel.rebuild()
-            assert accel.id == handle
-
+            handle = accel.id
             assert accel.rebuild(
                 grid_sizes=wp.array([[8, 8], [8, 8], [1, 1]], dtype=wp.vec2i),
                 vertex_offsets=wp.array([0, 81, 0], dtype=int),
             )
             assert accel.capacity >= 3 and accel.id != handle
+
+
+@pytest.mark.parametrize("validate", [False, True])
+def test_cluster_rebuild_reports_moved_handle_within_capacity(supported, monkeypatch, validate):
+    points = wp.array(grid_points(), dtype=wp.vec3)
+    grids = wp.array([[2, 2], [2, 2]], dtype=wp.vec2i)
+    offsets = wp.array([0, 9], dtype=int)
+    ids = wp.array([42, 99], dtype=wp.uint32)
+    with wo.ClusterAccel(points, grids[:1], offsets[:1], capacity=2) as accel:
+        build = accel._build
+        original_handle = accel.id
+        moved_handle = original_handle ^ 0x80
+        gas_build = build.gas.build
+
+        def move_handle(args, count=None):
+            gas_build(args, count)
+            # Simulate a driver returning a different handle from the device build.
+            # Do not traverse this synthetic handle; the next real build restores it.
+            build.gas.handles.fill_(moved_handle)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(build.gas, "build", move_handle)
+            assert accel.rebuild(grid_sizes=grids, vertex_offsets=offsets, cluster_ids=ids, validate=validate)
+        assert accel._build is build
+        assert accel.id == moved_handle
+        assert accel.grid_sizes is grids and accel.vertex_offsets is offsets and accel.cluster_ids is ids
+
+        # A subsequent build consumes the actual handle again, and the new inputs are usable.
+        assert accel.rebuild(validate=validate)
+        assert accel.id == int(build.gas.handles.numpy()[0])
+        with wo.Pipeline(query_grids, clustered_geometry=True) as pipeline:
+            result = wp.empty(2, dtype=wp.vec3)
+            wo.launch(pipeline, dim=2, inputs=[accel, result])
+            np.testing.assert_allclose(result.numpy()[:, :2], [[4, 42], [4, 99]])
 
 
 def test_cluster_accel_requires_clustered_pipeline_and_unambiguous_templates(supported):
