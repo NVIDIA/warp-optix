@@ -464,3 +464,27 @@ def test_launch_matches_wp_launch_conventions():
 
     # A raygen that ignores wp.tid() accepts any dimensions, and one without arguments needs no inputs.
     wo.launch(wo.Pipeline(no_arguments), (2, 2))
+
+
+@wo.kernel(kind=wo.ProgramKind.RAYGEN)
+def write_value(value: float, output: wp.array[float]):
+    output[0] = value
+
+
+def test_launch_repacks_changed_arguments():
+    pipeline = wo.Pipeline(write_value)
+    output = wp.empty(1, dtype=float, device=pipeline.device)
+    signs = []
+    for value in (0.0, -0.0, -0.0, 0.0):
+        wo.launch(pipeline, 1, [value, output])
+        signs.append(np.signbit(output.numpy()[0]))
+    assert signs == [False, True, True, False]
+
+    # Replacing a gradient reaches the next launch, also after another launch rebuilt the array's ctype.
+    host = pipeline._buffers[wp.get_stream(pipeline.device).cuda_stream].host._ctype
+    for rebuild in (False, True):
+        output.grad = wp.empty_like(output)
+        if rebuild:
+            output.__ctype__()
+        wo.launch(pipeline, 1, [0.0, output])
+        assert host.output.grad == output.grad.ptr
