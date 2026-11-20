@@ -470,3 +470,98 @@ def test_cluster_geometry_flags_map_by_name(supported):
     )
     with pytest.raises(ValueError, match="geometry flags"):
         wo.ClusterTemplates(2, flags=8)
+
+
+# ---------------------------------------------------------------------------
+# TriangleClusterAccel
+
+
+def _triangle_cluster_scene(device):
+    """Two unit quads 4 m apart along x, as one cluster each with cluster-local indices."""
+    quad = np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=np.float32) - [0.5, 0.5, 0.0]
+    points = np.concatenate([quad, quad + [4.0, 0.0, 0.0]]).astype(np.float32)
+    local = np.array([0, 1, 2, 0, 2, 3], dtype=np.int32)
+    indices = np.concatenate([local, local])
+    clusters = np.array([[0, 4, 0, 2], [4, 4, 2, 2]], dtype=np.int32)
+    return (
+        wp.array(points, dtype=wp.vec3, device=device),
+        wp.array(indices, dtype=wp.int32, device=device),
+        wp.array(clusters, dtype=wp.vec4i, device=device),
+    )
+
+
+@wp.kernel(module="unique")
+def query_triangle_clusters(scene: wp.uint64, output: wp.array[wp.vec4]):
+    i = wp.tid()
+    # Rays hit the second triangle (local index 1) of each quad.
+    q = wo.accel_query_ray(scene, wp.vec3(4.0 * float(i) - 0.25, 0.25, 4.0), wp.vec3(0.0, 0.0, -1.0), 100.0)
+    output[i] = wp.vec4(-1.0)
+    if q.result:
+        output[i] = wp.vec4(q.t, float(q.cluster_id), float(q.primitive_index), float(q.instance_id))
+
+
+@wp.kernel(module="unique")
+def place_triangle_clusters(child: wp.uint64, records: wp.array[wo.Instance]):
+    records[0] = wo.make_instance(wp.transform_identity(), child, 3)
+
+
+@wp.kernel
+def lift(points: wp.array[wp.vec3], dz: float):
+    i = wp.tid()
+    points[i] = points[i] + wp.vec3(0.0, 0.0, dz)
+
+
+def test_triangle_clusters_report_cluster_and_local_triangle():
+    points, indices, clusters = _triangle_cluster_scene("cuda:0")
+    ids = wp.array([10, 20], dtype=wp.uint32, device="cuda:0")
+    with wo.TriangleClusterAccel(points, indices, clusters, cluster_ids=ids) as accel:
+        assert accel.cluster_count == 2
+        output = wp.empty(2, dtype=wp.vec4, device="cuda:0")
+        with wo.Pipeline(query_triangle_clusters, clustered_geometry=True) as pipeline:
+            wo.launch(pipeline, dim=2, inputs=[accel, output])
+        np.testing.assert_allclose(output.numpy()[:, :3], [[4.0, 10.0, 1.0], [4.0, 20.0, 1.0]])
+
+
+@pytest.mark.parametrize("build_flags", [wo.BuildFlags.PREFER_FAST_BUILD, wo.BuildFlags.PREFER_FAST_TRACE])
+def test_triangle_clusters_rebuild_keeps_handle_for_instance_refits(build_flags):
+    points, indices, clusters = _triangle_cluster_scene("cuda:0")
+    accel = wo.TriangleClusterAccel(points, indices, clusters, build_flags=build_flags)
+    handle = accel.id
+    records = wp.empty(1, dtype=wo.Instance, device="cuda:0")
+    wp.launch(place_triangle_clusters, 1, inputs=[accel.id, records])
+    scene = wo.Accel([wo.instances(records, [accel])], flags=wo.BuildFlags.ALLOW_UPDATE)
+    output = wp.empty(2, dtype=wp.vec4, device="cuda:0")
+    pipeline = wo.Pipeline(query_triangle_clusters, clustered_geometry=True)
+    # Move past the original bounds: the refit IAS must see the rebuilt geometry.
+    wp.launch(lift, points.size, inputs=[points, 2.5])
+    accel.rebuild()
+    scene.refit()
+    assert accel.id == handle
+    assert int(accel.device_handle.numpy()[0]) == handle
+    accel.close()  # The instance structure retains the geometry.
+    wo.launch(pipeline, dim=2, inputs=[scene, output])
+    np.testing.assert_allclose(output.numpy(), [[1.5, 0.0, 1.0, 3.0], [1.5, 1.0, 1.0, 3.0]])
+
+
+def test_triangle_clusters_require_clustered_pipeline():
+    points, indices, clusters = _triangle_cluster_scene("cuda:0")
+    accel = wo.TriangleClusterAccel(points, indices, clusters)
+    output = wp.empty(2, dtype=wp.vec4, device="cuda:0")
+    with pytest.raises(ValueError, match="clustered_geometry=True"):
+        wo.launch(wo.Pipeline(query_triangle_clusters), dim=2, inputs=[accel, output])
+
+
+def test_triangle_clusters_validate_inputs():
+    points, indices, clusters = _triangle_cluster_scene("cuda:0")
+    bad_index = wp.array(np.array([0, 1, 4, 0, 2, 3] * 2, dtype=np.int32), dtype=wp.int32, device="cuda:0")
+    with pytest.raises(ValueError, match="vertex_count"):
+        wo.TriangleClusterAccel(points, bad_index, clusters)
+    outside = wp.array(np.array([[0, 4, 0, 2], [6, 4, 2, 2]], dtype=np.int32), dtype=wp.vec4i, device="cuda:0")
+    with pytest.raises(ValueError, match="outside points"):
+        wo.TriangleClusterAccel(points, indices, outside)
+    too_big = wp.array(np.array([[0, 300, 0, 2]], dtype=np.int32), dtype=wp.vec4i, device="cuda:0")
+    big_points = wp.zeros(300, dtype=wp.vec3, device="cuda:0")
+    with pytest.raises(ValueError, match="device limits"):
+        wo.TriangleClusterAccel(big_points, indices, too_big)
+    with pytest.raises(ValueError, match="PREFER_FAST_BUILD"):
+        wo.TriangleClusterAccel(points, indices, clusters, build_flags=wo.BuildFlags.ALLOW_UPDATE)
