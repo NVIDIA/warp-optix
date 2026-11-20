@@ -23,7 +23,7 @@ import warp as wp
 from warp._src import context as _warp_context
 
 from warp_optix import config, native
-from warp_optix._src.clusters import ClusterAccel, ClusterAccelBatch
+from warp_optix._src.clusters import ClusterAccel, ClusterAccelBatch, TriangleClusterAccel
 from warp_optix._src.context import CAPTURE_ERROR, resolve
 from warp_optix._src.enums import BuildFlags, GeometryFlags, PrimitiveType
 
@@ -159,7 +159,7 @@ class BuildInput:
     native: object
     arrays: tuple
     instance_records: wp.array | None = None
-    instance_children: tuple[Accel | ClusterAccel | ClusterAccelBatch, ...] | None = None
+    instance_children: tuple[Accel | ClusterAccel | ClusterAccelBatch | TriangleClusterAccel, ...] | None = None
     prepare: Callable[[wp.Stream], None] | None = None
 
     @property
@@ -382,7 +382,9 @@ def curves(
     return BuildInput(descriptor, (*point_keys, *width_keys, indices))
 
 
-def instances(records: wp.array, children: Sequence[Accel | ClusterAccel | ClusterAccelBatch]) -> BuildInput:
+def instances(
+    records: wp.array, children: Sequence[Accel | ClusterAccel | ClusterAccelBatch | TriangleClusterAccel]
+) -> BuildInput:
     """Instance input over ``records`` that reference structures in ``children``.
 
     The instance structure keeps ``children`` alive, so they may be closed or
@@ -396,8 +398,8 @@ def instances(records: wp.array, children: Sequence[Accel | ClusterAccel | Clust
         raise ValueError("records must be a contiguous CUDA array of Instance")
     children = tuple(children)
     for child in children:
-        if not isinstance(child, (Accel, ClusterAccel, ClusterAccelBatch)):
-            raise TypeError("children must be Accel, ClusterAccel or ClusterAccelBatch objects")
+        if not isinstance(child, (Accel, ClusterAccel, ClusterAccelBatch, TriangleClusterAccel)):
+            raise TypeError("children must be Accel, ClusterAccel, ClusterAccelBatch or TriangleClusterAccel objects")
         if child.device != records.device:
             raise ValueError("children must be on the device of the records")
     return BuildInput(
@@ -474,7 +476,10 @@ class Accel:
                     for child in item.instance_children:
                         child._check_open()
                         children[id(child)] = child._memory
-                        has_clusters |= isinstance(child, (ClusterAccel, ClusterAccelBatch)) or child._has_clusters
+                        has_clusters |= (
+                            isinstance(child, (ClusterAccel, ClusterAccelBatch, TriangleClusterAccel))
+                            or child._has_clusters
+                        )
                         if verified_ids is not None:
                             verified_ids.update(child.ids if isinstance(child, ClusterAccelBatch) else (child.id,))
                     if verified_ids is not None:

@@ -51,6 +51,7 @@ def test_public_surface():
         "ClusterAccel",
         "ClusterAccelBatch",
         "ClusterTemplates",
+        "TriangleClusterAccel",
         "ExceptionFlags",
         "GeometryFlags",
         "HitGroup",
