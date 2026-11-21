@@ -373,6 +373,27 @@ def curves(
     return BuildInput(descriptor, (*point_keys, *width_keys, indices))
 
 
+def spheres(
+    centers: wp.array,
+    radii: wp.array,
+    *,
+    flags: GeometryFlags = GeometryFlags.DISABLE_ANYHIT,
+) -> BuildInput:
+    """Built-in sphere build input from ``vec3`` centers and float32 radii.
+
+    ``radii`` holds one radius per sphere, or a single radius shared by all.
+    Hit groups tracing them use ``HitGroup(builtin=PrimitiveType.SPHERE)`` with
+    the structure's build flags.
+    """
+    count = _vertex_count([centers])
+    if radii.dtype != wp.float32 or radii.device != centers.device or not radii.is_contiguous:
+        raise ValueError("radii must be a contiguous float32 array on the centers device")
+    if radii.size not in (1, count):
+        raise ValueError("radii must hold one radius per sphere, or a single shared radius")
+    descriptor = native.SphereArray(centers.ptr or 0, radii.ptr or 0, count, radii.size != count, int(flags))
+    return BuildInput(descriptor, (centers, radii))
+
+
 def instances(records: wp.array, children: Sequence[Accel]) -> BuildInput:
     """Instance input over ``records`` that reference structures in ``children``.
 
@@ -406,7 +427,7 @@ class Accel:
     """An OptiX acceleration structure; pass :attr:`id` to kernels.
 
     Like ``wp.Mesh``/``wp.Bvh``, construction builds the structure. ``inputs`` come
-    from :func:`triangles`, :func:`curves`, :func:`aabbs`, or :func:`instances`.
+    from :func:`triangles`, :func:`curves`, :func:`spheres`, :func:`aabbs`, or :func:`instances`.
     ``device``/``stream`` follow the usual contract; with neither given, the
     device of the inputs is used. Structures built with
     ``BuildFlags.ALLOW_UPDATE`` keep their scratch buffer for :meth:`refit`;
@@ -435,13 +456,15 @@ class Accel:
         inputs = tuple(inputs)
         for item in inputs:
             if not isinstance(item, BuildInput):
-                raise TypeError("inputs must be created with triangles(), curves(), aabbs(), or instances()")
+                raise TypeError("inputs must be created with triangles(), curves(), spheres(), aabbs(), or instances()")
         if device is None and stream is None and inputs:
             device = inputs[0].device
         context, stream = resolve(device, stream)
         if not inputs:
             raise ValueError("Accel needs at least one build input")
         context.check_arrays([item.arrays for item in inputs])
+        if motion is not None and isinstance(inputs[0].native, native.SphereArray):
+            raise ValueError("sphere structures do not support motion")
         flags = int(flags) | (BuildFlags.ALLOW_COMPACTION if compact else 0)
         if flags & BuildFlags.ALLOW_COMPACTION and flags & BuildFlags.ALLOW_UPDATE:
             raise ValueError("compacted acceleration structures cannot be refit")
@@ -468,24 +491,14 @@ class Accel:
                             raise ValueError("Instance records reference a structure missing from children")
                 if item.prepare is not None:
                     item.prepare(stream)
-            sizes = context.native.accelComputeMemoryUsage(options, native_inputs)
-            scratch_size = (max(sizes.tempSizeInBytes, sizes.tempUpdateSizeInBytes) + 7) // 8 * 8
+            output_size, temp_size, temp_update_size = _memory_usage(context, options, native_inputs)
+            scratch_size = (max(temp_size, temp_update_size) + 7) // 8 * 8
             compacting = bool(flags & BuildFlags.ALLOW_COMPACTION)
             # The compacted size is emitted into 8 bytes after the scratch space, saving an allocation.
             scratch = wp.empty(scratch_size + 8 * compacting, dtype=wp.uint8, device=context.device)
-            buffer = wp.empty(sizes.outputSizeInBytes, dtype=wp.uint8, device=context.device)
+            buffer = wp.empty(output_size, dtype=wp.uint8, device=context.device)
             compacted_size = scratch.ptr + scratch_size if compacting else None
-            emitted = [native.AccelEmitDesc(compacted_size, native.PROPERTY_TYPE_COMPACTED_SIZE)] if compacting else []
-            handle = context.native.accelBuild(
-                stream.cuda_stream,
-                options,
-                native_inputs,
-                scratch.ptr,
-                scratch_size,
-                buffer.ptr,
-                buffer.size,
-                emitted,
-            )
+            handle = _build(context, stream, options, native_inputs, scratch, scratch_size, buffer, compacted_size)
 
         self._context = context
         self._id = int(handle)
@@ -584,28 +597,51 @@ class Accel:
         with wp.ScopedDevice(context.device):
             scratch, scratch_size = self._scratch, self._scratch_size
             if scratch is None:
-                sizes = context.native.accelComputeMemoryUsage(options, self._native_inputs)
+                _output_size, temp_size, _temp_update_size = _memory_usage(context, options, self._native_inputs)
                 with wp.ScopedStream(stream, sync_enter=False):
-                    scratch = wp.empty(sizes.tempSizeInBytes, dtype=wp.uint8, device=context.device)
+                    scratch = wp.empty(temp_size, dtype=wp.uint8, device=context.device)
                 scratch_size = scratch.size
             for item in self._inputs:
                 if item.prepare is not None:
                     item.prepare(stream)
-            handle = int(
-                context.native.accelBuild(
-                    stream.cuda_stream,
-                    options,
-                    self._native_inputs,
-                    scratch.ptr,
-                    scratch_size,
-                    self._buffer.ptr,
-                    self._buffer.size,
-                    []
-                    if self._compacted_size is None
-                    else [native.AccelEmitDesc(self._compacted_size, native.PROPERTY_TYPE_COMPACTED_SIZE)],
-                )
+            handle = _build(
+                context, stream, options, self._native_inputs, scratch, scratch_size, self._buffer, self._compacted_size
             )
         self._id = int(handle)
+
+
+def _memory_usage(context, options, native_inputs) -> tuple[int, int, int]:
+    """Output, build scratch and update scratch sizes [bytes]."""
+    if isinstance(native_inputs[0], native.SphereArray):
+        # PyOptiX has no sphere input; the extension sizes and builds those structures.
+        return native.sphereAccelComputeMemoryUsage(
+            context.native, int(options[0].buildFlags), int(options[0].operation), native_inputs
+        )
+    sizes = context.native.accelComputeMemoryUsage(options, native_inputs)
+    return sizes.outputSizeInBytes, sizes.tempSizeInBytes, sizes.tempUpdateSizeInBytes
+
+
+def _build(context, stream, options, native_inputs, scratch, scratch_size, buffer, compacted_size) -> int:
+    """Build into ``buffer``, emitting the compacted size to ``compacted_size`` if given; returns the handle."""
+    if isinstance(native_inputs[0], native.SphereArray):
+        return native.sphereAccelBuild(
+            context.native,
+            stream.cuda_stream,
+            int(options[0].buildFlags),
+            int(options[0].operation),
+            native_inputs,
+            scratch.ptr,
+            scratch_size,
+            buffer.ptr,
+            buffer.size,
+            compacted_size or 0,
+        )
+    emitted = (
+        [] if compacted_size is None else [native.AccelEmitDesc(compacted_size, native.PROPERTY_TYPE_COMPACTED_SIZE)]
+    )
+    return context.native.accelBuild(
+        stream.cuda_stream, options, native_inputs, scratch.ptr, scratch_size, buffer.ptr, buffer.size, emitted
+    )
 
 
 def compact(accels: Sequence[Accel], stream: wp.Stream | None = None) -> None:
