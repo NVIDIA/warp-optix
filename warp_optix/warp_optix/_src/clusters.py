@@ -183,6 +183,12 @@ def _validate_cluster_values(templates, points, grids, offsets, ids, sbt):
         raise ValueError("SBT offsets exceed the templates' max_sbt_index")
 
 
+def _retain_until_build_finishes(context, stream, *buffers):
+    # Warp frees on the legacy default stream, which may not wait for this stream.
+    if stream is not None:
+        context.release(lambda: buffers, (stream,))
+
+
 class ImplicitBuild:
     """An implicit-destination build whose buffers fit ``capacity`` arguments of ``desc``.
 
@@ -247,10 +253,11 @@ class TemplateState:
             context, _build_input(n.CLUSTER_ACCEL_BUILD_TYPE_TEMPLATES_FROM_GRIDS, count, size, 0, max_sbt_index), count
         )
         grid_args = wp.empty(count, dtype=GridArgs)
-        wp.launch(_grid_args, count, inputs=[size, truncate, primitive_flags, grid_args])
-        build.build(grid_args)
-        # Warp frees on the legacy default stream, which may not wait for the build stream.
-        context.release(lambda buffers=(grid_args, build.scratch): None, (wp.get_stream(),))
+        try:
+            wp.launch(_grid_args, count, inputs=[size, truncate, primitive_flags, grid_args])
+            build.build(grid_args)
+        finally:
+            _retain_until_build_finishes(context, wp.get_stream(), grid_args, build)
         self.output = build.output
         self.handles = build.handles
 
@@ -578,19 +585,50 @@ class ClusterAccel:
                     # Grow geometrically, so that incremental growth reallocates rarely.
                     capacity = min(max(count, build.capacity * 3 // 2), limit)
                 build = ClusterBuild(self._context, templates, capacity, self._device_handle)
-            wp.launch(
-                _pack_args,
-                count,
-                inputs=[wp.uint64(points.ptr), grids, offsets, ids, sbt, templates.handles, templates.size, build.args],
-            )
-            build.count.fill_(count)
-            build.clas.build(build.args, build.count)
-            wp.launch(_gas_args, 1, inputs=[count, wp.uint64(build.clas.handles.ptr), build.gas_args])
-            build.gas.build(build.gas_args)
+            try:
+                wp.launch(
+                    _pack_args,
+                    count,
+                    inputs=[
+                        wp.uint64(points.ptr),
+                        grids,
+                        offsets,
+                        ids,
+                        sbt,
+                        templates.handles,
+                        templates.size,
+                        build.args,
+                    ],
+                )
+                build.count.fill_(count)
+                build.clas.build(build.args, build.count)
+                wp.launch(_gas_args, 1, inputs=[count, wp.uint64(build.clas.handles.ptr), build.gas_args])
+                build.gas.build(build.gas_args)
+            except BaseException:
+                _retain_until_build_finishes(self._context, stream, build, templates, points, grids, offsets, ids, sbt)
+                raise
+            if (reallocated and self._build is not None) or (
+                self._handle_stream is not None
+                and (
+                    points is not self.points
+                    or grids is not self.grid_sizes
+                    or offsets is not self.vertex_offsets
+                    or ids is not self.cluster_ids
+                    or sbt is not self.sbt_offsets
+                )
+            ):
+                # The new build is ordered after earlier uses, even when the caller switches streams.
+                _retain_until_build_finishes(
+                    self._context,
+                    stream,
+                    self._build,
+                    self.points,
+                    self.grid_sizes,
+                    self.vertex_offsets,
+                    self.cluster_ids,
+                    self.sbt_offsets,
+                )
             if reallocated:
-                if self._build is not None:
-                    # A nonblocking build stream need not precede Warp's default-stream frees.
-                    self._context.release(lambda build=self._build: None, (stream,))
                 # Nothing else retains the buffers when no instance structure holds this list.
                 if sys.getrefcount(self._memory) <= 2:
                     self._memory = [templates.output]
@@ -603,11 +641,25 @@ class ClusterAccel:
     def close(self) -> None:
         if self.closed:
             return
+        _retain_until_build_finishes(
+            self._context,
+            self._handle_stream,
+            self._build,
+            self._templates,
+            self._host_handle,
+            self.points,
+            self.grid_sizes,
+            self.vertex_offsets,
+            self.cluster_ids,
+            self.sbt_offsets,
+        )
         self._closed = True
         self._memory = []
         self._device_handle = self._host_handle = self._handle_stream = None
         self._build = self._templates = self._empty = None
         self.points = self.grid_sizes = self.vertex_offsets = self.cluster_ids = self.sbt_offsets = None
+
+    __del__ = close
 
     def __enter__(self) -> ClusterAccel:
         self._check_open()
@@ -701,8 +753,12 @@ class ClusterAccelBatch:
                 len(counts),
             )
             offsets = wp.array(list(accumulate(counts, initial=0)), dtype=wp.uint32)
-            wp.launch(_batch_gas_args, len(counts), inputs=[offsets, wp.uint64(self._clas.handles.ptr), self._gas_args])
-            self._context.release(lambda buffer=offsets: None, (stream,))
+            try:
+                wp.launch(
+                    _batch_gas_args, len(counts), inputs=[offsets, wp.uint64(self._clas.handles.ptr), self._gas_args]
+                )
+            finally:
+                _retain_until_build_finishes(self._context, stream, offsets, self._gas_args)
             self._memory = (state.output, self._clas.output, self._gas.output)
             self._host_handles = None
             self._ids = ()
@@ -774,13 +830,17 @@ class ClusterAccelBatch:
         with wp.ScopedDevice(self.device), wp.ScopedStream(stream, sync_enter=False):
             if validate:
                 _validate_cluster_values(state, points, grids, offsets, ids, sbt)
-            wp.launch(
-                _pack_args,
-                self._args.size,
-                inputs=[wp.uint64(points.ptr), grids, offsets, ids, sbt, state.handles, state.size, self._args],
-            )
-            self._clas.build(self._args)
-            self._gas.build(self._gas_args)
+            try:
+                wp.launch(
+                    _pack_args,
+                    self._args.size,
+                    inputs=[wp.uint64(points.ptr), grids, offsets, ids, sbt, state.handles, state.size, self._args],
+                )
+                self._clas.build(self._args)
+                self._gas.build(self._gas_args)
+            except BaseException:
+                self._retain_build(stream)
+                raise
             self._handle_stream = stream
 
     def write_instance_handles(self, records: wp.array, *, stream: wp.Stream | None = None) -> None:
@@ -804,10 +864,26 @@ class ClusterAccelBatch:
         """Release the batch. Existing instance structures retain its geometry buffers."""
         if self.closed:
             return
+        self._retain_build(self._handle_stream)
         self._closed = True
         self._memory = self._inputs = ()
         self._clas = self._gas = self._args = self._gas_args = self._templates = None
         self._handle_stream = self._host_handles = None
+
+    __del__ = close
+
+    def _retain_build(self, stream):
+        _retain_until_build_finishes(
+            self._context,
+            stream,
+            self._inputs,
+            self._templates,
+            self._clas,
+            self._gas,
+            self._args,
+            self._gas_args,
+            self._host_handles,
+        )
 
     def __enter__(self) -> ClusterAccelBatch:
         self._check_open()
@@ -980,12 +1056,7 @@ class TriangleClusterAccel:
             clas_input.triangles = clas
             self._clas = ImplicitBuild(self._context, clas_input, count)
             self._args = wp.empty(count, dtype=TriangleArgs)
-            wp.launch(
-                _triangle_args,
-                count,
-                inputs=[wp.uint64(points.ptr), wp.uint64(indices.ptr), clusters, ids, _primitive_flags(flags)],
-                outputs=[self._args],
-            )
+            primitive_flags = _primitive_flags(flags)
             gas = n.ClusterAccelBuildInputClusters()
             gas.flags = cluster_flags
             gas.maxArgCount = 1
@@ -1003,15 +1074,28 @@ class TriangleClusterAccel:
             self._gas_destination = wp.array([self._gas_output.ptr], dtype=wp.uint64)
             self._gas_handle = wp.empty(1, dtype=wp.uint64)
             self._gas_args = wp.empty(1, dtype=GasArgs)
-            wp.launch(_gas_args, 1, inputs=[count, wp.uint64(self._clas.handles.ptr), self._gas_args])
             # Instance structures retain this tuple, so the geometry outlives this owner.
             self._memory = (points, indices, self._clas.output, self._gas_output)
-            self._closed = False
-            self.rebuild(stream)
             host_handle = wp.empty(1, dtype=wp.uint64, device="cpu", pinned=True)
-            wp.copy(host_handle, self._gas_handle, stream=stream)
-            wp.synchronize_stream(stream)
+            self._build_stream = stream
+            self._closed = False
+            try:
+                wp.launch(
+                    _triangle_args,
+                    count,
+                    inputs=[wp.uint64(points.ptr), wp.uint64(indices.ptr), clusters, ids, primitive_flags],
+                    outputs=[self._args],
+                )
+                wp.launch(_gas_args, 1, inputs=[count, wp.uint64(self._clas.handles.ptr), self._gas_args])
+                self.rebuild(stream)
+                wp.copy(host_handle, self._gas_handle, stream=stream)
+                wp.synchronize_stream(stream)
+            except BaseException:
+                _retain_until_build_finishes(self._context, stream, clusters, ids, host_handle)
+                self.close()
+                raise
             self._id = int(host_handle.numpy()[0])
+            self._build_stream = None
 
     @property
     def device(self) -> wp.Device:
@@ -1036,6 +1120,7 @@ class TriangleClusterAccel:
         self._check_open()
         _, stream = resolve(self.device, stream)
         with wp.ScopedDevice(self.device), wp.ScopedStream(stream, sync_enter=False):
+            self._build_stream = stream
             self._clas.build(self._args)
             dest = n.ClusterAccelBuildModeDescExplicitDest()
             dest.tempBuffer = self._gas_scratch.ptr
@@ -1049,10 +1134,26 @@ class TriangleClusterAccel:
 
     def close(self) -> None:
         """Release this owner. Instance structures over it retain the geometry."""
+        if self.closed:
+            return
+        _retain_until_build_finishes(
+            self._context,
+            self._build_stream,
+            self._memory,
+            self._clas,
+            self._args,
+            self._gas_args,
+            self._gas_scratch,
+            self._gas_destination,
+            self._gas_handle,
+        )
         self._closed = True
+        self._build_stream = None
         self._memory = ()
         self._clas = self._args = self._gas_args = self._gas_output = self._gas_scratch = None
         self._gas_destination = self._gas_handle = self._gas_input = None
+
+    __del__ = close
 
     def __enter__(self) -> TriangleClusterAccel:
         self._check_open()

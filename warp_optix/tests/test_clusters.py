@@ -489,6 +489,115 @@ def test_cluster_setup_retains_arguments_on_nonblocking_stream(supported, gate, 
             gate._check(gate._cuda.cuStreamDestroy_v2(handle))
 
 
+@pytest.fixture
+def pending_cluster_build(supported, gate):
+    device = wp.get_device()
+    handle = ctypes.c_void_p()
+    gate._check(gate._cuda.cuStreamCreate(ctypes.byref(handle), 1))  # CU_STREAM_NON_BLOCKING
+    stream = wp.Stream(device, cuda_stream=handle.value)
+    frees = []
+
+    def track_free(*arrays):
+        for array in arrays:
+            original = array.deleter
+
+            def postpone(ptr, size, free=original):
+                # Detect an early release without letting CUDA reuse the memory.
+                frees.append((free, ptr, size))
+
+            array.deleter = postpone
+
+    def check(pending, expected):
+        assert not pending.is_complete, "The gate expired before inspecting the pending build"
+        assert not frees, "Released buffers before the queued build could run"
+        gate.open()
+        wp.synchronize_stream(stream)
+        wo.get_context(device).collect()
+        assert len(frees) == expected
+
+    try:
+        yield stream, track_free, check
+    finally:
+        gate.open()
+        wp.synchronize_stream(stream)
+        wo.get_context(device).collect()
+        for free, ptr, size in frees:
+            free(ptr, size)
+        gate._check(gate._cuda.cuStreamDestroy_v2(handle))
+
+
+@pytest.mark.parametrize("kind", ["templates", "grid", "batch", "triangle"])
+@pytest.mark.parametrize("explicit_close", [True, False])
+def test_cluster_close_retains_pending_build_buffers(gate, pending_cluster_build, kind, explicit_close):
+    stream, track_free, check = pending_cluster_build
+    points = wp.array(grid_points(), dtype=wp.vec3)
+    grids = wp.array([[2, 2]], dtype=wp.vec2i)
+    offsets = wp.array([0], dtype=wp.int32)
+    if kind == "templates":
+        with wo.ClusterTemplates(2, stream=stream):
+            wp.synchronize_stream(stream)
+        pending = gate.block(stream)
+        owner = wo.ClusterTemplates(2, stream=stream)
+        track_free(owner._state.output, owner._state.handles)
+        count = 2
+    else:
+        if kind == "grid":
+            owner = wo.ClusterAccel(points, grids, offsets, max_edge_segments=2)
+            track_free(owner._host_handle, owner._build.count, owner._build.gas_args)
+            builds = (owner._build.clas, owner._build.gas)
+            track_free(owner._build.args, owner._templates.output, owner._templates.handles)
+            count = 12
+        elif kind == "batch":
+            owner = wo.ClusterAccelBatch(points, grids, offsets, (1,))
+            builds = (owner._clas, owner._gas)
+            track_free(owner._args, owner._gas_args, owner._templates.output, owner._templates.handles)
+            count = 10
+        else:
+            indices = wp.array([0, 1, 3], dtype=wp.int32)
+            clusters = wp.array([[0, 4, 0, 1]], dtype=wp.vec4i)
+            owner = wo.TriangleClusterAccel(points, indices, clusters)
+            builds = (owner._clas,)
+            track_free(
+                owner._args,
+                owner._gas_args,
+                owner._gas_handle,
+                owner._gas_output,
+                owner._gas_scratch,
+                owner._gas_destination,
+            )
+            count = 9
+        for build in builds:
+            track_free(build.output, build.scratch, build.handles)
+        del builds, build
+        wp.synchronize_device()
+        pending = gate.block(stream)
+        if kind == "triangle":
+            owner.rebuild(stream)
+        else:
+            owner.rebuild_async(validate=False, stream=stream)
+    if explicit_close:
+        owner.close()
+    del owner
+    check(pending, count)
+
+
+def test_cluster_replacing_inputs_retains_pending_build_inputs(gate, pending_cluster_build):
+    stream, track_free, check = pending_cluster_build
+    points = wp.array(grid_points(), dtype=wp.vec3)
+    grids = wp.array([[2, 2]], dtype=wp.vec2i)
+    offsets = wp.array([0], dtype=wp.int32)
+    with wo.ClusterAccel(points, grids, offsets, max_edge_segments=2) as accel:
+        replacement = wp.clone(points)
+        track_free(points)
+        del points
+        wp.synchronize_device()
+        pending = gate.block(stream)
+        accel.rebuild_async(validate=False, stream=stream)
+        accel.rebuild_async(points=replacement, validate=False, stream=stream)
+        check(pending, 1)
+        assert accel.id == int(accel.device_handle.numpy()[0])
+
+
 def test_cluster_accel_requires_clustered_pipeline_and_unambiguous_templates(supported):
     points = wp.array(grid_points(), dtype=wp.vec3)
     grids = wp.array([[2, 2]], dtype=wp.vec2i)
