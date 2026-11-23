@@ -857,8 +857,10 @@ def _triangle_args(
 class TriangleClusterAccel:
     """An owned GAS over clusters of arbitrary triangles, rebuilt from Warp device arrays.
 
-    ``clusters`` holds one ``vec4i(first_vertex, vertex_count, first_triangle, triangle_count)``
-    per cluster, and ``indices`` holds int32 or uint32 vertex triplets local to their cluster:
+    ``points`` is a contiguous one-dimensional ``vec3`` array. ``clusters`` is a contiguous
+    one-dimensional array holding one ``vec4i(first_vertex, vertex_count, first_triangle,
+    triangle_count)`` per cluster. ``indices`` holds packed int32 or uint32 vertex triplets
+    local to their cluster:
     triangle ``t`` of cluster ``c`` uses ``points[c[0] + indices[3 * (c[2] + t) + k]]``. Each
     cluster holds at most :func:`cluster_capabilities` ``max_vertices`` and ``max_triangles``.
 
@@ -866,8 +868,9 @@ class TriangleClusterAccel:
     calls, which suits deforming meshes: it is typically faster than refitting an equivalent
     triangle GAS and keeps full trace quality. Mutate ``points`` in place between rebuilds; the
     topology stays fixed. The GAS is built into a fixed destination, so :attr:`id` never changes
-    and instance structures over it can be refit after a rebuild. Rebuilds neither allocate nor
-    synchronize.
+    and instance structures over it can be refit after a rebuild. Rebuilds reuse device buffers
+    and run asynchronously. Order point writes, rebuilds, instance refits and traversal on one
+    stream or with explicit stream dependencies.
 
     Hits report ``cluster_id`` (``cluster_ids[c]``, or ``c`` by default) and the triangle within
     the cluster as ``primitive_index``. ``flags`` are the geometry flags of every triangle, as in
@@ -891,6 +894,22 @@ class TriangleClusterAccel:
         from warp_optix._src.enums import BuildFlags
 
         self._closed = True
+        for name, array, dtypes in (
+            ("points", points, (wp.vec3,)),
+            ("indices", indices, (wp.int32, wp.uint32)),
+            ("clusters", clusters, (wp.vec4i,)),
+            ("cluster_ids", cluster_ids, (wp.uint32,)),
+        ):
+            if name == "cluster_ids" and array is None:
+                continue
+            if not isinstance(array, wp.array) or array.dtype not in dtypes:
+                raise TypeError(f"{name} must be a Warp array with dtype {' or '.join(str(dtype) for dtype in dtypes)}")
+            if name != "indices" and array.ndim != 1:
+                raise ValueError(f"{name} must be one-dimensional")
+            if not array.is_contiguous:
+                raise ValueError(f"{name} must be contiguous")
+        if indices.size % 3:
+            raise ValueError("indices must contain complete vertex triplets")
         self._context, stream = resolve(points.device, stream)
         build_flags = BuildFlags.PREFER_FAST_BUILD if build_flags is None else build_flags
         if build_flags not in (BuildFlags.PREFER_FAST_BUILD, BuildFlags.PREFER_FAST_TRACE):
@@ -900,8 +919,6 @@ class TriangleClusterAccel:
             if build_flags == BuildFlags.PREFER_FAST_BUILD
             else n.CLUSTER_ACCEL_BUILD_FLAG_PREFER_FAST_TRACE
         )
-        if points.dtype != wp.vec3 or indices.dtype not in (wp.int32, wp.uint32) or clusters.dtype != wp.vec4i:
-            raise TypeError("points, indices and clusters must be vec3, int32 or uint32, and vec4i Warp arrays")
         ids = wp.empty(0, dtype=wp.uint32, device=self.device) if cluster_ids is None else cluster_ids
         if ids.size not in (0, clusters.size):
             raise ValueError("cluster_ids must have one entry per cluster")
@@ -910,7 +927,9 @@ class TriangleClusterAccel:
         props = n.getClusterProperties(self._context.native)
         if not props["flags"]:
             raise RuntimeError("The OptiX driver reports no Cluster API support on this device")
-        # The build is sized from the topology, read back once.
+        # Size the build from the topology. Wait for writes on the selected stream
+        # before numpy() reads the arrays back on the CUDA default stream.
+        wp.synchronize_stream(stream)
         first_vertex, vertex_count, first_triangle, triangle_count = clusters.numpy().astype(np.int64).T
         if not 0 < count <= props["max_clusters_per_gas"] or min(vertex_count.min(), triangle_count.min()) < 1:
             raise ValueError("Expected at least one cluster, each with vertices and triangles")
@@ -920,17 +939,26 @@ class TriangleClusterAccel:
                 f"{props['max_triangles']} triangles"
             )
         if validate:
-            local = indices.numpy().astype(np.int64).reshape(-1, 3)
-            rows = np.concatenate([np.arange(s, s + c) for s, c in zip(first_triangle, triangle_count, strict=True)])
-            owner = np.repeat(np.arange(count), triangle_count)
             if (
                 first_vertex.min() < 0
                 or (first_vertex + vertex_count).max() > points.size
-                or rows.max() >= len(local)
-                or local[rows].min() < 0
-                or np.any(local[rows] >= vertex_count[owner, None])
+                or first_triangle.min() < 0
+                or (first_triangle + triangle_count).max() > indices.size // 3
             ):
                 raise ValueError("Cluster vertices or triangles lie outside points or indices")
+            if ids.size and np.any(ids.numpy() == 0xFFFFFFFF):
+                raise ValueError("0xFFFFFFFF is reserved as the invalid cluster ID")
+            local = indices.numpy().reshape(-1, 3)
+            # Bound the temporary gathers independently of the mesh size.
+            for start in range(0, count, 4096):
+                batch = slice(start, start + 4096)
+                counts = triangle_count[batch]
+                starts = first_triangle[batch] - (np.cumsum(counts) - counts)
+                rows = np.arange(counts.sum()) + np.repeat(starts, counts)
+                vertices = local[rows]
+                limits = np.repeat(vertex_count[batch].astype(vertices.dtype), counts)
+                if vertices.min() < 0 or np.any(vertices >= limits[:, None]):
+                    raise ValueError("Cluster-local indices lie outside their cluster's vertices")
 
         with wp.ScopedDevice(self.device), wp.ScopedStream(stream, sync_enter=False):
             clas = n.ClusterAccelBuildInputTriangles()
@@ -975,7 +1003,10 @@ class TriangleClusterAccel:
             self._memory = (points, indices, self._clas.output, self._gas_output)
             self._closed = False
             self.rebuild(stream)
-            self._id = int(self._gas_handle.numpy()[0])
+            host_handle = wp.empty(1, dtype=wp.uint64, device="cpu", pinned=True)
+            wp.copy(host_handle, self._gas_handle, stream=stream)
+            wp.synchronize_stream(stream)
+            self._id = int(host_handle.numpy()[0])
 
     @property
     def device(self) -> wp.Device:
