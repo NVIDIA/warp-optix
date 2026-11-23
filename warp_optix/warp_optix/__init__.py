@@ -30,6 +30,7 @@ from warp_optix._src.accel import compact as compact
 from warp_optix._src.accel import curves as curves
 from warp_optix._src.accel import instances as instances
 from warp_optix._src.accel import make_instance as make_instance
+from warp_optix._src.accel import spheres as spheres
 from warp_optix._src.accel import triangles as triangles
 from warp_optix._src.clusters import ClusterAccel as ClusterAccel
 from warp_optix._src.clusters import ClusterAccelBatch as ClusterAccelBatch
@@ -93,5 +94,6 @@ __all__ = [
     "kernel",
     "launch",
     "make_instance",
+    "spheres",
     "triangles",
 ]

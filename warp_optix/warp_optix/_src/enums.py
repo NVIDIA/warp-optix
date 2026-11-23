@@ -25,6 +25,7 @@ class PrimitiveType(IntEnum):
     FLAT_QUADRATIC_BSPLINE = int(_backend.PRIMITIVE_TYPE_FLAT_QUADRATIC_BSPLINE)
     ROUND_CUBIC_BEZIER = int(_backend.PRIMITIVE_TYPE_ROUND_CUBIC_BEZIER)
     TRIANGLE = int(_backend.PRIMITIVE_TYPE_TRIANGLE)
+    SPHERE = int(_backend.PRIMITIVE_TYPE_SPHERE)
     # Not exposed by PyOptiX 9.1; values from optix_types.h.
     ROUND_QUADRATIC_BSPLINE_ROCAPS = 0x2508
     ROUND_CUBIC_BSPLINE_ROCAPS = 0x2509

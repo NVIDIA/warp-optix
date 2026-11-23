@@ -198,7 +198,7 @@ intersection=, builtin=, data=)` per ray type. A bare miss entry or `HitGroup` a
 ray type, so a single ray type needs no inner mapping:
 `wo.SbtLayout(miss=background, hit_groups={"triangles": wo.HitGroup(closest_hit=shade)})`.
 Programs are ordinary Warp kernels, with their kind determined by their slot.
-`builtin=wo.PrimitiveType.*` selects OptiX's built-in curve intersector; a group with an
+`builtin=wo.PrimitiveType.*` selects OptiX's built-in curve or sphere intersector; a group with an
 `intersection` program serves custom primitives; each group uses the same geometry kind for every
 ray type. `HitGroup()` is an empty hit group for hit-object traversal. Primitive-type flags are
 derived from the groups. Ray names must be unique, and the trace stride supports at most 15 ray
@@ -285,6 +285,7 @@ retain their Warp **device** arrays:
 | `wo.triangles(points, indices, flags=)` | `vec3` (or `float32[N, 3]`) points, int32/uint32 index triplets; a list of point arrays gives motion keys |
 | `wo.aabbs(lowers, uppers, flags=, sbt_indices=)` | `vec3` bounds per custom primitive, like `wp.Bvh(lowers, uppers)`; or packed `wo.aabbs(bounds=float32[N, 6])` to avoid a packing copy |
 | `wo.curves(points, widths, indices, curve_type=, flags=)` | control points, per-point radii, first control point of each segment |
+| `wo.spheres(centers, radii, flags=)` | `vec3` sphere centers and float32 radii, one per sphere or one shared; trace with `HitGroup(builtin=PrimitiveType.SPHERE)` |
 | `wo.instances(records, children)` | `wp.array(dtype=wo.Instance)`, plus the `wo.Accel` objects the records reference |
 
 Geometry defaults to `GeometryFlags.DISABLE_ANYHIT`; pass `flags=wo.GeometryFlags.NONE` when an
