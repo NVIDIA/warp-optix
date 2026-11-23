@@ -240,6 +240,54 @@ def test_aabbs_from_lowers_uppers_and_packed_bounds_hit_and_refit():
     np.testing.assert_allclose(depth.numpy(), [-1.0, -1.0, 4.5, 5.5], atol=1e-5)
 
 
+@wp.kernel(module="unique")
+def sphere_query_raygen(scene: wp.uint64, xs: wp.array[float], hits: wp.array2d[float]):
+    i = wp.tid()
+    query = wo.accel_query_ray(scene, wp.vec3(xs[i], 0.0, 5.0), wp.vec3(0.0, 0.0, -1.0), 100.0)
+    hits[i, 0] = -1.0
+    if query.result:
+        hits[i, 0] = query.t
+        hits[i, 1] = float(query.primitive_index)
+
+
+def test_builtin_spheres_hit_refit_and_compact():
+    device = wp.get_device("cuda")
+    centers = wp.array([[0.0, 0.0, 0.0], [3.0, 0.0, -1.0]], dtype=wp.vec3, device=device)
+    radii = wp.array([0.5, 0.25], dtype=float, device=device)
+    flags = wo.BuildFlags.ALLOW_UPDATE | wo.BuildFlags.PREFER_FAST_TRACE
+    refit = wo.Accel([wo.spheres(centers, radii)], flags=flags, device=device)
+    shared = wo.Accel([wo.spheres(centers, wp.array([0.5], dtype=float, device=device))], compact=True, device=device)
+    xs = wp.array([0.0, 3.0, 6.0, 9.0], dtype=float, device=device)
+    hits = wp.zeros((4, 2), dtype=float, device=device)
+
+    def trace(accel):
+        # The built-in intersection must be compiled for the structure's build flags.
+        group = wo.HitGroup(builtin=wo.PrimitiveType.SPHERE, build_flags=accel.flags)
+        pipeline = wo.Pipeline(sphere_query_raygen, sbt=wo.SbtLayout(hit_groups={"spheres": group}), device=device)
+        wo.launch(pipeline, dim=4, inputs=[accel, xs, hits])
+        return hits.numpy()
+
+    np.testing.assert_allclose(trace(refit), [[4.5, 0.0], [5.75, 1.0], [-1.0, 0.0], [-1.0, 0.0]], atol=1e-4)
+    # Built from the same centers, with one radius shared by both spheres.
+    np.testing.assert_allclose(trace(shared)[:, 0], [4.5, 5.5, -1.0, -1.0], atol=1e-4)
+    # Moving past the built bounds needs the update operation to reach the sphere build.
+    centers.assign(centers.numpy() + np.array([6.0, 0.0, 0.0], dtype=np.float32))
+    refit.refit()
+    np.testing.assert_allclose(trace(refit)[:, 0], [-1.0, -1.0, 4.5, 5.75], atol=1e-4)
+
+
+def test_accel_rejects_mixed_sphere_and_triangle_inputs():
+    vertices = wp.array(TRIANGLE_VERTICES, dtype=wp.vec3, device="cuda")
+    indices = wp.array(TRIANGLE_INDICES, dtype=wp.int32, device="cuda")
+    radii = wp.full(1, 0.5, dtype=wp.float32, device="cuda")
+    spheres = wo.spheres(vertices, radii)
+    triangles = wo.triangles(vertices, indices)
+
+    for inputs in ([spheres, triangles], [triangles, spheres]):
+        with pytest.raises(ValueError, match=r"Sphere build inputs cannot be mixed.*instances\(\)"):
+            wo.Accel(inputs)
+
+
 @pytest.mark.parametrize("hold_before_allocation", [True, False])
 def test_aabb_build_on_another_stream_orders_only_its_allocation(gate, hold_before_allocation):
     device = wp.get_device("cuda")
@@ -592,6 +640,7 @@ def test_empty_build_inputs_build_refit_and_miss():
         wo.triangles(vertices, none),
         wo.curves(vertices, wp.full(4, 0.1, dtype=float, device=device), none),
         wo.aabbs(no_points, no_points),
+        wo.spheres(no_points, wp.empty(0, dtype=float, device=device)),
         wo.instances(wp.empty(0, dtype=wo.Instance, device=device), []),
         wo.instances(records[:0], []),  # An empty view still has a non-null backing pointer.
     ]

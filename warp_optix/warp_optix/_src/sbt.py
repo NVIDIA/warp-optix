@@ -14,7 +14,9 @@ import warp as wp
 
 from warp_optix._src.enums import BuildFlags, PrimitiveType
 
-_CURVE_TYPES = frozenset(int(kind) for kind in PrimitiveType if kind.name.startswith(("ROUND_", "FLAT_")))
+_BUILTIN_TYPES = frozenset(
+    int(kind) for kind in PrimitiveType if kind.name.startswith(("ROUND_", "FLAT_")) or kind == PrimitiveType.SPHERE
+)
 
 
 @dataclass(frozen=True)
@@ -22,7 +24,7 @@ class HitGroup:
     """Programs run for one geometry type and ray type.
 
     ``builtin`` selects an OptiX built-in intersection (a :class:`PrimitiveType`)
-    for curves. ``build_flags`` must match the flags used to build those curves.
+    for curves or spheres. ``build_flags`` must match the flags used to build that geometry.
     A hit group without programs still occupies its SBT record, which
     is what pipelines that only use ``optix_traverse`` hit objects need.
     ``data`` is a Warp struct instance stored in the record, read on the device
@@ -41,8 +43,8 @@ class HitGroup:
             return
         if self.intersection is not None:
             raise ValueError("HitGroup intersection and builtin cannot be combined")
-        if int(self.builtin) not in _CURVE_TYPES:
-            raise ValueError(f"HitGroup.builtin must be a curve PrimitiveType, got {self.builtin!r}")
+        if int(self.builtin) not in _BUILTIN_TYPES:
+            raise ValueError(f"HitGroup.builtin must be a curve PrimitiveType or SPHERE, got {self.builtin!r}")
 
 
 def _ray_type_index(ray_types: Sequence[str], name: str) -> int:

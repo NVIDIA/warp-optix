@@ -73,6 +73,7 @@ def test_public_surface():
         "kernel",
         "launch",
         "make_instance",
+        "spheres",
         "triangles",
     }
     # Each public module exports exactly its __all__; everything else lives in warp_optix._src.

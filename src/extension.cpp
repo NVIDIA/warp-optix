@@ -238,6 +238,8 @@ void validate_pyoptix_bindings(py::module_ upstream) {
 
 } // namespace
 
+#include "spheres.h"
+
 PYBIND11_MODULE(_ext, m) {
     m.doc() = "Additional OptiX bindings for the pyoptix dependency";
     m.def("optix_version", &optix_version, "OptiX SDK version used to compile this supplemental extension.");
@@ -325,4 +327,5 @@ PYBIND11_MODULE(_ext, m) {
     m.attr("DENOISER_MODEL_KIND_UPSCALE2X") = py::int_(static_cast<unsigned int>(OPTIX_DENOISER_MODEL_KIND_UPSCALE2X));
     m.attr("DENOISER_MODEL_KIND_TEMPORAL_UPSCALE2X") =
         py::int_(static_cast<unsigned int>(OPTIX_DENOISER_MODEL_KIND_TEMPORAL_UPSCALE2X));
+    bind_spheres(m);
 }
