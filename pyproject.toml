@@ -181,6 +181,8 @@ exclude = [
 extend-exclude = ["third_party", "uv.lock", "licenses", "*_LICENSE.txt", "LICENSE.*"]
 
 [tool.typos.default.extend-words]
+CLAS = "CLAS"
+clas = "clas"
 # Rendering terminology
 lod = "lod"
 mis = "mis"
