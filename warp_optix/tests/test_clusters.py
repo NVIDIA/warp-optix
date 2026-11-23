@@ -394,6 +394,55 @@ def test_cluster_batch_rejects_invalid_layout(supported):
         wo.ClusterAccelBatch(points, grids, wp.array([0, 12], dtype=int), (1, 1))
 
 
+def test_cluster_growth_retains_pending_build_buffers(supported, gate):
+    points = wp.array(grid_points(), dtype=wp.vec3)
+    grids = wp.array([[2, 2], [2, 2]], dtype=wp.vec2i)
+    offsets = wp.array([0, 9], dtype=wp.int32)
+    with wo.ClusterAccel(points, grids[:1], offsets[:1], max_edge_segments=2) as accel:
+        # Warm the kernels before holding a stream: module loading can synchronize the device.
+        with wo.ClusterAccel(points, grids, offsets, max_edge_segments=2):
+            wp.synchronize_device(points.device)
+        handle = ctypes.c_void_p()
+        gate._check(gate._cuda.cuStreamCreate(ctypes.byref(handle), 1))  # CU_STREAM_NON_BLOCKING
+        stream = wp.Stream(points.device, cuda_stream=handle.value)
+        frees = []
+
+        def track_free(array, name):
+            original = array.deleter
+
+            def postpone(ptr, size):
+                # Observe premature release without allowing unsafe GPU memory reuse on failure.
+                frees.append((name, original, ptr, size))
+
+            array.deleter = postpone
+
+        track_free(accel._build.clas.scratch, "CLAS scratch")
+        track_free(accel._build.clas.handles, "CLAS handles")
+        track_free(accel._build.args, "CLAS descriptors")
+        track_free(accel._build.count, "CLAS count")
+        track_free(accel._build.gas.scratch, "GAS scratch")
+        track_free(accel._build.gas_args, "GAS descriptors")
+        try:
+            pending = gate.block(stream)
+            accel.rebuild_async(validate=False, stream=stream)
+            accel.rebuild_async(grid_sizes=grids, vertex_offsets=offsets, validate=False, stream=stream)
+            assert not pending.is_complete, "The gate expired before inspecting the pending rebuild"
+            assert not frees, f"Released pending build buffers: {[entry[0] for entry in frees]}"
+            gate.open()
+            wp.synchronize_stream(stream)
+            wo.get_context(points.device).collect()
+            assert len(frees) == 6
+            assert accel.id == int(accel.device_handle.numpy()[0])
+        finally:
+            gate.open()
+            wp.synchronize_stream(stream)
+            wo.get_context(points.device).collect()
+            for _, free, ptr, size in frees:
+                free(ptr, size)
+            del stream
+            gate._check(gate._cuda.cuStreamDestroy_v2(handle))
+
+
 def test_cluster_setup_retains_arguments_on_nonblocking_stream(supported, gate, monkeypatch):
     from warp_optix._src.clusters import _batch_gas_args, _grid_args
 

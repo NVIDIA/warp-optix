@@ -588,6 +588,9 @@ class ClusterAccel:
             wp.launch(_gas_args, 1, inputs=[count, wp.uint64(build.clas.handles.ptr), build.gas_args])
             build.gas.build(build.gas_args)
             if reallocated:
+                if self._build is not None:
+                    # A nonblocking build stream need not precede Warp's default-stream frees.
+                    self._context.release(lambda build=self._build: None, (stream,))
                 # Nothing else retains the buffers when no instance structure holds this list.
                 if sys.getrefcount(self._memory) <= 2:
                     self._memory = [templates.output]
