@@ -399,6 +399,8 @@ class ClusterAccel:
     Cluster structures support rebuilds, not refits or compaction.
     """
 
+    _has_clusters = True
+
     def __init__(
         self,
         points: wp.array[wp.vec3],
@@ -478,6 +480,8 @@ class ClusterAccel:
         """Latest traversable handle as a Python integer; waits after an async rebuild."""
         self._check_open()
         if self._handle_stream is not None:
+            if self._handle_stream.is_capturing:
+                raise RuntimeError("Cannot read ClusterAccel.id during CUDA graph capture; use device_handle instead")
             wp.copy(self._host_handle, self._device_handle, stream=self._handle_stream)
             wp.synchronize_stream(self._handle_stream)
             self._id = int(self._host_handle.numpy()[0])
@@ -555,6 +559,9 @@ class ClusterAccel:
         for trusted GPU inputs. Reserve capacity to avoid allocations in the
         frame loop. Reading :attr:`id` later waits for the latest handle. If
         you switch back to host handles, refresh any cached handles before use.
+        Passing this object to ``wo.launch`` also reads ``id`` and waits; pass
+        ``device_handle`` to a raygen that reads its handle on the GPU to avoid
+        that wait. Pending handle readback is not allowed during graph capture.
         """
         self._check_open()
         _, stream = resolve(self.device, stream)
@@ -630,6 +637,9 @@ class ClusterAccel:
                 )
             if reallocated:
                 # Nothing else retains the buffers when no instance structure holds this list.
+                # Otherwise keep every generation, even after an IAS rebuild: other IASes
+                # or recorded launches may still use old handles. Geometric growth keeps
+                # retained memory proportional to the peak capacity.
                 if sys.getrefcount(self._memory) <= 2:
                     self._memory = [templates.output]
                 self._memory.extend((build.clas.output, build.gas.output))
@@ -685,6 +695,8 @@ class ClusterAccelBatch:
     read. Order input writes, builds and traversal on one stream or with explicit
     dependencies. Use separate batches for objects with different update rates.
     """
+
+    _has_clusters = True
 
     def __init__(
         self,
@@ -798,6 +810,10 @@ class ClusterAccelBatch:
         """GAS handles in build order, waiting for a pending device readback."""
         self._check_open()
         if self._handle_stream is not None:
+            if self._handle_stream.is_capturing:
+                raise RuntimeError(
+                    "Cannot read ClusterAccelBatch.ids during CUDA graph capture; use device_handles instead"
+                )
             if self._host_handles is None:
                 self._host_handles = wp.empty(len(self.cluster_counts), dtype=wp.uint64, device="cpu", pinned=True)
             wp.copy(self._host_handles, self.device_handles, stream=self._handle_stream)
@@ -959,6 +975,8 @@ class TriangleClusterAccel:
     ``validate=True`` checks the topology on the host once. Pipelines tracing the structure need
     ``clustered_geometry=True``.
     """
+
+    _has_clusters = True
 
     def __init__(
         self,

@@ -330,6 +330,32 @@ def test_async_cluster_rebuild_feeds_gpu_handle_across_capacity_growth(supported
             np.testing.assert_allclose(second.numpy()[:, :2], [[4, 42], [4, 99]])
 
 
+@pytest.mark.parametrize("batched", [False, True])
+def test_pending_cluster_handle_readback_rejects_capture(supported, batched):
+    points = wp.array(grid_points(), dtype=wp.vec3)
+    grids = wp.array([[2, 2]], dtype=wp.vec2i)
+    offsets = wp.array([0], dtype=wp.int32)
+    stream = wp.get_stream()
+    with wo.ClusterTemplates(2) as templates:
+        owner = (
+            wo.ClusterAccelBatch(points, grids, offsets, (1,), templates=templates)
+            if batched
+            else wo.ClusterAccel(points, grids, offsets, templates=templates)
+        )
+        with owner:
+            handles = owner.device_handles if batched else owner.device_handle
+            copied = wp.empty_like(handles)
+            owner.rebuild_async(validate=False, stream=stream)
+            with wp.ScopedCapture(stream=stream) as capture:
+                with pytest.raises(RuntimeError, match="CUDA graph capture; use device_handle"):
+                    _ = owner.ids if batched else owner.id
+                # The rejected host read must leave capture usable for GPU consumers.
+                wp.copy(copied, handles, stream=stream)
+            wp.capture_launch(capture.graph, stream=stream)
+            expected = owner.ids if batched else (owner.id,)
+            np.testing.assert_array_equal(copied.numpy(), expected)
+
+
 def test_cluster_batch_builds_and_rebuilds_instanced_gases(supported, monkeypatch):
     verts = np.array([[x + 4 * c, y, 0] for c in range(3) for y in (-1, 0, 1) for x in (-1, 0, 1)], dtype=np.float32)
     points = wp.array(verts, dtype=wp.vec3)
@@ -672,7 +698,7 @@ def test_cluster_geometry_flags_map_by_name(supported):
     assert _primitive_flags(wo.GeometryFlags.REQUIRE_SINGLE_ANYHIT_CALL) == int(
         n.CLUSTER_ACCEL_PRIMITIVE_FLAG_REQUIRE_SINGLE_ANYHIT_CALL
     )
-    assert _primitive_flags(n.GEOMETRY_FLAG_DISABLE_TRIANGLE_FACE_CULLING) == int(
+    assert _primitive_flags(wo.GeometryFlags.DISABLE_TRIANGLE_FACE_CULLING) == int(
         n.CLUSTER_ACCEL_PRIMITIVE_FLAG_DISABLE_TRIANGLE_FACE_CULLING
     )
     with pytest.raises(ValueError, match="geometry flags"):

@@ -348,10 +348,7 @@ class Pipeline:
 def _check_clustered(pipeline: Pipeline, value) -> None:
     # Without allowClusteredGeometry OptiX silently misses every cluster. Structures passed as
     # objects are checked, also when cluster geometry is nested in instance structures.
-    clusters = isinstance(value, (ClusterAccel, TriangleClusterAccel)) or (
-        isinstance(value, Accel) and value._has_clusters
-    )
-    if clusters and not pipeline._clustered_geometry:
+    if getattr(value, "_has_clusters", False) and not pipeline._clustered_geometry:
         raise ValueError("Tracing ClusterAccel geometry requires a Pipeline created with clustered_geometry=True")
 
 

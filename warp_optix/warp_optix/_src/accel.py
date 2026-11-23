@@ -506,10 +506,7 @@ class Accel:
                     for child in item.instance_children:
                         child._check_open()
                         children[id(child)] = child._memory
-                        has_clusters |= (
-                            isinstance(child, (ClusterAccel, ClusterAccelBatch, TriangleClusterAccel))
-                            or child._has_clusters
-                        )
+                        has_clusters |= child._has_clusters
                         if verified_ids is not None:
                             verified_ids.update(child.ids if isinstance(child, ClusterAccelBatch) else (child.id,))
                     if verified_ids is not None:
