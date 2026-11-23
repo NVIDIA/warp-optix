@@ -249,7 +249,8 @@ class TemplateState:
         grid_args = wp.empty(count, dtype=GridArgs)
         wp.launch(_grid_args, count, inputs=[size, truncate, primitive_flags, grid_args])
         build.build(grid_args)
-        # The arguments and scratch are freed in stream order after the build.
+        # Warp frees on the legacy default stream, which may not wait for the build stream.
+        context.release(lambda buffers=(grid_args, build.scratch): None, (wp.get_stream(),))
         self.output = build.output
         self.handles = build.handles
 
@@ -698,6 +699,7 @@ class ClusterAccelBatch:
             )
             offsets = wp.array(list(accumulate(counts, initial=0)), dtype=wp.uint32)
             wp.launch(_batch_gas_args, len(counts), inputs=[offsets, wp.uint64(self._clas.handles.ptr), self._gas_args])
+            self._context.release(lambda buffer=offsets: None, (stream,))
             self._memory = (state.output, self._clas.output, self._gas.output)
             self._host_handles = None
             self._ids = ()

@@ -3,6 +3,9 @@
 
 """Public cluster API: real traversal, rebuilds, validation and ownership."""
 
+import ctypes
+import weakref
+
 import numpy as np
 import pytest
 import warp as wp
@@ -391,6 +394,52 @@ def test_cluster_batch_rejects_invalid_layout(supported):
         wo.ClusterAccelBatch(points, grids, wp.array([0, 12], dtype=int), (1, 1))
 
 
+def test_cluster_setup_retains_arguments_on_nonblocking_stream(supported, gate, monkeypatch):
+    from warp_optix._src.clusters import _batch_gas_args, _grid_args
+
+    points = wp.array(grid_points(), dtype=wp.vec3)
+    grids = wp.array([[2, 2]], dtype=wp.vec2i)
+    offsets = wp.array([0], dtype=wp.int32)
+    device = points.device
+    # Warm up before holding the stream, since loading Warp kernels can synchronize the device.
+    with wo.ClusterTemplates(2) as templates, wo.ClusterAccelBatch(points, grids, offsets, (1,), templates=templates):
+        wp.synchronize_device(device)
+
+    original_launch = wp.launch
+    arguments = []
+
+    def track_arguments(kernel, *args, **kwargs):
+        if kernel is _grid_args:
+            arguments.append(weakref.ref(kwargs["inputs"][-1]))
+        elif kernel is _batch_gas_args:
+            arguments.append(weakref.ref(kwargs["inputs"][0]))
+        return original_launch(kernel, *args, **kwargs)
+
+    handle = ctypes.c_void_p()
+    with wp.ScopedDevice(device):
+        gate._check(gate._cuda.cuStreamCreate(ctypes.byref(handle), 1))  # CU_STREAM_NON_BLOCKING
+        stream = wp.Stream(device, cuda_stream=handle.value)
+        monkeypatch.setattr(wp, "launch", track_arguments)
+        try:
+            gate.block(stream)
+            with wo.ClusterTemplates(2, stream=stream) as templates:
+                with wo.ClusterAccelBatch(
+                    points, grids, offsets, (1,), templates=templates, validate=False, stream=stream
+                ) as batch:
+                    try:
+                        assert len(arguments) == 2 and all(arg() is not None for arg in arguments)
+                    finally:
+                        gate.open()
+                        wp.synchronize_stream(stream)
+                    assert all(batch.ids)
+        finally:
+            gate.open()
+            wp.synchronize_stream(stream)
+            wo.get_context(device).collect()
+            del stream
+            gate._check(gate._cuda.cuStreamDestroy_v2(handle))
+
+
 def test_cluster_accel_requires_clustered_pipeline_and_unambiguous_templates(supported):
     points = wp.array(grid_points(), dtype=wp.vec3)
     grids = wp.array([[2, 2]], dtype=wp.vec2i)
@@ -510,6 +559,21 @@ def test_triangle_clusters_rebuild_under_a_refit_instance_structure(supported, b
     wo.launch(pipeline, dim=2, inputs=[scene, output])
     np.testing.assert_allclose(output.numpy(), [[1.5, 10.0, 1.0], [1.5, 20.0, 1.0]])
     assert int(accel._gas_handle.numpy()[0]) == accel.id
+
+
+def test_recorded_launch_retains_triangle_cluster_buffers_after_close(supported):
+    points = wp.array([[-1, -1, 0], [1, -1, 0], [0, 1, 0]], dtype=wp.vec3, device="cuda:0")
+    indices = wp.array([0, 1, 2], dtype=wp.int32, device="cuda:0")
+    clusters = wp.array([[0, 3, 0, 1]], dtype=wp.vec4i, device="cuda:0")
+    with wo.TriangleClusterAccel(points, indices, clusters) as accel:
+        with wo.Pipeline(query_grids, clustered_geometry=True, device=points.device) as pipeline:
+            result = wp.empty(1, dtype=wp.vec3, device=points.device)
+            recorded = wo.launch(pipeline, 1, inputs=[accel, result], record_cmd=True)
+            buffers = [weakref.ref(buffer) for buffer in (accel._clas.output, accel._gas_output)]
+            accel.close()
+            assert all(buffer() is not None for buffer in buffers)
+            recorded.launch()
+            np.testing.assert_allclose(result.numpy()[0, :2], [4, 0])
 
 
 @pytest.mark.parametrize("name", ["points", "indices"])

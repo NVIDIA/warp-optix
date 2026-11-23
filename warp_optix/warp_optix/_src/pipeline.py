@@ -429,9 +429,8 @@ class _ParamsStorage:
         if isinstance(value, (Accel, ClusterAccel, TriangleClusterAccel)):
             if value.device != context.device:
                 raise ValueError("Acceleration structure and pipeline must use the same CUDA device")
-            if self.recorded and isinstance(value, ClusterAccel):
-                # A rebuild that grows a cluster structure replaces its buffers unless something
-                # else holds its memory list. Hold it, so that replays never reach freed memory.
+            if self.recorded and isinstance(value, (ClusterAccel, TriangleClusterAccel)):
+                # Keep the buffers behind the packed handle across rebuilds and close().
                 retained = (value, value._memory)
             value = wp.uint64(value.id)
         elif isinstance(value, wp.array):
