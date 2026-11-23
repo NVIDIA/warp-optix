@@ -276,6 +276,18 @@ def test_builtin_spheres_hit_refit_and_compact():
     np.testing.assert_allclose(trace(refit)[:, 0], [-1.0, -1.0, 4.5, 5.75], atol=1e-4)
 
 
+def test_accel_rejects_mixed_sphere_and_triangle_inputs():
+    vertices = wp.array(TRIANGLE_VERTICES, dtype=wp.vec3, device="cuda")
+    indices = wp.array(TRIANGLE_INDICES, dtype=wp.int32, device="cuda")
+    radii = wp.full(1, 0.5, dtype=wp.float32, device="cuda")
+    spheres = wo.spheres(vertices, radii)
+    triangles = wo.triangles(vertices, indices)
+
+    for inputs in ([spheres, triangles], [triangles, spheres]):
+        with pytest.raises(ValueError, match=r"Sphere build inputs cannot be mixed.*instances\(\)"):
+            wo.Accel(inputs)
+
+
 @pytest.mark.parametrize("hold_before_allocation", [True, False])
 def test_aabb_build_on_another_stream_orders_only_its_allocation(gate, hold_before_allocation):
     device = wp.get_device("cuda")

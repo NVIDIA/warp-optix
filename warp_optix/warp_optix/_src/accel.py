@@ -463,7 +463,15 @@ class Accel:
         if not inputs:
             raise ValueError("Accel needs at least one build input")
         context.check_arrays([item.arrays for item in inputs])
-        if motion is not None and isinstance(inputs[0].native, native.SphereArray):
+        native_inputs = [item.native for item in inputs]
+        sphere_type = native.SphereArray
+        sphere_build = isinstance(native_inputs[0], sphere_type)
+        if len(native_inputs) > 1 and any(isinstance(item, sphere_type) != sphere_build for item in native_inputs):
+            raise ValueError(
+                "Sphere build inputs cannot be mixed with other input types in one Accel. "
+                "Build separate acceleration structures and combine them with instances()."
+            )
+        if motion is not None and sphere_build:
             raise ValueError("sphere structures do not support motion")
         flags = int(flags) | (BuildFlags.ALLOW_COMPACTION if compact else 0)
         if flags & BuildFlags.ALLOW_COMPACTION and flags & BuildFlags.ALLOW_UPDATE:
@@ -476,7 +484,6 @@ class Accel:
             return [options] * len(inputs)
 
         options = build_options(native.BUILD_OPERATION_BUILD)
-        native_inputs = [item.native for item in inputs]
         with wp.ScopedDevice(context.device), wp.ScopedStream(stream, sync_enter=False):
             children = {}
             for item in inputs:
