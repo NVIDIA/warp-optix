@@ -65,9 +65,23 @@ Version 0.2.0 was published manually. Do not rebuild or replace its existing whe
 Use an unused version for the next release, for example 0.2.1 or 0.2.1a1.
 
 1. In a release preparation branch, update `[project].version` in `pyproject.toml`
-   and run `uv lock`. Review and merge those changes into `main`. `pyproject.toml`
+   and run `uv lock`. `pyproject.toml`
    is the only place the version is set; `warp_optix.__version__` reads it from
    the installed distribution metadata.
+
+   Preview and assemble the [pending changelog fragments](../changelog/README.md).
+   Replace `VERSION` and `YYYY-MM-DD` with the version and release date.
+
+   ```console
+   uvx --from towncrier==25.8.0 towncrier build --draft --version VERSION --date YYYY-MM-DD
+   uvx --from towncrier==25.8.0 towncrier build --yes --version VERSION --date YYYY-MM-DD
+   git rm --ignore-unmatch "changelog/*.skip"
+   git add -A -- CHANGELOG.md changelog
+   ```
+
+   Towncrier inserts the release below `[Unreleased]` and removes the fragments
+   it rendered. Review the generated notes and fragment removals before merging
+   the release preparation branch into `main`.
 2. Confirm the version is unused on PyPI, then update your local `main`:
 
    ```powershell
