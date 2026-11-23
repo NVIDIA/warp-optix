@@ -20,7 +20,7 @@ from warp_optix._src.enums import GeometryFlags
 
 
 @wp.struct
-class _TemplateArgs:
+class TemplateArgs:
     cluster_id: wp.uint32
     sbt_offset: wp.uint32
     cluster_template: wp.uint64
@@ -30,7 +30,7 @@ class _TemplateArgs:
 
 
 @wp.struct
-class _GridArgs:
+class GridArgs:
     cluster_id: wp.uint32
     flags: wp.uint32
     primitive_info: wp.uint32
@@ -39,21 +39,21 @@ class _GridArgs:
 
 
 @wp.struct
-class _GasArgs:
+class GasArgs:
     count: wp.uint32
     stride: wp.uint32
     handles: wp.uint64
 
 
-for _struct_type, _expected_size in ((_GridArgs, 20), (_TemplateArgs, 32), (_GasArgs, 16)):
+for _struct_type, _expected_size in ((GridArgs, 20), (TemplateArgs, 32), (GasArgs, 16)):
     # Warp's struct decorator installs this ABI descriptor dynamically.
     assert ctypes.sizeof(_struct_type.ctype) == _expected_size  # pyright: ignore[reportAttributeAccessIssue]
 
 
 @wp.kernel(enable_backward=False)
-def _grid_args(size: int, truncate: int, primitive_flags: int, args: wp.array[_GridArgs]):
+def _grid_args(size: int, truncate: int, primitive_flags: int, args: wp.array[GridArgs]):
     i = wp.tid()
-    a = _GridArgs()
+    a = GridArgs()
     a.primitive_info = wp.uint32(primitive_flags) << wp.uint32(29)
     a.truncate = wp.uint32(truncate)
     a.dimensions = wp.uint32(i // size + 1) | (wp.uint32(i % size + 1) << wp.uint32(8))
@@ -61,18 +61,18 @@ def _grid_args(size: int, truncate: int, primitive_flags: int, args: wp.array[_G
 
 
 @wp.kernel(enable_backward=False)
-def _gas_args(count: int, handles: wp.uint64, args: wp.array[_GasArgs]):
-    a = _GasArgs()
+def _gas_args(count: int, handles: wp.uint64, args: wp.array[GasArgs]):
+    a = GasArgs()
     a.count = wp.uint32(count)
     a.handles = handles
     args[0] = a
 
 
 @wp.kernel(enable_backward=False)
-def _batch_gas_args(offsets: wp.array[wp.uint32], handles: wp.uint64, args: wp.array[_GasArgs]):
+def _batch_gas_args(offsets: wp.array[wp.uint32], handles: wp.uint64, args: wp.array[GasArgs]):
     i = wp.tid()
     start = offsets[i]
-    arg = _GasArgs()
+    arg = GasArgs()
     arg.count = offsets[i + 1] - start
     arg.handles = handles + wp.uint64(8) * wp.uint64(start)
     args[i] = arg
@@ -87,11 +87,11 @@ def _pack_args(
     sbt_offsets: wp.array[wp.uint32],
     templates: wp.array[wp.uint64],
     size: int,
-    args: wp.array[_TemplateArgs],
+    args: wp.array[TemplateArgs],
 ):
     i = wp.tid()
     c = grids[i]
-    a = _TemplateArgs()
+    a = TemplateArgs()
     a.cluster_id = wp.uint32(i)
     if ids.shape[0] != 0:
         a.cluster_id = ids[i]
@@ -183,7 +183,7 @@ def _validate_cluster_values(templates, points, grids, offsets, ids, sbt):
         raise ValueError("SBT offsets exceed the templates' max_sbt_index")
 
 
-class _ImplicitBuild:
+class ImplicitBuild:
     """An implicit-destination build whose buffers fit ``capacity`` arguments of ``desc``.
 
     OptiX sizes the output for the worst case, so rebuilds with fewer arguments
@@ -221,7 +221,7 @@ class _ImplicitBuild:
         )
 
 
-class _TemplateState:
+class TemplateState:
     """Device state of a :class:`ClusterTemplates`, shared by the structures instantiating it."""
 
     def __init__(self, size, truncate, max_sbt_index, primitive_flags):
@@ -243,10 +243,10 @@ class _TemplateState:
         self.max_sbt_index = max_sbt_index
         # One template per grid resolution: index (width - 1) * size + (height - 1).
         count = size * size
-        build = _ImplicitBuild(
+        build = ImplicitBuild(
             context, _build_input(n.CLUSTER_ACCEL_BUILD_TYPE_TEMPLATES_FROM_GRIDS, count, size, 0, max_sbt_index), count
         )
-        grid_args = wp.empty(count, dtype=_GridArgs)
+        grid_args = wp.empty(count, dtype=GridArgs)
         wp.launch(_grid_args, count, inputs=[size, truncate, primitive_flags, grid_args])
         build.build(grid_args)
         # The arguments and scratch are freed in stream order after the build.
@@ -254,12 +254,12 @@ class _TemplateState:
         self.handles = build.handles
 
 
-class _ClusterBuild:
+class ClusterBuild:
     """CLAS and GAS buffers for up to ``capacity`` clusters."""
 
     def __init__(self, context, templates, capacity, gas_handles):
         self.capacity = capacity
-        self.clas = _ImplicitBuild(
+        self.clas = ImplicitBuild(
             context,
             _build_input(
                 n.CLUSTER_ACCEL_BUILD_TYPE_CLUSTERS_FROM_TEMPLATES,
@@ -270,12 +270,12 @@ class _ClusterBuild:
             ),
             capacity,
         )
-        self.gas = _ImplicitBuild(
+        self.gas = ImplicitBuild(
             context, _build_input(n.CLUSTER_ACCEL_BUILD_TYPE_GASES_FROM_CLUSTERS, capacity), 1, handles=gas_handles
         )
-        self.args = wp.empty(capacity, dtype=_TemplateArgs)
+        self.args = wp.empty(capacity, dtype=TemplateArgs)
         self.count = wp.empty(1, dtype=wp.uint32)
-        self.gas_args = wp.empty(1, dtype=_GasArgs)
+        self.gas_args = wp.empty(1, dtype=GasArgs)
 
 
 def cluster_capabilities(device: wp.DeviceLike = None) -> dict[str, int]:
@@ -321,7 +321,7 @@ class ClusterTemplates:
         self.position_truncate_bits = position_truncate_bits
         self.max_sbt_index = max_sbt_index
         with wp.ScopedDevice(self.device), wp.ScopedStream(stream, sync_enter=False):
-            self._state = _TemplateState(max_edge_segments, position_truncate_bits, max_sbt_index, primitive_flags)
+            self._state = TemplateState(max_edge_segments, position_truncate_bits, max_sbt_index, primitive_flags)
             self._ready = stream.record_event()
         self.capabilities = self._state.capabilities
         self._closed = False
@@ -576,7 +576,7 @@ class ClusterAccel:
                 else:
                     # Grow geometrically, so that incremental growth reallocates rarely.
                     capacity = min(max(count, build.capacity * 3 // 2), limit)
-                build = _ClusterBuild(self._context, templates, capacity, self._device_handle)
+                build = ClusterBuild(self._context, templates, capacity, self._device_handle)
             wp.launch(
                 _pack_args,
                 count,
@@ -673,9 +673,9 @@ class ClusterAccelBatch:
             self._cluster_counts = counts
             self._inputs: tuple[wp.array, ...] = (points, grid_sizes, vertex_offsets, ids, sbt)
             self._templates = state
-            self._args = wp.empty(count, dtype=_TemplateArgs)
-            self._gas_args = wp.empty(len(counts), dtype=_GasArgs)
-            self._clas = _ImplicitBuild(
+            self._args = wp.empty(count, dtype=TemplateArgs)
+            self._gas_args = wp.empty(len(counts), dtype=GasArgs)
+            self._clas = ImplicitBuild(
                 self._context,
                 _build_input(
                     n.CLUSTER_ACCEL_BUILD_TYPE_CLUSTERS_FROM_TEMPLATES,
@@ -686,7 +686,7 @@ class ClusterAccelBatch:
                 ),
                 count,
             )
-            self._gas = _ImplicitBuild(
+            self._gas = ImplicitBuild(
                 self._context,
                 _build_input(
                     n.CLUSTER_ACCEL_BUILD_TYPE_GASES_FROM_CLUSTERS,
@@ -805,6 +805,251 @@ class ClusterAccelBatch:
         self._handle_stream = self._host_handles = None
 
     def __enter__(self) -> ClusterAccelBatch:
+        self._check_open()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+@wp.struct
+class TriangleArgs:
+    """``OptixClusterAccelBuildInputTrianglesArgs``, with its bitfields packed into words."""
+
+    cluster_id: wp.uint32
+    cluster_flags: wp.uint32
+    counts: wp.uint32  # triangleCount:9, vertexCount:9, positionTruncateBitCount:6, indexFormat:4, ommIndexFormat:4
+    primitive_info: wp.uint32  # sbtIndex:24, reserved:5, primitiveFlags:3
+    strides: wp.vec2ui  # 0: natural strides
+    indices: wp.uint64
+    vertices: wp.uint64
+    primitive_info_buffer: wp.uint64
+    opacity_micromap_array: wp.uint64
+    opacity_micromap_indices: wp.uint64
+    bounding_box_limit: wp.uint64
+
+
+assert ctypes.sizeof(TriangleArgs.ctype) == 72  # pyright: ignore[reportAttributeAccessIssue]
+
+
+@wp.kernel(enable_backward=False)
+def _triangle_args(
+    points: wp.uint64,
+    indices: wp.uint64,
+    clusters: wp.array[wp.vec4i],
+    ids: wp.array[wp.uint32],
+    primitive_flags: int,
+    args: wp.array[TriangleArgs],
+):
+    i = wp.tid()
+    c = clusters[i]
+    a = TriangleArgs()
+    a.cluster_id = wp.uint32(i)
+    if ids.shape[0] != 0:
+        a.cluster_id = ids[i]
+    a.counts = wp.uint32(c[3]) | (wp.uint32(c[1]) << wp.uint32(9)) | (wp.uint32(4) << wp.uint32(24))
+    a.primitive_info = wp.uint32(primitive_flags) << wp.uint32(29)
+    a.indices = indices + wp.uint64(12) * wp.uint64(c[2])
+    a.vertices = points + wp.uint64(12) * wp.uint64(c[0])
+    args[i] = a
+
+
+class TriangleClusterAccel:
+    """An owned GAS over clusters of arbitrary triangles, rebuilt from Warp device arrays.
+
+    ``points`` is a contiguous one-dimensional ``vec3`` array. ``clusters`` is a contiguous
+    one-dimensional array holding one ``vec4i(first_vertex, vertex_count, first_triangle,
+    triangle_count)`` per cluster. ``indices`` holds packed int32 or uint32 vertex triplets
+    local to their cluster:
+    triangle ``t`` of cluster ``c`` uses ``points[c[0] + indices[3 * (c[2] + t) + k]]``. Each
+    cluster holds at most :func:`cluster_capabilities` ``max_vertices`` and ``max_triangles``.
+
+    Every :meth:`rebuild` builds all clusters and their GAS from scratch in two batched OptiX
+    calls, which suits deforming meshes: it is typically faster than refitting an equivalent
+    triangle GAS and keeps full trace quality. Mutate ``points`` in place between rebuilds; the
+    topology stays fixed. The GAS is built into a fixed destination, so :attr:`id` never changes
+    and instance structures over it can be refit after a rebuild. Rebuilds reuse device buffers
+    and run asynchronously. Order point writes, rebuilds, instance refits and traversal on one
+    stream or with explicit stream dependencies.
+
+    Hits report ``cluster_id`` (``cluster_ids[c]``, or ``c`` by default) and the triangle within
+    the cluster as ``primitive_index``. ``flags`` are the geometry flags of every triangle, as in
+    :func:`triangles`; ``build_flags`` is ``BuildFlags.PREFER_FAST_BUILD`` or ``PREFER_FAST_TRACE``.
+    ``validate=True`` checks the topology on the host once. Pipelines tracing the structure need
+    ``clustered_geometry=True``.
+    """
+
+    def __init__(
+        self,
+        points: wp.array[wp.vec3],
+        indices: wp.array,
+        clusters: wp.array[wp.vec4i],
+        *,
+        cluster_ids: wp.array[wp.uint32] | None = None,
+        flags: GeometryFlags = GeometryFlags.DISABLE_ANYHIT,
+        build_flags: int | None = None,
+        validate: bool = True,
+        stream: wp.Stream | None = None,
+    ):
+        from warp_optix._src.enums import BuildFlags
+
+        self._closed = True
+        for name, array, dtypes in (
+            ("points", points, (wp.vec3,)),
+            ("indices", indices, (wp.int32, wp.uint32)),
+            ("clusters", clusters, (wp.vec4i,)),
+            ("cluster_ids", cluster_ids, (wp.uint32,)),
+        ):
+            if name == "cluster_ids" and array is None:
+                continue
+            if not isinstance(array, wp.array) or array.dtype not in dtypes:
+                raise TypeError(f"{name} must be a Warp array with dtype {' or '.join(str(dtype) for dtype in dtypes)}")
+            if name != "indices" and array.ndim != 1:
+                raise ValueError(f"{name} must be one-dimensional")
+            if not array.is_contiguous:
+                raise ValueError(f"{name} must be contiguous")
+        if indices.size % 3:
+            raise ValueError("indices must contain complete vertex triplets")
+        self._context, stream = resolve(points.device, stream)
+        build_flags = BuildFlags.PREFER_FAST_BUILD if build_flags is None else build_flags
+        if build_flags not in (BuildFlags.PREFER_FAST_BUILD, BuildFlags.PREFER_FAST_TRACE):
+            raise ValueError("build_flags must be BuildFlags.PREFER_FAST_BUILD or PREFER_FAST_TRACE")
+        cluster_flags = (
+            n.CLUSTER_ACCEL_BUILD_FLAG_PREFER_FAST_BUILD
+            if build_flags == BuildFlags.PREFER_FAST_BUILD
+            else n.CLUSTER_ACCEL_BUILD_FLAG_PREFER_FAST_TRACE
+        )
+        ids = wp.empty(0, dtype=wp.uint32, device=self.device) if cluster_ids is None else cluster_ids
+        if ids.size not in (0, clusters.size):
+            raise ValueError("cluster_ids must have one entry per cluster")
+        self._context.check_arrays((points, indices, clusters, ids))
+        count = clusters.size
+        props = n.getClusterProperties(self._context.native)
+        if not props["flags"]:
+            raise RuntimeError("The OptiX driver reports no Cluster API support on this device")
+        # Size the build from the topology. Wait for writes on the selected stream
+        # before numpy() reads the arrays back on the CUDA default stream.
+        wp.synchronize_stream(stream)
+        first_vertex, vertex_count, first_triangle, triangle_count = clusters.numpy().astype(np.int64).T
+        if not 0 < count <= props["max_clusters_per_gas"] or min(vertex_count.min(), triangle_count.min()) < 1:
+            raise ValueError("Expected at least one cluster, each with vertices and triangles")
+        if vertex_count.max() > props["max_vertices"] or triangle_count.max() > props["max_triangles"]:
+            raise ValueError(
+                f"A cluster exceeds the device limits of {props['max_vertices']} vertices and "
+                f"{props['max_triangles']} triangles"
+            )
+        if validate:
+            if (
+                first_vertex.min() < 0
+                or (first_vertex + vertex_count).max() > points.size
+                or first_triangle.min() < 0
+                or (first_triangle + triangle_count).max() > indices.size // 3
+            ):
+                raise ValueError("Cluster vertices or triangles lie outside points or indices")
+            if ids.size and np.any(ids.numpy() == 0xFFFFFFFF):
+                raise ValueError("0xFFFFFFFF is reserved as the invalid cluster ID")
+            local = indices.numpy().reshape(-1, 3)
+            # Bound the temporary gathers independently of the mesh size.
+            for start in range(0, count, 4096):
+                batch = slice(start, start + 4096)
+                counts = triangle_count[batch]
+                starts = first_triangle[batch] - (np.cumsum(counts) - counts)
+                rows = np.arange(counts.sum()) + np.repeat(starts, counts)
+                vertices = local[rows]
+                limits = np.repeat(vertex_count[batch].astype(vertices.dtype), counts)
+                if vertices.min() < 0 or np.any(vertices >= limits[:, None]):
+                    raise ValueError("Cluster-local indices lie outside their cluster's vertices")
+
+        with wp.ScopedDevice(self.device), wp.ScopedStream(stream, sync_enter=False):
+            clas = n.ClusterAccelBuildInputTriangles()
+            clas.flags = cluster_flags
+            clas.maxArgCount = count
+            clas.vertexFormat = n.VERTEX_FORMAT_FLOAT3
+            clas.maxUniqueSbtIndexCountPerArg = 1
+            clas.maxTriangleCountPerArg = int(triangle_count.max())
+            clas.maxVertexCountPerArg = int(vertex_count.max())
+            clas.maxTotalTriangleCount = int(triangle_count.sum())
+            clas.maxTotalVertexCount = int(vertex_count.sum())
+            clas_input = n.ClusterAccelBuildInput()
+            clas_input.type = n.CLUSTER_ACCEL_BUILD_TYPE_CLUSTERS_FROM_TRIANGLES
+            clas_input.triangles = clas
+            self._clas = ImplicitBuild(self._context, clas_input, count)
+            self._args = wp.empty(count, dtype=TriangleArgs)
+            wp.launch(
+                _triangle_args,
+                count,
+                inputs=[wp.uint64(points.ptr), wp.uint64(indices.ptr), clusters, ids, _primitive_flags(flags)],
+                outputs=[self._args],
+            )
+            gas = n.ClusterAccelBuildInputClusters()
+            gas.flags = cluster_flags
+            gas.maxArgCount = 1
+            gas.maxTotalClusterCount = count
+            gas.maxClusterCountPerArg = count
+            self._gas_input = n.ClusterAccelBuildInput()
+            self._gas_input.type = n.CLUSTER_ACCEL_BUILD_TYPE_GASES_FROM_CLUSTERS
+            self._gas_input.clusters = gas
+            # An explicit destination keeps the GAS, and so its handle, at one address.
+            output, scratch = n.clusterAccelComputeMemoryUsage(
+                self._context.native, n.CLUSTER_ACCEL_BUILD_MODE_EXPLICIT_DESTINATIONS, self._gas_input
+            )
+            self._gas_output = wp.empty(output, dtype=wp.uint8)
+            self._gas_scratch = wp.empty(scratch, dtype=wp.uint8)
+            self._gas_destination = wp.array([self._gas_output.ptr], dtype=wp.uint64)
+            self._gas_handle = wp.empty(1, dtype=wp.uint64)
+            self._gas_args = wp.empty(1, dtype=GasArgs)
+            wp.launch(_gas_args, 1, inputs=[count, wp.uint64(self._clas.handles.ptr), self._gas_args])
+            # Instance structures retain this tuple, so the geometry outlives this owner.
+            self._memory = (points, indices, self._clas.output, self._gas_output)
+            self._closed = False
+            self.rebuild(stream)
+            host_handle = wp.empty(1, dtype=wp.uint64, device="cpu", pinned=True)
+            wp.copy(host_handle, self._gas_handle, stream=stream)
+            wp.synchronize_stream(stream)
+            self._id = int(host_handle.numpy()[0])
+
+    @property
+    def device(self) -> wp.Device:
+        return self._context.device
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @property
+    def id(self) -> int:
+        """Traversable handle of the GAS; it stays the same across rebuilds."""
+        self._check_open()
+        return self._id
+
+    def _check_open(self) -> None:
+        if self.closed:
+            raise RuntimeError("TriangleClusterAccel is closed")
+
+    def rebuild(self, stream: wp.Stream | None = None) -> None:
+        """Rebuild every cluster and the GAS from the current ``points``."""
+        self._check_open()
+        _, stream = resolve(self.device, stream)
+        with wp.ScopedDevice(self.device), wp.ScopedStream(stream, sync_enter=False):
+            self._clas.build(self._args)
+            dest = n.ClusterAccelBuildModeDescExplicitDest()
+            dest.tempBuffer = self._gas_scratch.ptr
+            dest.tempBufferSizeInBytes = self._gas_scratch.size
+            dest.destAddressesBuffer = self._gas_destination.ptr
+            dest.outputHandlesBuffer = self._gas_handle.ptr
+            mode = n.ClusterAccelBuildModeDesc()
+            mode.mode = n.CLUSTER_ACCEL_BUILD_MODE_EXPLICIT_DESTINATIONS
+            mode.explicitDest = dest
+            n.clusterAccelBuild(self._context.native, stream.cuda_stream, mode, self._gas_input, self._gas_args.ptr)
+
+    def close(self) -> None:
+        """Release this owner. Instance structures over it retain the geometry."""
+        self._closed = True
+        self._memory = ()
+        self._clas = self._args = self._gas_args = self._gas_output = self._gas_scratch = None
+        self._gas_destination = self._gas_handle = self._gas_input = None
+
+    def __enter__(self) -> TriangleClusterAccel:
         self._check_open()
         return self
 

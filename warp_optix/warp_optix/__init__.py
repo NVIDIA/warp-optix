@@ -34,6 +34,7 @@ from warp_optix._src.accel import triangles as triangles
 from warp_optix._src.clusters import ClusterAccel as ClusterAccel
 from warp_optix._src.clusters import ClusterAccelBatch as ClusterAccelBatch
 from warp_optix._src.clusters import ClusterTemplates as ClusterTemplates
+from warp_optix._src.clusters import TriangleClusterAccel as TriangleClusterAccel
 from warp_optix._src.clusters import cluster_capabilities as cluster_capabilities
 from warp_optix._src.context import get_context as get_context
 from warp_optix._src.enums import BuildFlags as BuildFlags
@@ -78,6 +79,7 @@ __all__ = [
     "RayFlags",
     "Record",
     "SbtLayout",
+    "TriangleClusterAccel",
     "TraversableGraphFlags",
     "aabbs",
     "compact",

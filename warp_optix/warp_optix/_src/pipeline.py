@@ -22,7 +22,7 @@ from warp._src import context as _warp_context
 from warp_optix import native
 from warp_optix._src.accel import Accel
 from warp_optix._src.addon import build_options
-from warp_optix._src.clusters import ClusterAccel
+from warp_optix._src.clusters import ClusterAccel, TriangleClusterAccel
 from warp_optix._src.context import CAPTURE_ERROR, native_objects, resolve
 from warp_optix._src.enums import ExceptionFlags, PrimitiveType, TraversableGraphFlags
 from warp_optix._src.program import ProgramKind, as_program, params_struct
@@ -347,7 +347,9 @@ class Pipeline:
 def _check_clustered(pipeline: Pipeline, value) -> None:
     # Without allowClusteredGeometry OptiX silently misses every cluster. Structures passed as
     # objects are checked, also when cluster geometry is nested in instance structures.
-    clusters = isinstance(value, ClusterAccel) or (isinstance(value, Accel) and value._has_clusters)
+    clusters = isinstance(value, (ClusterAccel, TriangleClusterAccel)) or (
+        isinstance(value, Accel) and value._has_clusters
+    )
     if clusters and not pipeline._clustered_geometry:
         raise ValueError("Tracing ClusterAccel geometry requires a Pipeline created with clustered_geometry=True")
 
@@ -423,7 +425,7 @@ class _ParamsStorage:
     def set(self, context, name: str, value) -> None:
         """Set one parameter; acceleration structures are passed as ids and retained."""
         retained = value
-        if isinstance(value, (Accel, ClusterAccel)):
+        if isinstance(value, (Accel, ClusterAccel, TriangleClusterAccel)):
             if value.device != context.device:
                 raise ValueError("Acceleration structure and pipeline must use the same CUDA device")
             if self.recorded and isinstance(value, ClusterAccel):
