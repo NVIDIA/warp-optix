@@ -11,7 +11,7 @@ from zlib import decompress
 import numpy as np
 import warp as wp
 
-from warp_optix._src.texture_coefficients import decode, read_index, read_record
+from warp_optix._src.texture_coefficients import ANALYTIC_MATERIALS, decode, read_index, read_record
 
 __all__ = ["bake", "bake_gltf", "brick", "marble", "reference_ids", "reference_maps", "wood"]
 
@@ -121,6 +121,219 @@ def _srgb_to_linear(value: float) -> float:
     if value <= 0.04045:
         return value / 12.92
     return wp.pow((value + 0.055) / 1.055, 2.4)
+
+
+@wp.func
+def _surface_noise(seed: int, uv: wp.vec2, nx: int, ny: int):
+    return wp.pnoise(wp.rand_init(seed), wp.vec2(uv[0] * float(nx), uv[1] * float(ny)), nx, ny)
+
+
+@wp.func
+def _wood_surface(uv: wp.vec2, seed: int, style: int, resolution: float):
+    # A longitudinal cut through growth rings. Elliptical knots bend the
+    # surrounding fibers, and expose end grain near their centers.
+    warp_y = 0.014 * _surface_noise(seed, uv, 3, 5)
+    if style == 2:
+        warp_y *= 3.0
+    p = wp.vec2(uv[0], uv[1] + warp_y)
+    cells = wp.vec2(2.0 * p[0], 4.0 * p[1])
+    ix = int(wp.floor(cells[0]))
+    iy = int(wp.floor(cells[1]))
+    state = wp.rand_init(seed + 17, (ix & 1) + 2 * (iy & 3))
+    center = wp.vec2(wp.randf(state, 0.26, 0.74), wp.randf(state, 0.30, 0.70))
+    delta = cells - wp.vec2(float(ix), float(iy)) - center
+    radius = wp.length(wp.vec2(delta[0] * 4.8, delta[1] * 3.7))
+    influence = 1.0 - wp.smoothstep(0.12, 1.0, radius)
+    if style == 0:
+        influence *= 0.23
+    p += wp.vec2(0.0, 0.09 * delta[1] * influence)
+    annual = 42.0 * p[1] + 0.72 * _surface_noise(seed + 2, p, 3, 17)
+    if style == 2:
+        # Flatsawn cuts cross a curved ring surface and expose nested arches.
+        u = wp.sin(wp.PI * (p[0] + 0.15))
+        v = wp.sin(2.0 * wp.PI * (p[1] + 0.08))
+        annual = 23.0 * wp.sqrt(0.014 + v * v + 0.44 * u * u) + 2.4 * _surface_noise(seed + 3, p, 3, 4)
+    band = 0.5 + 0.5 * wp.cos(2.0 * wp.PI * annual)
+    latewood = band * band * band * band
+    fiber = _surface_noise(seed + 5, p, 21, 360) * wp.smoothstep(180.0, 720.0, resolution)
+    pores = _surface_noise(seed + 6, p, 97, 970) * wp.smoothstep(485.0, 1940.0, resolution)
+    knot = influence * (1.0 - wp.smoothstep(0.11, 0.31, radius))
+    knot_ring = wp.sin(78.0 * radius + 2.1 * fiber) * knot
+    tone = 0.029 - 0.075 * latewood + 0.048 * fiber + 0.036 * pores - 0.24 * knot + 0.057 * knot_ring
+    # Split earlywood into thin uneven fiber bundles; elongated open pores
+    # break the smooth bands where the cut exposes vessel openings.
+    strand = 0.5 + 0.5 * wp.cos(2.0 * wp.PI * (annual * 7.0 + 0.84 * _surface_noise(seed + 8, p, 9, 91)))
+    cut = wp.smoothstep(0.26, 0.57, _surface_noise(seed + 9, p, 141, 811))
+    micro = (0.042 * strand ** 5.0 + 0.072 * cut) * wp.smoothstep(300.0, 1300.0, resolution)
+    tone -= micro
+    tone += 0.038 * _surface_noise(seed + 10, p, 3, 29)
+    relief = 0.53 - 0.30 * micro - 0.032 * latewood + 0.023 * fiber + 0.015 * pores - 0.10 * knot + 0.02 * knot_ring
+    base = wp.vec3(0.65, 0.52, 0.37)
+    if style == 1:
+        base = wp.vec3(0.54, 0.42, 0.31)
+    elif style == 2:
+        base = wp.vec3(0.56, 0.45, 0.34)
+    return base + wp.vec3(tone, 0.90 * tone, 0.74 * tone), relief, (0.765 if style == 2 else 0.80) - 0.64 * tone, 1.0
+
+
+@wp.func
+def _paver_surface(uv: wp.vec2, seed: int, resolution: float):
+    # Distort a staggered grid before evaluating the signed stone boundary.
+    # Its chipped rim stays continuous across all five maps.
+    bend = _surface_noise(seed, uv, 5, 5)
+    chip = _surface_noise(seed + 7, uv, 84, 62)
+    fine = _surface_noise(seed + 8, uv, 360, 210) * wp.smoothstep(180.0, 720.0, resolution)
+    grit = _surface_noise(seed + 9, uv, 950, 650) * wp.smoothstep(475.0, 1900.0, resolution)
+    y = 15.0 * uv[1] + 0.57 * bend + 0.16 * _surface_noise(seed + 2, uv, 26, 13)
+    row = int(wp.floor(y))
+    r = wp.rand_init(seed + 19, (row % 15 + 15) % 15)
+    x = 20.0 * uv[0] + wp.randf(r) + 0.64 * _surface_noise(seed + 1, uv, 8, 7)
+    x += 0.29 * _surface_noise(seed + 3, uv, 17, 6)
+    col = int(wp.floor(x))
+    stone = wp.rand_init(seed + 31, ((col % 20 + 20) % 20) + 20 * ((row % 15 + 15) % 15))
+    tint = wp.randf(stone, -0.062, 0.062)
+    radius = wp.randf(stone, 0.09, 0.21)
+    q = wp.vec2(wp.abs(x - wp.floor(x) - 0.5) - 0.47 + radius, wp.abs(y - wp.floor(y) - 0.5) - 0.46 + radius)
+    inside = radius - wp.length(wp.vec2(wp.max(q[0], 0.0), wp.max(q[1], 0.0))) - wp.min(wp.max(q[0], q[1]), 0.0)
+    inside += 0.081 * chip + 0.031 * fine
+    bevel = wp.smoothstep(-0.035, 0.108, inside)
+    face = wp.smoothstep(-0.015, 0.034, inside)
+    mineral = _surface_noise(seed + 4, uv, 51, 42)
+    patina = _surface_noise(seed + 5, uv, 12, 11)
+    moss = wp.smoothstep(-0.12, 0.42, patina + 0.30 * fine)
+    soil = wp.lerp(wp.vec3(0.225, 0.187, 0.131), wp.vec3(0.315, 0.327, 0.135), moss)
+    rock = wp.vec3(0.548, 0.506, 0.391) + wp.vec3(tint + 0.118 * mineral + 0.06 * patina)
+    color = wp.lerp(soil, rock, face) + wp.vec3(0.11 * fine + 0.098 * grit)
+    relief = 0.45 + bevel * (0.25 + tint) + 0.065 * mineral + 0.031 * fine + 0.021 * grit
+    return color, relief, 0.74 - 0.13 * face + 0.09 * fine, 0.72 + 0.26 * bevel
+
+
+@wp.func
+def _concrete_chip(uv: wp.vec2, seed: int, frequency: int, aa: float):
+    grid = uv * float(frequency)
+    cell = wp.vec2(wp.floor(grid[0]), wp.floor(grid[1]))
+    ix = (int(cell[0]) % frequency + frequency) % frequency
+    iy = (int(cell[1]) % frequency + frequency) % frequency
+    rng = wp.rand_init(seed, ix + frequency * iy)
+    radius = wp.randf(rng, 0.08, 0.38)
+    jitter = (0.49 - radius) * wp.vec2(wp.randf(rng, -1.0, 1.0), wp.randf(rng, -1.0, 1.0))
+    q = grid - cell - wp.vec2(0.5) - jitter
+    angle = wp.randf(rng, 0.0, wp.PI)
+    u = wp.cos(angle) * q[0] + wp.sin(angle) * q[1]
+    v = -wp.sin(angle) * q[0] + wp.cos(angle) * q[1]
+    dist = wp.max(wp.abs(u), wp.abs(v * 1.48 + 0.33 * u))
+    dist = wp.max(dist, 0.83 * wp.abs(u - v))
+    mask = 1.0 - wp.smoothstep(radius - aa, radius + aa, dist)
+    pick = wp.randf(rng)
+    pigment = wp.vec3(0.23, 0.215, 0.205)
+    if pick > 0.47:
+        pigment = wp.vec3(0.58, 0.38, 0.23)
+    if pick > 0.72:
+        pigment = wp.vec3(0.87, 0.78, 0.65)
+    return mask, pigment + wp.vec3(wp.randf(rng, -0.06, 0.06))
+
+
+@wp.func
+def _concrete_surface(uv: wp.vec2, seed: int, resolution: float):
+    fleck = _surface_noise(seed, uv, 640, 640) * wp.smoothstep(320.0, 1280.0, resolution)
+    grade = _surface_noise(seed + 18, uv, 86, 99)
+    binder = 0.085 * _surface_noise(seed + 11, uv, 43, 43) + 0.13 * fleck
+    color = wp.vec3(0.355, 0.333, 0.315) + wp.vec3(binder)
+    relief = 0.48 + 0.10 * fleck
+    p = uv + 0.0016 * wp.vec2(_surface_noise(seed + 2, uv, 73, 71), _surface_noise(seed + 3, uv, 71, 73))
+    p += 0.0007 * wp.vec2(fleck, _surface_noise(seed + 26, uv, 280, 280))
+    fracture = wp.abs(_surface_noise(seed + 16, uv, 126, 114))
+    coverage = float(0.0)
+    for scale in range(3):
+        freq = 184 >> scale
+        mask, mineral = _concrete_chip(p, seed + scale * 13, freq, 0.68 * float(freq) / resolution)
+        color = wp.lerp(color, mineral * (0.75 + 0.29 * fracture) + wp.vec3(0.13 * fleck + 0.05 * grade), mask)
+        relief = wp.lerp(relief, 0.56 + 0.05 * fleck, mask)
+        coverage = wp.max(coverage, mask)
+    return color, relief, 0.71 - 0.11 * coverage + 0.10 * fleck, 0.91 + 0.08 * coverage
+
+
+@wp.func
+def _parquet_surface(uv: wp.vec2, seed: int, resolution: float):
+    grid = uv * 10.0
+    cell = wp.vec2(wp.floor(grid[0]), wp.floor(grid[1]))
+    local = grid - cell
+    ix, iy = (int(cell[0]) % 10 + 10) % 10, (int(cell[1]) % 10 + 10) % 10
+    if (ix + iy) % 2 == 1:
+        local = wp.vec2(local[1], local[0])
+    strip = int(wp.floor(local[1] * 7.0))
+    rng = wp.rand_init(seed, ix + 10 * iy + 100 * strip)
+    p = wp.vec2(wp.randf(rng) + local[0] * 0.31, wp.randf(rng) + local[1] * 0.25)
+    color, relief, rough, ao = _wood_surface(p, seed, 0, resolution)
+    shade = wp.randf(rng, -0.083, 0.083)
+    across = local[1] * 7.0 - float(strip)
+    edge = wp.min(wp.min(across, 1.0 - across), 7.0 * wp.min(local[0], 1.0 - local[0]))
+    bevel = wp.smoothstep(0.0, wp.max(0.034, 35.0 / resolution), edge)
+    return (color + wp.vec3(shade + 0.113, shade + 0.035, shade + 0.023)) * (0.76 + 0.24 * bevel), relief - 0.09 * (1.0 - bevel), 0.32 + 0.36 * (rough - 0.80) - 0.13 * shade, ao
+
+
+@wp.func
+def _brick_wall_surface(uv: wp.vec2, seed: int, resolution: float):
+    grade = _surface_noise(seed + 3, uv, 50, 57)
+    sand = _surface_noise(seed + 5, uv, 622, 650) * wp.smoothstep(310.0, 1240.0, resolution)
+    y = uv[1] * 24.0 + 0.037 * grade
+    row = int(wp.floor(y))
+    x = uv[0] * 8.0 + 0.5 * float(row & 1) + 0.027 * grade
+    col = int(wp.floor(x))
+    rng = wp.rand_init(seed, (col % 8 + 8) % 8 + 8 * ((row % 24 + 24) % 24))
+    fx, fy = x - wp.floor(x), y - wp.floor(y)
+    joint = wp.min(3.0 * wp.min(fx, 1.0 - fx), wp.min(fy, 1.0 - fy)) + 0.025 * sand
+    face = wp.smoothstep(0.052, 0.052 + wp.max(0.018, 16.0 / resolution), joint)
+    bevel = wp.smoothstep(0.04, 0.12, joint)
+    pigment = wp.randf(rng, -0.085, 0.085) + 0.091 * grade
+    clay = wp.vec3(0.58, 0.305, 0.212) + wp.vec3(pigment, 0.76 * pigment, 0.55 * pigment)
+    scorch = _surface_noise(seed + 18, uv, 22, 47) + 0.40 * grade
+    inclusions = wp.smoothstep(0.25, 0.60, grade + 0.72 * sand)
+    clay += wp.vec3(0.12, 0.083, 0.052) * scorch - wp.vec3(0.13) * inclusions
+    color = wp.lerp(wp.vec3(0.68, 0.63, 0.55), clay, face) + wp.vec3(0.087 * sand)
+    return color, 0.45 + 0.22 * bevel + 0.04 * grade + 0.027 * sand, 0.77 - 0.17 * face + 0.06 * sand, 0.79 + 0.2 * bevel
+
+
+
+@wp.func
+def _analytic_surface(uv: wp.vec2, seed: int, style: int, resolution: float):
+    if style == 4:
+        return _concrete_surface(uv, seed, resolution)
+    if style == 5:
+        return _parquet_surface(uv, seed, resolution)
+    if style == 6:
+        return _brick_wall_surface(uv, seed, resolution)
+    if style == 3:
+        return _paver_surface(uv, seed, resolution)
+    return _wood_surface(uv, seed, style, resolution)
+
+
+@wp.kernel
+def _bake_surface(style: int, channel: int, seed: int, image: wp.array2d(dtype=wp.vec3)):
+    row, col = wp.tid()
+    h, w = image.shape[0], image.shape[1]
+    uv = _texel_uv(row, col, h, w)
+    resolution = float(wp.min(h, w))
+    color, height, roughness, ao = _analytic_surface(uv, seed, style, resolution)
+    result = wp.vec3(height)
+    if channel == 0:
+        result = wp.vec3(_srgb_to_linear(color[0]), _srgb_to_linear(color[1]), _srgb_to_linear(color[2]))
+    elif channel == 2:
+        result = wp.vec3(roughness)
+    elif channel == 4:
+        result = wp.vec3(ao)
+    image[row, col] = wp.vec3(wp.clamp(result[0], 0.0, 1.0), wp.clamp(result[1], 0.0, 1.0), wp.clamp(result[2], 0.0, 1.0))
+
+
+
+@wp.kernel
+def _height_normals(height: wp.array2d(dtype=wp.vec3), strength: float, image: wp.array2d(dtype=wp.vec3)):
+    row, col = wp.tid()
+    h, w = height.shape[0], height.shape[1]
+    dx = height[row, (col + w - 1) % w][0] - height[row, (col + 1) % w][0]
+    dy = height[(row + 1) % h, col][0] - height[(row + h - 1) % h, col][0]
+    n = wp.normalize(wp.vec3(strength * float(w) * dx, strength * float(h) * dy, 1.0))
+    image[row, col] = 0.5 * n + wp.vec3(0.5)
 
 
 @wp.func
@@ -429,6 +642,21 @@ def bake(
     height, width = shape
     if height < 1 or width < 1:
         raise ValueError("Texture dimensions must be positive.")
+    if material in ANALYTIC_MATERIALS:
+        if map_type not in INDEX[material]:
+            raise KeyError(map_type)
+        channel = ("color", "normal", "roughness", "displacement", "occlusion").index(map_type)
+        state = 173 if seed is None else int(np.random.default_rng(seed).integers(1, 1 << 30))
+        image = wp.empty(shape, dtype=wp.vec3, device=device)
+        style = ANALYTIC_MATERIALS.index(material)
+        wp.launch(_bake_surface, dim=shape, inputs=[style, channel, state], outputs=[image], device=image.device)
+        if channel == 1:
+            normal = wp.empty_like(image)
+            # Match the slope amplitude of the reference NormalGL map.
+            strength = (0.0009, 0.0008, 0.0007, 0.004, 0.0032, 0.00028, 0.003)[style]
+            wp.launch(_height_normals, dim=shape, inputs=[image, strength], outputs=[normal], device=image.device)
+            return normal
+        return image
     field, _ = _field(material, map_type)
     resolution = min(height, width)
     while field.shape[0] > 2 * resolution:

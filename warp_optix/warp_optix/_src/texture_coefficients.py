@@ -10,6 +10,8 @@ from zlib import decompress
 
 import numpy as np
 
+ANALYTIC_MATERIALS = ("Wood097", "Wood098", "Wood099", "PavingStones153", "Concrete049", "WoodFloor071", "Bricks101")
+
 LEVELS = 3
 
 

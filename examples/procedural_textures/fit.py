@@ -13,7 +13,7 @@ from zlib import compress
 
 import numpy as np
 from PIL import Image
-from warp_optix._src.texture_coefficients import LEVELS, decode, quantize_bands
+from warp_optix._src.texture_coefficients import ANALYTIC_MATERIALS, LEVELS, decode, quantize_bands
 
 MAPS = ("color", "normal", "roughness", "displacement", "occlusion", "metalness", "opacity")
 REQUIRED = MAPS[:4]
@@ -206,7 +206,7 @@ def main():
             paths = sorted(args.high_resolution_maps.glob(pattern)) if args.high_resolution_maps else []
             paths = paths or sorted(args.maps.glob(pattern))
             if paths:
-                result[kind] = fit_map(paths[0], kind)
+                result[kind] = None if asset in ANALYTIC_MATERIALS else fit_map(paths[0], kind)
             elif kind in REQUIRED:
                 raise FileNotFoundError(f"No {kind} map for {asset}")
         return result
@@ -214,10 +214,10 @@ def main():
     with ThreadPoolExecutor(max_workers=8) as pool:
         options = dict(zip(ids, pool.map(fit_material, ids), strict=True))
     fitted = allocate(
-        {(asset, kind): models for asset, maps in options.items() for kind, models in maps.items()},
+        {(asset, kind): models for asset, maps in options.items() for kind, models in maps.items() if models is not None},
         int(args.budget_mib * 1024**2),
     )
-    assets = {asset: {kind: fitted[asset, kind] for kind in maps} for asset, maps in options.items()}
+    assets = {asset: {kind: fitted.get((asset, kind), b"") for kind in maps} for asset, maps in options.items()}
     write_coefficients(assets, args.output)
 
 

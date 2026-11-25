@@ -12,14 +12,14 @@ from zlib import compress
 import numpy as np
 from fit import _resize, write_coefficients
 from PIL import Image
-from warp_optix._src.texture_coefficients import decode, read_index, read_record
+from warp_optix._src.texture_coefficients import ANALYTIC_MATERIALS, decode, read_index, read_record
 
 DETAIL_MAPS = ("color", "normal", "roughness", "displacement")
 PATCH = 16
 OVERLAP = 4
 ENVELOPE = 8
 STRUCTURED = ("WoodFloor", "Planks", "Bricks", "PavingStones", "Tiles", "Fabric", "Road", "Marble", "Metal")
-LAYOUTS = {"WoodFloor071": 1, "Fabric004": 2}
+LAYOUTS = {"Fabric004": 2}
 
 
 def _open_map(path, kind):
@@ -101,25 +101,10 @@ def _edge_correction(image, model, kind):
 
 
 def _fit_layout(image, kind, layout):
-    if layout == 1:
-        pixels = np.asarray(_resize(image, 1680), dtype=np.float32)
-        if pixels.ndim == 2:
-            pixels = pixels[..., None]
-        values = []
-        for y in range(10):
-            for x in range(10):
-                cell = pixels[y * 168 : (y + 1) * 168, x * 168 : (x + 1) * 168]
-                if (x + y) % 2:
-                    cell = cell.swapaxes(0, 1)
-                for board in np.array_split(cell, 7, axis=0):
-                    for row in np.array_split(board[1:-1], 8, axis=0):
-                        values.append([segment.mean(axis=(0, 1)) for segment in np.array_split(row, 8, axis=1)])
-        values = np.asarray(values).reshape(100, 7, 64, -1)
-    else:
-        # Carbon fiber repeats five times per axis. Averaging corresponding
-        # texels fits one high-resolution period and rejects JPEG artifacts.
-        pixels = np.asarray(_resize(image, 960), dtype=np.float32)
-        values = pixels.reshape(5, 192, 5, 192, -1).mean(axis=(0, 2))[None, ...]
+    # Carbon fiber repeats five times per axis. Averaging corresponding
+    # texels fits one high-resolution period and rejects JPEG artifacts.
+    pixels = np.asarray(_resize(image, 960), dtype=np.float32)
+    values = pixels.reshape(5, 192, 5, 192, -1).mean(axis=(0, 2))[None, ...]
     if kind == "normal":
         values = values[..., :2]
     data = np.rint(values).astype(np.uint8)
@@ -128,6 +113,8 @@ def _fit_layout(image, kind, layout):
 
 
 def fit_material(asset, sources, high_sources, model_dir, model_index):
+    if asset in ANALYTIC_MATERIALS:
+        return {}
     images = {}
     for kind in DETAIL_MAPS:
         pattern = f"{asset}_{kind}.*"
@@ -185,7 +172,7 @@ def main():
     if args.existing_detail:
         index = read_index(args.existing_detail)
         assets = {
-            asset: {kind: read_record(args.existing_detail, shards) for kind, shards in index[asset].items()}
+            asset: {kind: read_record(args.existing_detail, shards) for kind, shards in index[asset].items() if asset not in ANALYTIC_MATERIALS}
             for asset in ids
         }
         for asset in LAYOUTS.keys() & assets.keys():

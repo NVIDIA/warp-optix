@@ -75,7 +75,22 @@ Pass a non-negative integer `seed` to either bake call to vary the tile's
 layout and fine detail. Use the same seed for all maps of a material. Omit
 it for the closest match to the reference.
 
-Fitted textures combine localized, compressed coefficients with small,
+Seven materials generate their surface directly from UV coordinates and a seed.
+Wood097, Wood098 and Wood099 use growth rings, knots and pores. WoodFloor071
+orients that grain independently on each parquet strip. PavingStones153 and
+Bricks101 evaluate stone or brick boundaries and recess the joints. Concrete049
+embeds three sizes of mineral aggregate in a cement binder. For these materials
+the same surface features drive color, roughness, displacement and available
+occlusion. Normals come from periodic central differences of the baked height.
+They require no fitted image payload.
+
+For new families, compare the physical feature sizes and palette with the CC0
+reference, then inspect a native-resolution crop and a lit sphere or tile.
+Inspect at least one alternate seed under the same lighting. Check that pores,
+joints and chips appear at the same UVs in every map and that the texture tiles
+at both boundaries.
+
+The other fitted textures combine localized, compressed coefficients with small,
 seamless patches of high-frequency detail sampled from the reference maps.
 Warp applies additional detail bands as the bake resolution goes up, including
 at 2048×2048 and 4096×4096. Sparse corrections retain the positions of hard

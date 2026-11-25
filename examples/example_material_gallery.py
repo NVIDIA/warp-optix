@@ -208,6 +208,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--page", type=int, default=1, help="Initial page, starting at 1.")
     parser.add_argument("--single", action="store_true", help="Inspect one material per page at a larger scale.")
+    parser.add_argument("--materials", nargs="+", metavar="ID", help="Present these materials in the given order.")
     parser.add_argument("--filter", default="", help="Show only material IDs containing this text, e.g. WoodFloor.")
     parser.add_argument("--seed", type=int, help="Initial material variation seed.")
     parser.add_argument("--width", type=int, default=1200)
@@ -220,7 +221,12 @@ def main():
         args.texture_size = 2048 if args.single else 1024
     if min(args.width, args.height, args.texture_size, args.frames) < 1:
         parser.error("width, height, texture size, and frames must be positive")
-    ids = [asset for asset in textures.reference_ids() if args.filter.casefold() in asset.casefold()]
+    available = textures.reference_ids()
+    selected = args.materials or available
+    unknown = set(selected).difference(available)
+    if unknown:
+        parser.error(f"materials unavailable in this installation: {', '.join(sorted(unknown))}")
+    ids = [asset for asset in selected if args.filter.casefold() in asset.casefold()]
     if not ids:
         parser.error(f"no materials match {args.filter!r}")
     page_count = math.ceil(len(ids) / (1 if args.single else PAGE_SIZE))

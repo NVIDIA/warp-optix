@@ -73,11 +73,14 @@ def test_seeded_variants_repeat_and_keep_maps_aligned():
     np.testing.assert_array_equal(a[1][..., :3], (normal * 255.0 + 0.5).astype(np.uint8))
 
 
-def test_seeded_paving_normals_follow_height_slopes():
+@pytest.mark.parametrize("material", ["PavingStones153", "Concrete049", "Wood099", "WoodFloor071", "Bricks101"])
+def test_analytic_normals_follow_seeded_height(material):
+    if material not in textures.reference_ids():
+        pytest.skip("Material requires the full catalog")
     shape = (128, 160)
-    normal = textures.bake("PavingStones153", shape, map_type="normal", device="cpu", seed=17).numpy()
-    height = textures.bake("PavingStones153", shape, map_type="displacement", device="cpu", seed=17).numpy()[..., 0]
+    normal = textures.bake(material, shape, map_type="normal", device="cpu", seed=17).numpy()
+    height = textures.bake(material, shape, map_type="displacement", device="cpu", seed=17).numpy()[..., 0]
     dx = np.roll(height, -1, axis=1) - np.roll(height, 1, axis=1)
     dy = np.roll(height, -1, axis=0) - np.roll(height, 1, axis=0)
-    assert np.corrcoef(-dx.ravel(), normal[..., 0].ravel())[0, 1] > 0.6
-    assert np.corrcoef(dy.ravel(), normal[..., 1].ravel())[0, 1] > 0.6
+    assert np.corrcoef(-dx.ravel(), normal[..., 0].ravel())[0, 1] > 0.99
+    assert np.corrcoef(dy.ravel(), normal[..., 1].ravel())[0, 1] > 0.99
