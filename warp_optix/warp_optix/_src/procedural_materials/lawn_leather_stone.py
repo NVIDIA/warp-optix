@@ -15,46 +15,64 @@ def _noise(uv: wp.vec2, seed: int, nx: int, ny: int):
 
 
 @wp.func
-def _blade_layer(uv: wp.vec2, seed: int, count: int, aa: float):
-    grid = uv * float(count)
+def _blade_layer(
+    uv: wp.vec2, seed: int, count: int, aa: float, direction: float,
+):
+    grid = uv * float(count) - wp.vec2(0.5)
     col, row = int(wp.floor(grid[0])), int(wp.floor(grid[1]))
-    index = (col % count + count) % count + count * ((row % count + count) % count)
-    rng = wp.rand_init(seed, index)
-    center = wp.vec2(wp.randf(rng, 0.35, 0.65), wp.randf(rng, 0.30, 0.70))
-    q = grid - wp.vec2(float(col), float(row)) - center
-    angle = wp.randf(rng, 0.0, wp.pi)
-    forward = wp.vec2(wp.cos(angle), wp.sin(angle))
-    along = wp.dot(q, forward)
-    width = wp.randf(rng, 0.083, 0.165) * wp.clamp(1.0 - 2.4 * along, 0.22, 1.4)
-    cross = wp.abs(wp.dot(q, wp.vec2(-forward[1], forward[0])) + 0.26 * along * along)
-    length = wp.randf(rng, 0.27, 0.40)
-    blade = 1.0 - wp.smoothstep(width - aa, width + aa, cross)
-    blade *= 1.0 - wp.smoothstep(length * 0.78, length, wp.abs(along))
-    return blade, wp.randf(rng)
+    coverage = float(0.0)
+    shade = float(0.5)
+    lift = float(0.0)
+    # Check adjacent cells so a long blade survives crossing its source cell.
+    # Centers stay within 0.16 cells of the lattice and blades reach <0.82.
+    for dy in range(2):
+        for dx in range(2):
+            x, y = col + dx, row + dy
+            index = (x % count + count) % count + count * ((y % count + count) % count)
+            rng = wp.rand_init(seed, index)
+            center = wp.vec2(float(x) + wp.randf(rng, -0.16, 0.16), float(y) + wp.randf(rng, -0.16, 0.16))
+            q = grid - center
+            if wp.dot(q, q) < 0.70:
+                angle = direction + wp.randf(rng, -1.03, 1.03)
+                tangent = wp.vec2(wp.cos(angle), wp.sin(angle))
+                length = wp.randf(rng, 0.40, 0.65)
+                along = wp.dot(q, tangent) / length
+                curl = wp.randf(rng, -0.22, 0.22) * along * along
+                across = wp.dot(q, wp.vec2(-tangent[1], tangent[0])) - curl
+                breadth = wp.randf(rng, 0.088, 0.15)
+                width = breadth * wp.smoothstep(-1.12, -0.52, along) * (1.0 - wp.smoothstep(-0.02, 1.0, along))
+                body = 1.0 - wp.smoothstep(width - aa, width + aa, wp.abs(across))
+                body *= 1.0 - wp.smoothstep(0.86, 1.0, wp.abs(along))
+                if body > coverage:
+                    coverage = body
+                    crown = 1.0 - wp.smoothstep(0.0, breadth, wp.abs(across))
+                    shade = wp.randf(rng) + 0.27 * crown - 0.16 * along
+                    lift = 0.09 + crown * 0.07 - 0.025 * along
+    return coverage, shade, lift
 
 
 @wp.func
 def lawn_surface(uv: wp.vec2, seed: int, resolution: float):
-    worms = _noise(uv, seed, 71, 56)
-    growth = wp.smoothstep(-0.40, 0.43, _noise(uv, seed + 1, 17, 15) + 0.41 * worms)
-    dirt = wp.vec3(0.264, 0.290, 0.113) + wp.vec3(worms * 0.055)
-    color = wp.lerp(dirt, wp.vec3(0.368, 0.477, 0.141), 0.64 + 0.28 * growth)
-    height = 0.52 + 0.077 * worms
-    exposed = float(0.0)
+    patch = _noise(uv, seed, 13, 9)
+    flow = _noise(uv, seed + 1, 24, 19)
+    grain = _noise(uv, seed + 2, 283, 277) * wp.smoothstep(360.0, 1240.0, resolution)
+    color = wp.vec3(0.355, 0.479, 0.140) + wp.vec3(0.070 * patch + 0.038 * grain)
+    height = 0.52 + 0.048 * patch + 0.018 * grain
+    air = float(0.0)
     for band in range(4):
-        frequency = 77 + 43 * band
-        offset = wp.vec2(0.1547 * float(band), -0.2123 * float(band))
-        blade, pick = _blade_layer(uv + offset, seed + 51 * band, frequency, 0.47 * float(frequency) / resolution)
-        gain = wp.smoothstep(float(frequency), 2.8 * float(frequency), resolution)
-        blade *= gain
-        straw = wp.vec3(0.60, 0.58, 0.286)
-        green = wp.vec3(0.336, 0.497, 0.163)
-        pigment = wp.lerp(green, straw, wp.smoothstep(0.76, 1.0, pick))
-        pigment *= 0.75 + 0.29 * growth + 0.33 * pick
+        frequency = 47 + 15 * band
+        offset = wp.vec2(0.1727 * float(band), -0.2131 * float(band))
+        direction = 2.0 * flow + 0.82 * float(band)
+        aa = 0.47 * float(frequency) / resolution
+        blade, shade, lift = _blade_layer(uv + offset, seed + 51 * band, frequency, aa, direction)
+        blade *= wp.smoothstep(2.8 * float(frequency), 7.8 * float(frequency), resolution)
+        dark = wp.vec3(0.295, 0.401, 0.110)
+        light = wp.vec3(0.477, 0.604, 0.209)
+        pigment = wp.lerp(dark, light, wp.clamp(shade, 0.0, 1.0)) + wp.vec3(0.043 * patch + 0.027 * grain)
         color = wp.lerp(color, pigment, blade)
-        height = wp.lerp(height, 0.62 + pick * 0.12 + 0.08 * worms, blade)
-        exposed = wp.max(exposed, blade)
-    return color, height, 0.88 - 0.12 * exposed, 0.85 + 0.15 * exposed, 0.0, 1.0
+        height = wp.lerp(height, 0.48 + lift + 0.035 * patch, blade)
+        air = wp.max(air, blade)
+    return color, height, 0.87 - 0.12 * air, 0.92 + 0.08 * air, 0.0, 1.0
 
 
 @wp.func
@@ -119,3 +137,24 @@ def fractured_marble(uv: wp.vec2, seed: int, resolution: float):
     color = wp.lerp(matrix, wp.vec3(0.408, 0.409, 0.443), partial)
     height = 0.57 + 0.019 * haze - 0.027 * partial + 0.006 * fleck
     return color, height, 0.31 + 0.084 * partial + 0.048 * haze, 1.0, 0.0, 1.0
+
+
+@wp.func
+def lake_ice(uv: wp.vec2, seed: int, resolution: float):
+    drift = wp.vec2(_noise(uv, seed, 6, 7), _noise(uv, seed + 1, 7, 6))
+    shear = wp.vec2(_noise(uv, seed + 2, 25, 21), _noise(uv, seed + 4, 21, 27))
+    warped = uv + 0.062 * drift + 0.013 * shear
+    boundary, unused_tone = _soil_cell(warped, seed + 9, 10)
+    chipped = _noise(uv, seed + 11, 83, 71)
+    inner = (1.0 - wp.smoothstep(0.004, 0.029 + 5.5 / resolution, boundary + 0.013 * chipped))
+    mist = (1.0 - wp.smoothstep(0.016, 0.18, boundary + 0.079 * chipped))
+    surge = _noise(uv, seed + 13, 14, 12)
+    vein = inner * wp.smoothstep(-0.34, 0.27, surge + 0.37 * chipped)
+    cloud = mist * wp.smoothstep(-0.14, 0.25, surge + 0.30 * chipped)
+    frost = _noise(uv, seed + 17, 431, 477) * wp.smoothstep(270.0, 1300.0, resolution)
+    crystals = wp.smoothstep(0.22, 0.59, frost + 0.42 * chipped)
+    dark = wp.vec3(0.205, 0.278, 0.294) + wp.vec3(0.15 * surge + 0.036 * frost)
+    haze = wp.vec3(0.59, 0.66, 0.666) + wp.vec3(0.071 * frost)
+    color = wp.lerp(dark, haze, wp.clamp(0.38 * cloud + 0.71 * vein + 0.27 * crystals, 0.0, 1.0))
+    height = 0.62 - 0.029 * vein + 0.008 * surge + 0.007 * crystals
+    return color, height, 0.17 + 0.135 * cloud + 0.105 * crystals, 1.0, 0.0, 1.0

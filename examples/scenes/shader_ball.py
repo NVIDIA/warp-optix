@@ -100,7 +100,26 @@ def _sample_height(height, uvs):
     return (1 - v) * near + v * far
 
 
-def add_shader_ball(api, x, z, material, graphite, trim, *, height=None):
+def _displaced_normals(positions, indices, base_normals, segments):
+    triangles = positions[indices]
+    face_normals = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+    normals = np.zeros_like(positions)
+    for corner in indices.T:
+        np.add.at(normals, corner, face_normals)
+
+    # The UV seam and poles duplicate vertices. Weld their normal sums
+    # while preserving the independent UVs used for tangent-space sampling.
+    rings = normals.reshape(-1, segments + 1, 3)
+    seam = rings[:, 0] + rings[:, -1]
+    rings[:, 0] = rings[:, -1] = seam
+    radius = np.linalg.norm(positions.reshape(-1, segments + 1, 3)[..., :2], axis=-1)
+    for pole in np.where(radius.max(axis=1) < 1e-8)[0]:
+        rings[pole] = rings[pole, :-1].sum(axis=0)
+    length = np.linalg.norm(normals, axis=1)
+    return np.where(length[:, None] > 1e-12, normals / np.maximum(length[:, None], 1e-12), base_normals)
+
+
+def add_shader_ball(api, x, z, material, graphite, trim, *, height=None, height_scale=0.10, texture_repeats=1):
     """Create the sample face, shell and a neutral metal plinth."""
     axis = np.array((-.27, .23, 1.0))
     axis /= np.linalg.norm(axis)
@@ -123,7 +142,10 @@ def add_shader_ball(api, x, z, material, graphite, trim, *, height=None):
     )
     for profile, planar, shell_tiles, basis, origin, materials in parts:
         displaced = height is not None and (planar or shell_tiles > 0)
-        positions, normals, uvs, indices, bands = _lathe(profile, planar, shell_tiles, 192 if displaced else 96)
+        segments = 192 if displaced else 96
+        positions, normals, uvs, indices, bands = _lathe(profile, planar, shell_tiles, segments)
+        if planar or shell_tiles > 0:
+            uvs = uvs * texture_repeats
         if displaced:
             radius = np.linalg.norm(positions[:, :2], axis=1)
             if planar:
@@ -133,8 +155,9 @@ def add_shader_ball(api, x, z, material, graphite, trim, *, height=None):
                 # remains closed and the two parts meet cleanly.
                 blend_at_bezel = np.clip((_SHELL[0][1] - positions[:, 2]) / 0.055, 0, 1)
                 taper = blend_at_bezel * np.clip(radius / 0.12, 0, 1)
-            offset = 0.15 * taper * (_sample_height(height, uvs) - np.median(height))
+            offset = height_scale * taper * (_sample_height(height, uvs) - np.median(height))
             positions = positions + normals * offset[:, None]
+            normals = _displaced_normals(positions, indices, normals, segments)
         mesh = api.create_mesh(
             positions @ basis + origin, indices, normals=normals @ basis, uvs=uvs,
             material_id=material, material_ids=np.asarray(materials, dtype=np.int32)[bands],

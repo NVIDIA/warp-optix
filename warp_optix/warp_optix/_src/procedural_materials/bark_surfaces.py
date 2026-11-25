@@ -115,6 +115,7 @@ def bark_surface(uv: wp.vec2, seed: int, resolution: float, style: int):
     flake *= wp.smoothstep(0.024 - aa, 0.14 + aa, top - under + 0.15 * splinters)
 
     grain = _bark_noise(warped, seed + 37, 510, 231) * wp.smoothstep(420.0, 1400.0, resolution)
+    splinter_grain = _bark_noise(warped, seed + 71, 307, 103) * wp.smoothstep(240.0, 930.0, resolution)
     grit = _bark_noise(warped, seed + 41, 977, 821) * wp.smoothstep(820.0, 2600.0, resolution)
     timber = _bark_noise(warped, seed + 43, 128, 49) + 0.65 * splinters + 0.42 * fray
     peeling = wp.smoothstep(0.10, 0.27, timber + 0.21 * grain)
@@ -129,7 +130,9 @@ def bark_surface(uv: wp.vec2, seed: int, resolution: float, style: int):
     fresh *= 0.81 + 0.16 * age
     base = wp.lerp(cork, fresh, wp.max(0.68 * peeling, 0.79 * flake * fresh_mask))
     crevice = wp.vec3(0.315, 0.278, 0.214)
-    detail = 0.085 * fray + 0.105 * grain + 0.094 * grit + 0.066 * granules
+    wood_fiber = wp.smoothstep(0.05, 0.36, splinter_grain + 0.30 * fray - 0.22 * peeling)
+    detail = 0.072 * fray + 0.105 * grain + 0.100 * grit + 0.038 * granules - 0.14 * wood_fiber
+    detail += 0.035 * splinter_grain
     height = 0.555 + 0.105 * plate - 0.064 * fissure + 0.022 * peeling
     roughness = 0.643 - 0.066 * plate + 0.101 * fray + 0.047 * grain
     if style == 1:
@@ -151,6 +154,7 @@ def bark_surface(uv: wp.vec2, seed: int, resolution: float, style: int):
     color += wp.vec3(0.025 * broad_pigment * broad_plate)
     # Longer slopes survive texture filtering on a small or distant sample.
     height += 0.10 * broad_plate - 0.072 * broad_split
-    height += 0.027 * splinters + 0.021 * fray + 0.012 * grain + 0.006 * grit + 0.009 * granules
+    height += 0.027 * splinters + 0.017 * fray + 0.010 * grain + 0.005 * grit + 0.009 * granules
+    height -= 0.019 * wood_fiber
     occlusion = 0.985 - 0.30 * fissure - 0.10 * broad_split - 0.048 * (1.0 - plate)
     return color, height, roughness, occlusion

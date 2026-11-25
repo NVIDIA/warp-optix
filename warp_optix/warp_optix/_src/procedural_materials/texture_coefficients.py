@@ -56,7 +56,7 @@ DIRECT_REFERENCES = {
     "SheetMetal002": (-2, ("metalness", "opacity"), 0.0014),
     "TactilePaving004": (-3, ("occlusion",), 0.0028),
     "MetalPlates001": (-4, ("metalness",), 0.0013),
-    "AcousticFoam001": (-5, ("metalness",), 0.00246),
+    "AcousticFoam001": (-5, ("occlusion", "metalness"), 0.0036),
     "Wicker010A": (-6, ("occlusion", "opacity"), 0.00964),
     "Fabric013": (-7, ("opacity",), 0.011),
     "Fabric084": (-8, ("occlusion",), 0.0008),
@@ -81,12 +81,13 @@ DIRECT_REFERENCES = {
     "Fence001": (-27, ("metalness", "opacity"), 0.002),
     "MetalWalkway010": (-28, ("metalness", "opacity"), 0.005),
     "Carpet009": (-29, ("occlusion",), 0.0035),
-    "Foil001": (-30, ("occlusion", "metalness"), 0.015),
+    "Foil001": (-30, ("occlusion", "metalness"), 0.0095),
     "Moss001": (-31, ("occlusion",), 0.0037),
     "Grass005": (-32, ("occlusion",), 0.0012),
     "Leather035A": (-33, ("occlusion",), 0.0016),
     "Onyx015": (-34, (), 0.00035),
     "Marble012": (-35, (), 0.00055),
+    "Ice003": (-36, (), 0.0012),
 }
 
 LEVELS = 3

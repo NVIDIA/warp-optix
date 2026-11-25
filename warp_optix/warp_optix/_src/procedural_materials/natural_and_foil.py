@@ -64,7 +64,7 @@ def _foil(uv: wp.vec2, seed: int, resolution: float):
     heights = 0.496 + 0.201 * broad + 0.222 * angular + 0.101 * fine * small
     brushed = _noise(uv, seed + 59, 193) * wp.smoothstep(230.0, 880.0, resolution)
     color = wp.vec3(0.50 + 0.011 * brushed + 0.0045 * angular)
-    roughness = 0.096 + 0.017 * brushed + 0.010 * fine_edge + 0.006 * edge
+    roughness = 0.111 + 0.017 * brushed + 0.042 * fine_edge + 0.027 * edge
     occlusion = 0.996 - 0.057 * edge * (1.0 - wp.smoothstep(-0.55, 0.15, angular)) - 0.016 * fine_edge
     return color, heights, roughness, occlusion, 1.0, 1.0
 

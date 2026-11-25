@@ -15,7 +15,7 @@ from .bark_surfaces import bark_surface
 from .carbon_fiber import carbon_fiber
 from .functional_surfaces import functional_surface
 from .industrial_surfaces import industrial_surface
-from .lawn_leather_stone import fractured_marble, lawn_surface, leather_panel, onyx_layers
+from .lawn_leather_stone import fractured_marble, lake_ice, lawn_surface, leather_panel, onyx_layers
 from .material_blend import blend_materials
 from .mineral_surfaces import perforated_sheet, riveted_metal, tactile_paving, terrazzo
 from .natural_and_foil import natural_or_foil
@@ -454,8 +454,10 @@ def _surface_maps(
         return leather_panel(uv, seed, resolution)
     elif style == -34:
         return onyx_layers(uv, seed, resolution)
-    else:
+    elif style == -35:
         return fractured_marble(uv, seed, resolution)
+    else:
+        return lake_ice(uv, seed, resolution)
     return color, height, roughness, ao, 0.0, 1.0
 
 
@@ -923,7 +925,7 @@ def _pack_gltf(
 @wp.kernel(enable_backward=False)
 def _bake_packed_surface(
     style: int, seed: int, palette: wp.vec3, contrast: float, base_roughness: float, pattern: float,
-    columns: int, rows: int, has_occlusion: bool,
+    columns: int, rows: int, has_occlusion: bool, color_gain: float,
     relief: wp.array2d(dtype=float), packed: wp.array3d(dtype=wp.vec4ub),
 ):
     row, col = wp.tid()
@@ -934,7 +936,7 @@ def _bake_packed_surface(
     )
     if not has_occlusion:
         ao = 1.0
-    packed[0, row, col] = _rgba8(_linear_color(color), wp.clamp(alpha, 0.0, 1.0))
+    packed[0, row, col] = _rgba8(color_gain * _linear_color(color), wp.clamp(alpha, 0.0, 1.0))
     packed[2, row, col] = _rgba8(wp.vec3(wp.clamp(ao, 0.0, 1.0), wp.clamp(roughness, 0.0, 1.0), metal), 1.0)
     relief[row, col] = wp.clamp(height, 0.0, 1.0)
 
@@ -966,13 +968,18 @@ def bake_gltf(
     a scene, set first_texture_index to the count of textures already present.
     A seed generates a consistent variant across all maps.
     """
-    packed = _bake_gltf_arrays(material, shape, device, seed)
+    # Dark foam occupies only a handful of linear RGBA8 levels. Store its
+    # albedo at a higher scale and compensate with the glTF color factor.
+    color_gain = 8.0 if material == "AcousticFoam001" else 1.0
+    packed = _bake_gltf_arrays(material, shape, device, seed, color_gain=color_gain)
     maps = reference_maps(material)
     kwargs = _gltf_properties(first_texture_index, "occlusion" in maps, "opacity" in maps)
+    if color_gain != 1.0:
+        kwargs["base_color"] = (1.0 / color_gain,) * 3 + (1.0,)
     return list(packed.numpy()), kwargs
 
 
-def _bake_gltf_arrays(material, shape, device, seed):
+def _bake_gltf_arrays(material, shape, device, seed, *, color_gain=1.0):
     maps = reference_maps(material)
 
     def generate(map_type: str) -> wp.array:
@@ -988,7 +995,7 @@ def _bake_gltf_arrays(material, shape, device, seed):
         relief = wp.empty(shape, dtype=float, device=packed.device)
         params, strength = _surface_configuration(material, seed)
         wp.launch(
-            _bake_packed_surface, dim=shape, inputs=[*params, has_occlusion],
+            _bake_packed_surface, dim=shape, inputs=[*params, has_occlusion, color_gain],
             outputs=[relief, packed], device=packed.device,
         )
         wp.launch(_pack_relief_normals, dim=shape, inputs=[relief, strength], outputs=[packed], device=packed.device)

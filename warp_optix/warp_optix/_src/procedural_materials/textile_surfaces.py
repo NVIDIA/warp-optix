@@ -15,17 +15,19 @@ def _fiber_noise(uv: wp.vec2, seed: int, across: int, along: int) -> float:
 
 @wp.func
 def _foam(uv: wp.vec2, seed: int, resolution: float):
-    # The foam has eight full waves along each axis, with peaks alternating
-    # with recesses. The small open cells follow the continuous surface.
-    x = 16.0 * wp.pi * uv[0]
-    y = 16.0 * wp.pi * uv[1]
+    wobble = _fiber_noise(uv, seed + 23, 18, 19)
+    x = 16.0 * wp.pi * uv[0] + 0.08 * wobble
+    y = 16.0 * wp.pi * uv[1] - 0.08 * wobble
     crest = wp.cos(x) * wp.cos(y)
-    pores = _fiber_noise(uv, seed, 419, 407)
-    micro = _fiber_noise(uv, seed + 7, 881, 877)
-    cell = wp.smoothstep(0.07, 0.36, pores + 0.45 * micro) * wp.smoothstep(384.0, 1536.0, resolution)
-    color = wp.vec3(0.117 - 0.024 * cell + 0.007 * micro)
-    height = 0.50 + 0.47 * crest - 0.029 * cell
-    return color, height, 0.875 + 0.028 * cell, 0.94 + 0.055 * crest - 0.08 * cell, 1.0
+    coarse = _fiber_noise(uv, seed + 5, 174, 167)
+    cells = _fiber_noise(uv, seed, 382, 407)
+    micro = _fiber_noise(uv, seed + 7, 822, 877) * wp.smoothstep(450.0, 1570.0, resolution)
+    cavity = wp.smoothstep(0.12, 0.47, cells + 0.48 * coarse + 0.21 * micro)
+    cavity *= wp.smoothstep(270.0, 900.0, resolution)
+    color = wp.vec3(0.121 - 0.043 * cavity + 0.013 * coarse + 0.007 * micro)
+    height = 0.50 + 0.43 * crest - 0.055 * cavity + 0.013 * coarse
+    ao = 0.88 + 0.10 * crest - 0.16 * cavity
+    return color, height, 0.85 + 0.076 * cavity, ao, 1.0
 
 
 @wp.func

@@ -43,23 +43,24 @@ def _rope(uv: wp.vec2, seed: int, resolution: float):
 
 @wp.func
 def _rust(uv: wp.vec2, seed: int, resolution: float):
-    bands = _noise(uv, seed, 17, 5)
-    islands = _noise(uv, seed + 3, 21, 17)
-    runoff = _noise(uv, seed + 7, 84, 14) + 0.32 * _noise(uv, seed + 8, 201, 33)
-    rough_edges = _noise(uv, seed + 9, 165, 236)
-    powder = _noise(uv, seed + 11, 710, 687) * wp.smoothstep(340.0, 1450.0, resolution)
-    scale = 0.55 * bands + 0.69 * islands + 0.32 * runoff + 0.19 * rough_edges
-    fresh = wp.smoothstep(0.049, 0.355, scale + 0.075 * powder)
-    spalls = _noise(uv, seed + 15, 47, 74)
-    pits = wp.smoothstep(0.19, 0.55, -0.61 * rough_edges - 0.82 * spalls - 0.13 * powder + 0.14 * bands)
-    older = wp.vec3(0.326, 0.163, 0.066) + wp.vec3(0.09 * bands + 0.094 * runoff + 0.034 * powder)
-    fresh_oxide = wp.vec3(0.608, 0.247, 0.093) + wp.vec3(0.10 * rough_edges + 0.081 * runoff + 0.08 * powder)
-    color = wp.lerp(older, fresh_oxide, fresh) - wp.vec3(0.113, 0.061, 0.025) * pits
-    height = 0.39 + 0.17 * bands + 0.103 * runoff + 0.063 * islands + 0.095 * fresh - 0.178 * pits
-    height += 0.034 * powder
-    rough = wp.min(1.0, 0.82 + 0.13 * fresh + 0.11 * pits - 0.25 * wp.smoothstep(0.02, 0.42, runoff))
-    metallic = 0.03 + 0.097 * (1.0 - fresh) * wp.smoothstep(-0.19, 0.37, -runoff)
-    return color, height, rough, 1.0 - 0.20 * pits, metallic, 1.0
+    haze = _noise(uv, seed, 21, 19)
+    grain = _noise(uv, seed + 3, 218, 267)
+    flakes = _noise(uv, seed + 5, 85, 109)
+    grit = _noise(uv, seed + 7, 517, 483) * wp.smoothstep(360.0, 1430.0, resolution)
+    scratches = _noise(uv, seed + 13, 223, 27)
+    stain = 0.61 * haze + 0.43 * flakes + 0.34 * grain + 0.25 * grit
+    oxide = wp.smoothstep(-0.06, 0.33, stain + 0.10 * scratches)
+    pale = wp.smoothstep(0.135, 0.43, stain * 0.47 + 0.58 * grit + 0.26 * grain)
+    pit_field = -0.37 * flakes - 0.69 * grain - 0.34 * grit
+    pit = wp.smoothstep(0.13, 0.44, pit_field)
+    dark_scratch = wp.smoothstep(0.36, 0.63, scratches + 0.32 * flakes) * (1.0 - oxide)
+    base = wp.vec3(0.265, 0.137, 0.072) + wp.vec3(0.078 * haze + 0.056 * grain + 0.034 * grit)
+    fresh = wp.vec3(0.463, 0.222, 0.087) + wp.vec3(0.13 * pale + 0.074 * flakes)
+    color = wp.lerp(base, fresh, oxide) - wp.vec3(0.10, 0.065, 0.030) * (0.65 * pit + 0.45 * dark_scratch)
+    height = 0.49 + 0.053 * haze + 0.064 * flakes + 0.041 * grain + 0.023 * grit
+    height += 0.058 * oxide + 0.031 * pale - 0.11 * pit - 0.05 * dark_scratch
+    roughness = 0.84 + 0.078 * oxide + 0.060 * pit - 0.14 * dark_scratch
+    return color, height, roughness, 1.0 - 0.22 * pit, 0.07 * dark_scratch, 1.0
 
 
 @wp.func

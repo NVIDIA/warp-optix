@@ -46,11 +46,11 @@ def carbon_fiber(uv: wp.vec2, seed: int, resolution: float):
     edge = wp.min(across, 1.0 - across)
     end = wp.min(along, 1.0 - along)
     aa = 0.35 * float(count) / wp.max(resolution, 64.0)
-    side_bevel = wp.smoothstep(0.0, 0.051 + aa, edge)
-    end_bevel = wp.smoothstep(0.0, 0.055 + aa, end)
+    side_bevel = wp.smoothstep(0.0, 0.038 + aa, edge)
+    end_bevel = wp.smoothstep(0.0, 0.070 + aa, end)
     contact = side_bevel * end_bevel
     shoulder = 1.0 - wp.pow(2.0 * wp.abs(across - 0.5), 4.0)
-    arch = wp.pow(wp.max(0.0, wp.sin(wp.PI * along)), 0.83)
+    arch = wp.smoothstep(0.0, 0.29, end)
 
     # Individual parallel filaments have a common tangent and slow changes
     # in width. Fade them out below their screen sampling frequency.
@@ -60,17 +60,21 @@ def carbon_fiber(uv: wp.vec2, seed: int, resolution: float):
     filament_id = int(wp.floor(fine))
     strand = wp.rand_init(seed + 53, 41 * width_id + filament_id + 1)
     strand_tone = wp.randf(strand, -0.014, 0.014)
-    micro_filter = wp.smoothstep(950.0, 2350.0, resolution)
+    bundles = 0.5 + 0.5 * wp.cos(2.0 * wp.pi * (12.0 * across + 0.6 * curl))
+    visible_bundle = wp.smoothstep(300.0, 810.0, resolution) * contact * (bundles - 0.5)
+    micro_filter = wp.smoothstep(720.0, 1900.0, resolution)
     strand_mix = micro_filter * contact
     waviness = _fiber_noise(wp.vec2(across, along_u), seed + 67, 23, 62)
     strand_detail = strand_mix * ((filament - 0.5) * 0.013 + strand_tone + 0.014 * waviness)
 
-    height = 0.114 + contact * ((0.276 + loft) * arch + 0.043 * shoulder + 0.15 * strand_detail)
-    tone = 0.129 + contact * (0.047 * arch + 0.020 * shoulder + dye) + strand_detail
+    height = 0.39 + (0.072 + loft) * contact * arch + 0.028 * contact * shoulder
+    height += 0.023 * visible_bundle + 0.18 * strand_detail
+    tone = 0.143 + contact * (0.036 * arch + 0.015 * shoulder + dye) + 0.053 * visible_bundle + strand_detail
     yarn_polish = 0.150
     if not horizontal:
         yarn_polish = 0.303
     roughness = wp.lerp(0.354, yarn_polish + 0.048 * (1.0 - arch), contact)
+    roughness -= 0.045 * visible_bundle
     roughness += strand_mix * (0.030 * (1.0 - filament) + 2.1 * strand_tone)
     occlusion = 0.87 + 0.13 * contact * wp.smoothstep(0.12, 0.83, arch)
     color = wp.vec3(tone * 1.016, tone, tone * 1.074)

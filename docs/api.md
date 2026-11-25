@@ -36,7 +36,7 @@ staggered pattern repeats vertically. Its mortar fraction is measured relative
 to the width or height of a brick cell on each axis.
 
 The `textures.reference_ids()` function lists materials in the current installation.
-Default wheels include eight built-in materials and 45 based on ambientCG references.
+Default wheels include eight built-in materials and 46 based on ambientCG references.
 The source checkout and full-catalog wheel include 263 materials, including 138 from the first batch of the
 [ambientCG popularity listing](https://ambientcg.com/list?type=material%2Cdecal%2Catlas&sort=popular),
 plus 22 selected surfaces such as leather, carbon fiber, diamond plate, cork,
@@ -67,7 +67,9 @@ material_id = scene.materials.add_gltf_material(**material_kwargs)
 
 The helper packs linear color and opacity, tangent-space normals, and glTF's
 occlusion, roughness, and metalness channels into three RGBA8 images. It does
-one readback for all three. For an existing scene, pass
+one readback for all three. Dark foam uses a matching base-color factor
+to preserve albedo detail within RGBA8. Apply the returned material properties
+when displaying its maps. For an existing scene, pass
 `first_texture_index` equal to the current texture count and use
 `scene.set_gltf_textures(images, append=True)`.
 

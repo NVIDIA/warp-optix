@@ -12,7 +12,7 @@ from warp_optix import procedural_textures as textures
 def test_new_material_families_provide_aligned_maps():
     ids = textures.reference_ids()
     assert {"LimewashWall", "WhiteSubwayTile", "GraphiteConcrete"} <= set(ids)
-    if len(ids) == 53:
+    if len(ids) == 54:
         assert {"WoodFloor071", "Fabric004", "Leather037", "Metal064", "Bricks113A", "RoofingTiles013A"} <= set(ids)
         return
     assert len(ids) == 263
@@ -131,3 +131,12 @@ def test_material_mask_preserves_endpoints_and_blends_in_between():
     np.testing.assert_allclose(norm, 1, atol=0.008)
     procedural, _ = textures.bake_layered_gltf(base, overlay, shape, device="cpu", seed=3, height_blend=0.5)
     assert not np.array_equal(procedural[0], maps[0])
+
+
+def test_dark_foam_packs_color_with_sub_byte_precision():
+    shape = (256, 293)
+    images, properties = textures.bake_gltf("AcousticFoam001", shape, device="cpu")
+    actual = images[0][..., :3].astype(np.float32) * (properties["base_color"][0] / 255.0)
+    reference = textures.bake("AcousticFoam001", shape, device="cpu").numpy()
+    np.testing.assert_allclose(actual, reference, atol=0.5 / (8.0 * 255.0) + 1e-7)
+    assert len(np.unique(images[0][..., 0])) > 3

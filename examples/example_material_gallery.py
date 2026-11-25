@@ -25,6 +25,12 @@ PITCH_Z = 3.15
 CAMERA_PITCH = 32.0
 CAMERA_TARGET_Y = 0.49
 CAMERA_DISTANCE = 34.0
+PREVIEW_RELIEF = {
+    "Bark014": (0.10, 0.62),
+    "Bark016": (0.10, 0.62),
+    "AcousticFoam001": (0.052, 0.72),
+}
+
 CONTROLS = "WASD: move   Q/E: down/up   Drag: look   Home: reset   Arrows: browse   V/R: variation/reference"
 
 
@@ -71,8 +77,8 @@ class Gallery:
         api.tonemap_exposure = 0.75
         api.set_use_procedural_sky(True)
         api.set_sky_parameters(
-            (-0.5, 0.76, 0.42), grayscale=1.0, multiplier=0.85, haze=0.22,
-            sun_disk_intensity=0.12, sun_glow_intensity=0.38,
+            (-0.61, 0.60, 0.42), grayscale=1.0, multiplier=0.85, haze=0.18,
+            sun_disk_intensity=0.62, sun_disk_scale=2.3, sun_glow_intensity=0.32,
             ground_color=(0.30, 0.30, 0.30),
         )
         self.resize(api.width, api.height)
@@ -135,12 +141,23 @@ class Gallery:
         trim = self.api.create_pbr_material((0.36, 0.36, 0.36), roughness=0.26, metallic=0.85)
         add_checker_ground(self.api, height=-0.002, size=160)
         for slot, (asset, kwargs) in enumerate(zip(ids, materials, strict=True)):
-            material = scene.materials.add_gltf_material(**kwargs)
             x, z = self.slot_center(slot)
             height = None
-            if asset in ("Bark014", "Bark016"):
-                height = textures.bake(asset, (96, 96), map_type="displacement", device="cuda", seed=seed).numpy()[..., 0]
-            add_shader_ball(self.api, x, z, material, graphite, trim, height=height)
+            height_scale = 0.0
+            if asset in PREVIEW_RELIEF:
+                height_scale, normal_scale = PREVIEW_RELIEF[asset]
+                relief = textures.bake(asset, (256, 256), map_type="displacement", device="cuda", seed=seed)
+                height = relief.numpy()[..., 0].reshape(64, 4, 64, 4).mean(axis=(1, 3))
+                # The mesh already contributes the broad surface slopes.
+                kwargs["normal_texture"]["scale"] = normal_scale
+            material = scene.materials.add_gltf_material(**kwargs)
+            # The carbon twill repeats at a smaller physical scale than most
+            # of the scanned surfaces, so each woven tow stays in proportion.
+            texture_repeats = 2 if asset == "Fabric004" else 1
+            add_shader_ball(
+                self.api, x, z, material, graphite, trim,
+                height=height, height_scale=height_scale, texture_repeats=texture_repeats,
+            )
         scene.add_light_sphere((-4, 6, 5), 1.25, (1.0, 1.0, 1.0), 11.0)
         scene.add_light_sphere((5, 4, -3), 1.4, (1.0, 1.0, 1.0), 8.0)
         self.api.build_scene()
