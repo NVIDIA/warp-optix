@@ -15,15 +15,18 @@ from .bark_surfaces import bark_surface
 from .carbon_fiber import carbon_fiber
 from .chipboard import chipboard
 from .configurable_metals import METAL_MAPS, MetalSurface, bake_metal, pack_metal
+from .construction_surfaces import construction_surface
 from .functional_surfaces import functional_surface
 from .industrial_surfaces import industrial_surface
+from .knotted_softwood import knotted_softwood
 from .lawn_leather_stone import fractured_marble, lake_ice, lawn_surface, leather_panel, onyx_layers
 from .material_blend import blend_materials
 from .mineral_surfaces import perforated_sheet, riveted_metal, tactile_paving, terrazzo
 from .natural_and_foil import natural_or_foil
 from .organic_surfaces import organic_surface
+from .plastic_surfaces import PLASTIC_PRESETS, PlasticSurface, plastic_configuration, plastic_surface
 from .reclaimed_planks import reclaimed_planks
-from .relief import _normal_from_relief
+from .relief import _normal_for_gltf, _normal_from_relief
 from .roof_and_mosaic import roof_or_mosaic
 from .sponge_and_paper import sponge_or_paper
 from .textile_surfaces import textile_surface
@@ -38,7 +41,6 @@ from .texture_coefficients import (
 )
 from .wall_concrete import wall_concrete
 from .weathered_surfaces import weathered_surface
-from .wood096_surface import wood096_surface
 
 __all__ = ["bake", "bake_gltf", "bake_layered_gltf", "brick", "marble", "reference_ids", "reference_maps", "wood"]
 
@@ -441,7 +443,7 @@ def _surface_maps(
     elif style >= -20:
         color, height, roughness, ao = roof_or_mosaic(uv, seed, resolution, -style - 18)
     elif style == -21:
-        color, height, roughness, ao = wood096_surface(uv, seed, resolution)
+        color, height, roughness, ao = knotted_softwood(uv, seed, resolution)
     elif style == -22:
         return carbon_fiber(uv, seed, resolution)
     elif style == -23:
@@ -464,8 +466,12 @@ def _surface_maps(
         return lake_ice(uv, seed, resolution)
     elif style == -37:
         return chipboard(uv, seed, resolution)
-    else:
+    elif style >= -39:
         return sponge_or_paper(uv, seed, resolution, -style - 38)
+    elif style >= -47:
+        return plastic_surface(uv, seed, resolution, -style - 40, palette, base_roughness)
+    else:
+        return construction_surface(uv, seed, resolution, -style - 48)
     return color, height, roughness, ao, 0.0, 1.0
 
 
@@ -737,13 +743,15 @@ def _bake_reference(
 
 def reference_ids() -> tuple[str, ...]:
     """List the ambientCG and built-in material IDs."""
-    return tuple(dict.fromkeys((*INDEX, *BUILTIN_SURFACES, *DIRECT_REFERENCES)))
+    return tuple(dict.fromkeys((*INDEX, *BUILTIN_SURFACES, *DIRECT_REFERENCES, *PLASTIC_PRESETS)))
 
 
-def reference_maps(material: str | MetalSurface) -> tuple[str, ...]:
+def reference_maps(material: str | MetalSurface | PlasticSurface) -> tuple[str, ...]:
     """List the maps available for a material."""
     if isinstance(material, MetalSurface):
         return METAL_MAPS
+    if isinstance(material, PlasticSurface) or material in PLASTIC_PRESETS:
+        return _SURFACE_CHANNELS[:4]
     if material in DIRECT_REFERENCES:
         return (*_SURFACE_CHANNELS[:4], *DIRECT_REFERENCES[material][1])
     if material in BUILTIN_SURFACES:
@@ -809,6 +817,10 @@ def _layout_field(material, map_type):
 
 def _surface_configuration(material, seed):
     state = 173 if seed is None else int(np.random.default_rng(seed).integers(1, 1 << 30))
+    plastic = material if isinstance(material, PlasticSurface) else PLASTIC_PRESETS.get(material)
+    if plastic is not None:
+        style, palette, roughness, strength = plastic_configuration(plastic)
+        return [style, state, wp.vec3(*palette), 0.0, roughness, 0.0, 0, 0], strength
     preset = SURFACE_PRESETS.get(material, ((0.0, 0.0, 0.0), 0.0, 0.0, 0.0))
     palette, contrast, roughness, pattern, *grid = preset
     columns, rows = grid or (0, 0)
@@ -823,8 +835,17 @@ def _surface_configuration(material, seed):
     return [style, state, wp.vec3(*palette), contrast, roughness, pattern, columns, rows], strength
 
 
+def _uses_surface_kernel(material):
+    return (
+        isinstance(material, PlasticSurface)
+        or material in PLASTIC_PRESETS
+        or material in ANALYTIC_MATERIALS
+        or material in DIRECT_REFERENCES
+    )
+
+
 def bake(
-    material: str | MetalSurface,
+    material: str | MetalSurface | PlasticSurface,
     shape: tuple[int, int],
     *,
     map_type: str = "color",
@@ -843,7 +864,7 @@ def bake(
         raise ValueError("Texture dimensions must be positive.")
     if isinstance(material, MetalSurface):
         return bake_metal(material, shape, map_type, device, seed)
-    if material in ANALYTIC_MATERIALS or material in DIRECT_REFERENCES:
+    if _uses_surface_kernel(material):
         if map_type not in reference_maps(material):
             raise KeyError(map_type)
         channel = _SURFACE_CHANNELS.index(map_type)
@@ -932,7 +953,7 @@ def _pack_gltf(
     if has_opacity:
         alpha = opacity[row, col][0]
     packed[0, row, col] = _rgba8(base[row, col], alpha)
-    packed[1, row, col] = _rgba8(normal[row, col], 1.0)
+    packed[1, row, col] = _rgba8(_normal_for_gltf(normal[row, col]), 1.0)
     packed[2, row, col] = _rgba8(wp.vec3(red, rough[row, col][0], blue), 1.0)
 
 
@@ -960,11 +981,12 @@ def _pack_relief_normals(
     relief: wp.array2d(dtype=float), strength: float, packed: wp.array3d(dtype=wp.vec4ub),
 ):
     row, col = wp.tid()
-    packed[1, row, col] = _rgba8(_normal_from_relief(relief, row, col, strength), 1.0)
+    normal = _normal_from_relief(relief, row, col, strength)
+    packed[1, row, col] = _rgba8(_normal_for_gltf(normal), 1.0)
 
 
 def bake_gltf(
-    material: str | MetalSurface,
+    material: str | MetalSurface | PlasticSurface,
     shape: tuple[int, int],
     *,
     device: wp.DeviceLike = None,
@@ -976,7 +998,8 @@ def bake_gltf(
     Pass the textures to Scene.set_gltf_textures without sRGB decoding.
     Pass the keywords to Scene.materials.add_gltf_material. When appending to
     a scene, set first_texture_index to the count of textures already present.
-    A seed generates a consistent variant across all maps.
+    A seed generates a consistent variant across all maps. Packed normals
+    use the mesh UV frame, where positive green points along increasing V.
     """
     # Dark foam occupies only a handful of linear RGBA8 levels. Store its
     # albedo at a higher scale and compensate with the glTF color factor.
@@ -1002,7 +1025,7 @@ def _bake_gltf_arrays(material, shape, device, seed, *, color_gain=1.0):
     has_occlusion = "occlusion" in maps
     has_metal = "metalness" in maps
     has_opacity = "opacity" in maps
-    if material in ANALYTIC_MATERIALS or material in DIRECT_REFERENCES:
+    if _uses_surface_kernel(material):
         if min(shape) < 1:
             raise ValueError("Texture dimensions must be positive.")
         packed = wp.empty((3, *shape), dtype=wp.vec4ub, device=device)
@@ -1051,8 +1074,8 @@ def _gltf_properties(first_texture_index, has_occlusion, has_opacity):
     return kwargs
 
 def bake_layered_gltf(
-    base: str | MetalSurface,
-    overlay: str | MetalSurface,
+    base: str | MetalSurface | PlasticSurface,
+    overlay: str | MetalSurface | PlasticSurface,
     shape: tuple[int, int],
     *,
     mask: np.ndarray | wp.array | None = None,

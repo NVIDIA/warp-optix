@@ -47,14 +47,15 @@ Common options: `--width`, `--height`, `--denoiser {auto,optix,none}`, `--exposu
 
 ### Procedural material gallery
 
-[`example_material_gallery.py`](example_material_gallery.py) shows eight materials
-per page. Each material is path traced on the same UV sphere and flat tile under
-studio lighting, so you can compare its highlights and surface pattern. The
-gallery generates its own geometry and textures.
+[`example_material_gallery.py`](example_material_gallery.py) shows 45
+representative materials on procedural shader balls over a checkerboard floor.
+The path tracer uses neutral sky and directional lighting so you can compare
+the highlights and surface detail.
 
 ```bash
 uv run --extra pathtracing python examples/example_material_gallery.py
-uv run --extra pathtracing python examples/example_material_gallery.py --page 2 --output materials.png
+uv run --extra pathtracing python examples/example_material_gallery.py --all-materials --page 2 --output materials.png
+uv run --extra pathtracing python examples/example_material_gallery.py --plastics
 ```
 
 Press **Left** or **Right** to browse the full library, **V** for a new seeded
@@ -65,9 +66,10 @@ or up, left-drag to look, the mouse wheel to zoom, and **Home** to reset the vie
 The grid bakes at 1024×1024 and single-material view at 2048×2048 by default.
 For a 4K close-up, try `--single --texture-size 4096 --filter WoodFloor071`.
 Use `--filter WoodFloor` to browse all wood flooring materials together.
-The checkout provides the full catalog. Default wheels ship 12 starter
-materials. Build with `--config-setting=cmake.define.WARP_OPTIX_FULL_MATERIAL_CATALOG=ON`
-to include all 230 in a wheel.
+Default wheels include the procedural recipes and a starter set of fitted
+materials. The checkout includes the full fitted catalog. Build with
+`--config-setting=cmake.define.WARP_OPTIX_FULL_MATERIAL_CATALOG=ON` to bundle it
+in a wheel.
 
 ## Ray tracing with the core API
 

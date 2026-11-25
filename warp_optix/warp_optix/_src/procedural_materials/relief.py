@@ -22,3 +22,10 @@ def _normal_from_relief(relief: wp.array2d(dtype=float), row: int, col: int, str
         dy = 0.84 * dy + 0.08 * ((sw - nw) + (se - ne))
     n = wp.normalize(wp.vec3(strength * float(w) * dx, strength * float(h) * dy, 1.0))
     return 0.5 * n + wp.vec3(0.5)
+
+
+@wp.func
+def _normal_for_gltf(normal: wp.vec3) -> wp.vec3:
+    # Floating-point OpenGL maps encode green toward decreasing image row.
+    # glTF meshes use increasing V, which follows increasing texture row.
+    return wp.vec3(normal[0], 1.0 - normal[1], normal[2])

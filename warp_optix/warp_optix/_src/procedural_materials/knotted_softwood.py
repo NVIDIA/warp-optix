@@ -7,7 +7,7 @@ import warp as wp
 
 
 @wp.func
-def _wood096_noise(uv: wp.vec2, seed: int, across: int, along: int):
+def _grain_noise(uv: wp.vec2, seed: int, across: int, along: int):
     wrapped = uv - wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
     return wp.pnoise(
         wp.rand_init(seed), wp.vec2(float(across) * wrapped[0], float(along) * wrapped[1]), across, along
@@ -15,7 +15,7 @@ def _wood096_noise(uv: wp.vec2, seed: int, across: int, along: int):
 
 
 @wp.func
-def _wood096_knot_layout(index: int, seed: int):
+def _knot_layout(index: int, seed: int):
     # Positions and proportions follow the landmarks in the reference tile.
     center = wp.vec2(0.087, 0.329)
     radius = wp.vec2(0.033, 0.019)
@@ -61,7 +61,7 @@ def _wood096_knot_layout(index: int, seed: int):
 
 
 @wp.func
-def wood096_surface(uv: wp.vec2, seed: int, resolution: float):
+def knotted_softwood(uv: wp.vec2, seed: int, resolution: float):
     """Return sRGB color, height, roughness, and occlusion."""
     ring_bend = float(0.0)
     best = float(0.0)
@@ -71,7 +71,7 @@ def wood096_surface(uv: wp.vec2, seed: int, resolution: float):
     knot_index = int(-1)
     split = float(0.0)
     for index in range(16):
-        center, radius, pitch, weather = _wood096_knot_layout(index, seed)
+        center, radius, pitch, weather = _knot_layout(index, seed)
         delta = uv - center
         delta -= wp.vec2(wp.floor(delta[0] + 0.5), wp.floor(delta[1] + 0.5))
         local = wp.vec2((delta[0] - pitch * delta[1]) / radius[0], (delta[1] + pitch * delta[0]) / radius[1])
@@ -94,32 +94,32 @@ def wood096_surface(uv: wp.vec2, seed: int, resolution: float):
         influence = 1.0 - wp.smoothstep(0.3, 3.25, wp.length(wp.vec2(local[0], 0.47 * local[1])))
         ring_bend -= 0.91 * radius[0] * influence * local[0] / (0.53 + wp.abs(local[0]))
 
-    sweep = _wood096_noise(uv, seed + 5, 9, 3)
-    ripple = _wood096_noise(uv, seed + 11, 23, 5)
+    sweep = _grain_noise(uv, seed + 5, 9, 3)
+    ripple = _grain_noise(uv, seed + 11, 23, 5)
     grain_uv = uv + wp.vec2(0.0048 * sweep + 0.0022 * ripple + ring_bend, 0.0)
-    phase = 102.0 * grain_uv[0] + 2.7 * _wood096_noise(grain_uv, seed + 19, 16, 1)
-    phase += 0.21 * _wood096_noise(grain_uv, seed + 23, 71, 7)
+    phase = 102.0 * grain_uv[0] + 2.7 * _grain_noise(grain_uv, seed + 19, 16, 1)
+    phase += 0.21 * _grain_noise(grain_uv, seed + 23, 71, 7)
     wave = wp.abs(phase - wp.floor(phase + 0.5))
     aa = 52.0 / resolution
     ring = 1.0 - wp.smoothstep(0.039 - aa, 0.12 + aa, wave)
     ring *= wp.smoothstep(88.0, 320.0, resolution)
-    contrast = 0.58 + 0.42 * _wood096_noise(grain_uv, seed + 39, 57, 6)
+    contrast = 0.58 + 0.42 * _grain_noise(grain_uv, seed + 39, 57, 6)
 
     # A second, lower-frequency set of broad darker bands follows the same
     # fibres. It represents the darker transitions in the longitudinal cut.
-    growth = 11.0 * grain_uv[0] + 0.88 * _wood096_noise(grain_uv, seed + 41, 11, 2)
+    growth = 11.0 * grain_uv[0] + 0.88 * _grain_noise(grain_uv, seed + 41, 11, 2)
     broad = 1.0 - wp.smoothstep(0.021, 0.092, wp.abs(growth - wp.floor(growth + 0.5)))
     strip = wp.vec3(0.074, 0.106, 0.14)
-    fiber = _wood096_noise(grain_uv, seed + 51, 448, 176) * wp.smoothstep(374.0, 1240.0, resolution)
-    micro = _wood096_noise(grain_uv, seed + 57, 793, 620) * wp.smoothstep(730.0, 2050.0, resolution)
+    fiber = _grain_noise(grain_uv, seed + 51, 448, 176) * wp.smoothstep(374.0, 1240.0, resolution)
+    micro = _grain_noise(grain_uv, seed + 57, 793, 620) * wp.smoothstep(730.0, 2050.0, resolution)
     fiber_cut = wp.smoothstep(0.14, 0.38, 0.84 * fiber + 0.28 * micro)
-    warm = _wood096_noise(grain_uv, seed + 61, 27, 13)
+    warm = _grain_noise(grain_uv, seed + 61, 27, 13)
     base = wp.vec3(0.716, 0.635, 0.545) + wp.vec3(0.017 * sweep + 0.018 * warm + 0.021 * fiber + 0.014 * micro)
     color = base - strip * (0.52 * broad + 0.49 * contrast * ring + 0.20 * fiber_cut)
     height = 0.572 - 0.012 * broad - 0.010 * contrast * ring + 0.004 * warm + 0.006 * fiber + 0.003 * micro
 
     # The branch's own concentric rings sit inside an irregular bark collar.
-    knot_crinkle = _wood096_noise(uv, seed + 83, 149, 135)
+    knot_crinkle = _grain_noise(uv, seed + 83, 149, 135)
     knot_distance = knot_radius + 0.24 * knot_crinkle
     knot_phase = knot_distance * 4.8 + 0.31 * knot_crinkle + 0.16 * knot_position[0]
     knot_wave = wp.abs(knot_phase - wp.floor(knot_phase + 0.5))

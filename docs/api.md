@@ -73,6 +73,11 @@ when displaying its maps. For an existing scene, pass
 `first_texture_index` equal to the current texture count and use
 `scene.set_gltf_textures(images, append=True)`.
 
+Standalone `bake(..., map_type="normal")` returns OpenGL normal maps with
+positive green toward the top of the image. `bake_gltf()` and
+`bake_layered_gltf()` encode positive green along the mesh's increasing V so
+the path tracer shades grooves and raised details in the correct direction.
+
 Pass a non-negative integer `seed` to either bake call to vary the tile's
 layout and fine detail. Use the same seed for all maps of a material. Omit
 it for the closest match to the reference.
@@ -163,6 +168,39 @@ Brushing uses directional grooves in the baked maps. The
 roughness channel remains scalar for glTF compatibility. Preview a finish with
 `example_material_gallery.py --metal copper --finish brushed --scratches 0.24 --direction 25`.
 Use `--metals` to compare all ten metals in polished, brushed, and scratched rows.
+
+### Configurable plastics
+
+`PlasticSurface` works with the same bake and layering functions. The eight
+finishes are `gloss`, `satin`, `pebbled`, `grained`, `scuffed`, `recycled`,
+`vinyl`, and `rubber`. Override the mold color in sRGB or supply a perceptual
+roughness. Each finish provides color, roughness, normal, and displacement maps.
+Use the same seed across maps to keep molded grain, pigment chips, and wear aligned.
+These presets represent opaque surfaces.
+The satin and scuffed recipes were calibrated against the CC0 ambientCG
+references [Plastic013A](https://ambientcg.com/view?id=Plastic013A) and
+[Plastic012B](https://ambientcg.com/view?id=Plastic012B).
+
+```python
+trim = textures.PlasticSurface("pebbled", color=(0.18, 0.19, 0.21), roughness=0.58)
+images, gltf = textures.bake_gltf(trim, (2048, 2048), seed=12, device="cuda")
+```
+
+Use `example_material_gallery.py --plastics` for a side-by-side comparison.
+
+### Construction and fabrication
+
+The catalog includes asphalt, masonry, concrete, plaster, wood and flooring,
+ceramic tile, sheet metal, and roofing. Use `reference_ids()` for the full list.
+The following recipes model specific products and are available in starter wheels.
+
+| Material ID | Surface |
+| --- | --- |
+| `Wood087` | Alternating veneer layers, glue lines, and checks on a plywood edge |
+| `PaintedDrywall` | Painted gypsum board with a fine roller stipple |
+| `AsphaltShingles` | Overlapping asphalt roofing tabs with mineral granules |
+| `GalvanizedZinc` | Flat sheet metal with zinc spangles |
+| `EngineeredQuartz` | Polished countertop composite with embedded mineral grains |
 
 ### Layered materials
 

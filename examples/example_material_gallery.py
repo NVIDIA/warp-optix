@@ -40,16 +40,29 @@ CONTROLS = "WASD: move   Q/E: down/up   Drag: look   Home: reset   Arrows: brows
 # Give overview slots to different construction and surface features.
 # Named searches and --all-materials can still browse every reference ID.
 OVERVIEW = (
-    "Bark014", "Bark016", "Planks037A", "Fabric004", "Grass005",
-    "Leather037", "Leather035A", "Onyx015", "Marble012", "Concrete008",
-    "Concrete015", "Concrete036", "Concrete041D", "Concrete049", "RoofingTiles008",
-    "RoofingTiles014A", "Foil001", "Rust005", "Fence001", "MetalWalkway010",
+    "Bark014", "PlasticGlossABS", "Planks037A", "Fabric004", "Grass005",
+    "PlasticPebbledTrim", "Leather035A", "Onyx015", "Marble012", "Concrete008",
+    "PaintedDrywall", "Concrete036", "Concrete041D", "Asphalt033", "RoofingTiles008",
+    "AsphaltShingles", "Foil001", "Rust005", "Fence001", "MetalWalkway010",
     "Rope003", "Carpet009", "Moss001", "Fabric084", "Ground111",
-    "Wood096", "WoodFloor071", "PavingStones153", "Terrazzo004", "Bricks101",
+    "Wood096", "WoodFloor071", "PavingStones153", "EngineeredQuartz", "Bricks101",
     "SheetMetal002", "TactilePaving004", "MetalPlates001", "AcousticFoam001", "Wicker010A",
-    "Fabric013", "WhiteSubwayTile", "Tiles071", "Cardboard001", "Ground031",
-    "Ground094C", "DiamondPlate009", "CorrugatedSteel009", "Chipboard002", "Ice003",
+    "Concrete015", "WhiteSubwayTile", "Wood087", "Cardboard001", "Tiles071",
+    "PlasticCommercialVinyl", "DiamondPlate009", "GalvanizedZinc", "Chipboard002", "Ice003",
 )
+
+PLASTICS = {
+    "PlasticGlossABS": "Gloss ABS",
+    "Plastic013A": "Satin molded plastic",
+    "PlasticPebbledTrim": "Pebbled trim",
+    "PlasticGrainedDash": "Grained dashboard",
+    "Plastic012B": "Scuffed housing",
+    "PlasticRecycled": "Recycled plastic",
+    "PlasticCommercialVinyl": "Commercial vinyl",
+    "PlasticMatteRubber": "Matte rubber",
+}
+
+
 def _select_materials(available, materials, query, all_materials):
     if materials:
         selected = materials
@@ -70,18 +83,24 @@ def _metal_overview():
     )
 
 
+def _gallery_grid(ids, single):
+    if single:
+        return 1, 1
+    if ids and all(isinstance(asset, textures.MetalSurface) for asset in ids):
+        columns = min(len(textures.metal_names()), len(ids))
+        return columns, min(3, math.ceil(len(ids) / columns))
+    if ids and all(isinstance(asset, str) and asset.startswith("Plastic") for asset in ids):
+        columns = min(4, len(ids))
+        return columns, min(3, math.ceil(len(ids) / columns))
+    return COLUMNS, ROWS
+
+
 class Gallery:
     def __init__(self, api, texture_size, single=False, ids=None):
         self.api = api
         self.texture_size = texture_size
         self.ids = textures.reference_ids() if ids is None else tuple(ids)
-        if single:
-            self.columns, self.rows = 1, 1
-        elif self.ids and all(isinstance(asset, textures.MetalSurface) for asset in self.ids):
-            self.columns = min(len(textures.metal_names()), len(self.ids))
-            self.rows = min(3, math.ceil(len(self.ids) / self.columns))
-        else:
-            self.columns, self.rows = COLUMNS, ROWS
+        self.columns, self.rows = _gallery_grid(self.ids, single)
         self.page_size = self.columns * self.rows
         self.page_count = math.ceil(len(self.ids) / self.page_size)
         self.page = 0
@@ -192,10 +211,12 @@ class Gallery:
             if clip[3] > 0.0:
                 ndc_x, ndc_y = clip[:2] / clip[3]
                 if abs(ndc_x) < 0.96 and abs(ndc_y) < 0.89:
-                    label = asset
+                    label = PLASTICS.get(asset, asset) if isinstance(asset, str) else asset
                     if isinstance(asset, textures.MetalSurface):
                         name = asset.metal.replace("_", " ").title()
                         label = f"{name} / {asset.finish}"
+                    elif isinstance(asset, textures.PlasticSurface):
+                        label = asset.finish.replace("_", " ").title()
                     yield label, width * (0.5 + 0.5 * ndc_x), height * (0.5 - 0.5 * ndc_y)
         yield CONTROLS, width / 2, 19
 
@@ -327,9 +348,10 @@ def main():
     parser.add_argument("--page", type=int, default=1, help="Initial page, starting at 1.")
     parser.add_argument("--single", action="store_true", help="Inspect one material per page at a larger scale.")
     parser.add_argument("--materials", nargs="+", metavar="ID", help="Present these materials in the given order.")
-    metals = parser.add_mutually_exclusive_group()
-    metals.add_argument("--metal", choices=textures.metal_names(), help="Preview a configurable metal in single view.")
-    metals.add_argument("--metals", action="store_true", help="Compare every metal in three rows of finishes.")
+    families = parser.add_mutually_exclusive_group()
+    families.add_argument("--metal", choices=textures.metal_names(), help="Preview a configurable metal in single view.")
+    families.add_argument("--metals", action="store_true", help="Compare every metal in three rows of finishes.")
+    families.add_argument("--plastics", action="store_true", help="Compare eight molded, worn, and sheet polymer finishes.")
     parser.add_argument("--finish", choices=("polished", "brushed", "scratched"), default="brushed")
     parser.add_argument("--scratches", type=float, help="Scratch amount from 0 to 1 for --metal.")
     parser.add_argument("--roughness", type=float, help="Perceptual roughness from 0 to 1 for --metal.")
@@ -344,8 +366,8 @@ def main():
     parser.add_argument("--output", type=Path, help="Render one page to a PNG without opening a window.")
     parser.add_argument("--frames", type=int, default=16, help="Frames to accumulate for --output.")
     args = parser.parse_args()
-    if (args.metal or args.metals) and (args.materials or args.filter or args.all_materials):
-        parser.error("--metal and --metals cannot be combined with catalog selection.")
+    if (args.metal or args.metals or args.plastics) and (args.materials or args.filter or args.all_materials):
+        parser.error("--metal, --metals, and --plastics cannot be combined with catalog selection.")
     if args.metal:
         args.single = True
     if args.texture_size is None:
@@ -366,11 +388,14 @@ def main():
             parser.error(str(exc))
     elif args.metals:
         ids = _metal_overview()
+    elif args.plastics:
+        ids = tuple(PLASTICS)
     else:
         ids = _select_materials(available, args.materials, args.filter, args.all_materials)
     if not ids:
         parser.error(f"no materials match {args.filter!r}")
-    page_count = math.ceil(len(ids) / (1 if args.single else PAGE_SIZE))
+    columns, rows = _gallery_grid(ids, args.single)
+    page_count = math.ceil(len(ids) / (columns * rows))
     if not 1 <= args.page <= page_count:
         parser.error(f"page must be between 1 and {page_count}")
     if args.seed is not None and args.seed < 0:

@@ -11,11 +11,14 @@ from warp_optix import procedural_textures as textures
 
 def test_new_material_families_provide_aligned_maps():
     ids = textures.reference_ids()
-    assert {"LimewashWall", "WhiteSubwayTile", "GraphiteConcrete"} <= set(ids)
-    if len(ids) == 57:
-        assert {"WoodFloor071", "Fabric004", "Leather037", "Metal064", "Bricks113A", "RoofingTiles013A"} <= set(ids)
+    assert len(ids) == len(set(ids))
+    assert {
+        "LimewashWall", "WhiteSubwayTile", "GraphiteConcrete", "Wood087", "PaintedDrywall",
+        "AsphaltShingles", "GalvanizedZinc", "EngineeredQuartz", "PlasticGlossABS",
+        "WoodFloor071", "Fabric004", "Leather037", "Metal064", "Bricks113A", "RoofingTiles013A",
+    } <= set(ids)
+    if "Cork004" not in ids:
         return
-    assert len(ids) == 266
     assert sum(asset.startswith("WoodFloor") for asset in ids) == 74
     for material in ("Leather037", "Fabric004", "DiamondPlate009", "Bamboo001C", "Ice003", "Cork004"):
         assert {"color", "normal", "roughness", "displacement"} <= set(textures.reference_maps(material))
@@ -71,6 +74,7 @@ def test_seeded_variants_repeat_and_keep_maps_aligned():
         np.testing.assert_array_equal(first, same)
         assert not np.array_equal(first, other)
     normal = textures.bake("Bricks113A", shape, map_type="normal", device="cpu", seed=42).numpy()
+    normal[..., 1] = 1.0 - normal[..., 1]
     np.testing.assert_array_equal(a[1][..., :3], (normal * 255.0 + 0.5).astype(np.uint8))
 
 
@@ -104,6 +108,8 @@ def test_analytic_packed_maps_match_individual_bakes(material):
             continue
         image, channel = channels[name]
         expected = textures.bake(material, shape, map_type=name, device="cpu", seed=seed).numpy()
+        if name == "normal":
+            expected[..., 1] = 1.0 - expected[..., 1]
         if isinstance(channel, int):
             expected = expected[..., 0]
         np.testing.assert_array_equal(maps[image][..., channel], (255.0 * expected + 0.5).astype(np.uint8))
@@ -153,7 +159,9 @@ def test_configurable_metal_uses_the_same_bake_api():
     assert np.max(polished_roughness) < np.min(worn_roughness)
     maps, kwargs = textures.bake_gltf(worn, shape, device="cpu", seed=7)
     normal = textures.bake(worn, shape, map_type="normal", device="cpu", seed=7).numpy()
-    np.testing.assert_array_equal(maps[1][..., :3], (255.0 * normal + 0.5).astype(np.uint8))
+    gltf_normal = normal.copy()
+    gltf_normal[..., 1] = 1.0 - gltf_normal[..., 1]
+    np.testing.assert_array_equal(maps[1][..., :3], (255.0 * gltf_normal + 0.5).astype(np.uint8))
     assert kwargs["metallic_roughness_texture"] == {"index": 2}
     assert (maps[2][..., 2] == 255).all()
     assert not np.array_equal(
@@ -179,3 +187,10 @@ def test_metal_scratches_change_relief_and_normal_together():
     dy = np.roll(height, -1, axis=0) - np.roll(height, 1, axis=0)
     assert np.corrcoef(dx.ravel(), normals[..., 0].ravel())[0, 1] > 0.97
     assert np.corrcoef(dy.ravel(), normals[..., 1].ravel())[0, 1] > 0.97
+    maps, _ = textures.bake_gltf(worn, shape, device="cpu", seed=19)
+    # Ignore slopes smaller than one 8-bit step around the flat normal.
+    for axis, gradient in enumerate((dx, -dy)):
+        component = maps[1][..., axis].astype(float) - 127.5
+        pronounced = np.abs(component) > 1.0
+        assert pronounced.any()
+        assert np.mean(np.sign(component[pronounced]) == np.sign(gradient[pronounced])) > 0.98

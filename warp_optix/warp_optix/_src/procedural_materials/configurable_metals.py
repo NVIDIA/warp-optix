@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
-from .relief import _normal_from_relief
+from .relief import _normal_for_gltf, _normal_from_relief
 
 # Normal-incidence sRGB reflectance for clean conductors from Filament's material
 # reference. Stainless steel and chromium use representative neutral values.
@@ -207,6 +207,7 @@ def _metal_normals(relief: wp.array2d(dtype=float), image: wp.array2d(dtype=wp.v
     row, col = wp.tid()
     n = _normal_from_relief(relief, row, col, 0.0035)
     if packed.shape[0] > 0:
+        n = _normal_for_gltf(n)
         packed[1, row, col] = wp.vec4ub(
             wp.uint8(255.0 * n[0] + 0.5), wp.uint8(255.0 * n[1] + 0.5),
             wp.uint8(255.0 * n[2] + 0.5), wp.uint8(255),

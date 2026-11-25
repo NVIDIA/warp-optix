@@ -91,6 +91,11 @@ DIRECT_REFERENCES = {
     "Chipboard002": (-37, ("occlusion",), 0.00078),
     "Sponge001": (-38, ("occlusion",), 0.01043),
     "Paper001": (-39, (), 0.002367),
+    "Wood087": (-48, ("occlusion",), 0.00085),
+    "PaintedDrywall": (-49, (), 0.0019),
+    "AsphaltShingles": (-50, ("occlusion",), 0.0025),
+    "GalvanizedZinc": (-51, ("metalness",), 0.0015),
+    "EngineeredQuartz": (-52, (), 0.00045),
 }
 
 LEVELS = 3
