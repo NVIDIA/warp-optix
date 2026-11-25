@@ -73,6 +73,20 @@ DIRECT_REFERENCES = {
     "RoofingTiles014A": (-19, ("occlusion",), 0.01472),
     "Tiles071": (-20, ("occlusion",), 0.00418),
     "Wood096": (-21, (), 0.0035),
+    "Fabric004": (-22, ("metalness",), 0.006),
+    "Planks037A": (-23, ("occlusion", "metalness"), 0.0030),
+    "Rope003": (-24, ("metalness",), 0.01139),
+    "Rust005": (-25, ("metalness",), 0.00472),
+    "Concrete041D": (-26, ("occlusion", "metalness"), 0.00601),
+    "Fence001": (-27, ("metalness", "opacity"), 0.002),
+    "MetalWalkway010": (-28, ("metalness", "opacity"), 0.005),
+    "Carpet009": (-29, ("occlusion",), 0.0035),
+    "Foil001": (-30, ("occlusion", "metalness"), 0.015),
+    "Moss001": (-31, ("occlusion",), 0.0037),
+    "Grass005": (-32, ("occlusion",), 0.0012),
+    "Leather035A": (-33, ("occlusion",), 0.0016),
+    "Onyx015": (-34, (), 0.00035),
+    "Marble012": (-35, (), 0.00055),
 }
 
 LEVELS = 3

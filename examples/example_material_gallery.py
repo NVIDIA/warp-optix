@@ -31,17 +31,16 @@ CONTROLS = "WASD: move   Q/E: down/up   Drag: look   Home: reset   Arrows: brows
 # Give overview slots to different construction and surface features.
 # Named searches and --all-materials can still browse every reference ID.
 OVERVIEW = (
-    "Fabric084", "Ground111", "Bark014", "Bark016", "Wood096",
-    "Concrete008", "Concrete015", "Concrete036", "Concrete049", "WoodFloor071",
-    "PavingStones153", "Terrazzo004", "Bricks101", "SheetMetal002", "TactilePaving004",
-    "MetalPlates001", "AcousticFoam001", "Wicker010A", "Fabric013", "WhiteSubwayTile",
-    "Tiles071", "Tiles140", "RoofingTiles008", "RoofingTiles014A", "Cardboard001",
-    "Ground031", "Ground094C", "Wood099", "Planks037A", "Bricks113A",
-    "LimewashWall", "Asphalt031", "Marble012", "Onyx015", "Travertine009",
-    "Metal064", "DiamondPlate009", "CorrugatedSteel009", "Fabric004", "Carpet016",
-    "Leather037", "Rubber001", "Bamboo001C", "Cork004", "Ice003",
+    "Bark014", "Bark016", "Planks037A", "Fabric004", "Grass005",
+    "Leather037", "Leather035A", "Onyx015", "Marble012", "Concrete008",
+    "Concrete015", "Concrete036", "Concrete041D", "Concrete049", "RoofingTiles008",
+    "RoofingTiles014A", "Foil001", "Rust005", "Fence001", "MetalWalkway010",
+    "Rope003", "Carpet009", "Moss001", "Fabric084", "Ground111",
+    "Wood096", "WoodFloor071", "PavingStones153", "Terrazzo004", "Bricks101",
+    "SheetMetal002", "TactilePaving004", "MetalPlates001", "AcousticFoam001", "Wicker010A",
+    "Fabric013", "WhiteSubwayTile", "Tiles071", "Cardboard001", "Ground031",
+    "Ground094C", "DiamondPlate009", "CorrugatedSteel009", "Bamboo001C", "Ice003",
 )
-
 def _select_materials(available, materials, query, all_materials):
     if materials:
         selected = materials
@@ -66,6 +65,7 @@ class Gallery:
         self.seed = None
         self.visible_ids = ()
         self.half_height = 1.0
+        api.set_backface_culling(False)
         api.initialize()
         api.viewer.accumulate_samples = True
         api.tonemap_exposure = 0.75
@@ -134,10 +134,13 @@ class Gallery:
         graphite = self.api.create_pbr_material((0.046, 0.046, 0.046), roughness=0.43, metallic=0.52)
         trim = self.api.create_pbr_material((0.36, 0.36, 0.36), roughness=0.26, metallic=0.85)
         add_checker_ground(self.api, height=-0.002, size=160)
-        for slot, kwargs in enumerate(materials):
+        for slot, (asset, kwargs) in enumerate(zip(ids, materials, strict=True)):
             material = scene.materials.add_gltf_material(**kwargs)
             x, z = self.slot_center(slot)
-            add_shader_ball(self.api, x, z, material, graphite, trim)
+            height = None
+            if asset in ("Bark014", "Bark016"):
+                height = textures.bake(asset, (96, 96), map_type="displacement", device="cuda", seed=seed).numpy()[..., 0]
+            add_shader_ball(self.api, x, z, material, graphite, trim, height=height)
         scene.add_light_sphere((-4, 6, 5), 1.25, (1.0, 1.0, 1.0), 11.0)
         scene.add_light_sphere((5, 4, -3), 1.4, (1.0, 1.0, 1.0), 8.0)
         self.api.build_scene()

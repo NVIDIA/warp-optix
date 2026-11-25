@@ -12,9 +12,15 @@ import numpy as np
 import warp as wp
 
 from .bark_surfaces import bark_surface
+from .carbon_fiber import carbon_fiber
+from .functional_surfaces import functional_surface
+from .industrial_surfaces import industrial_surface
+from .lawn_leather_stone import fractured_marble, lawn_surface, leather_panel, onyx_layers
 from .material_blend import blend_materials
 from .mineral_surfaces import perforated_sheet, riveted_metal, tactile_paving, terrazzo
+from .natural_and_foil import natural_or_foil
 from .organic_surfaces import organic_surface
+from .reclaimed_planks import reclaimed_planks
 from .roof_and_mosaic import roof_or_mosaic
 from .textile_surfaces import textile_surface
 from .texture_coefficients import (
@@ -430,8 +436,26 @@ def _surface_maps(
         color, height, roughness, ao = wall_concrete(uv, seed, resolution, -style - 15)
     elif style >= -20:
         color, height, roughness, ao = roof_or_mosaic(uv, seed, resolution, -style - 18)
-    else:
+    elif style == -21:
         color, height, roughness, ao = wood096_surface(uv, seed, resolution)
+    elif style == -22:
+        return carbon_fiber(uv, seed, resolution)
+    elif style == -23:
+        return reclaimed_planks(uv, seed, resolution)
+    elif style >= -26:
+        return industrial_surface(uv, seed, resolution, -style - 24)
+    elif style >= -29:
+        return functional_surface(uv, seed, resolution, -style - 27)
+    elif style >= -31:
+        return natural_or_foil(uv, seed, resolution, -style - 30)
+    elif style == -32:
+        return lawn_surface(uv, seed, resolution)
+    elif style == -33:
+        return leather_panel(uv, seed, resolution)
+    elif style == -34:
+        return onyx_layers(uv, seed, resolution)
+    else:
+        return fractured_marble(uv, seed, resolution)
     return color, height, roughness, ao, 0.0, 1.0
 
 

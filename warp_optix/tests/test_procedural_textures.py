@@ -12,10 +12,10 @@ from warp_optix import procedural_textures as textures
 def test_new_material_families_provide_aligned_maps():
     ids = textures.reference_ids()
     assert {"LimewashWall", "WhiteSubwayTile", "GraphiteConcrete"} <= set(ids)
-    if len(ids) == 41:
+    if len(ids) == 53:
         assert {"WoodFloor071", "Fabric004", "Leather037", "Metal064", "Bricks113A", "RoofingTiles013A"} <= set(ids)
         return
-    assert len(ids) == 254
+    assert len(ids) == 263
     assert sum(asset.startswith("WoodFloor") for asset in ids) == 74
     for material in ("Leather037", "Fabric004", "DiamondPlate009", "Bamboo001C", "Ice003", "Cork004"):
         assert {"color", "normal", "roughness", "displacement"} <= set(textures.reference_maps(material))
@@ -89,7 +89,10 @@ def test_analytic_normals_follow_seeded_height(material):
     assert np.corrcoef(dy.ravel(), normal[..., 1].ravel())[0, 1] > 0.99
 
 
-@pytest.mark.parametrize("material", ["SheetMetal002", "Fabric084", "Ground111", "Bark014", "Wicker010A"])
+@pytest.mark.parametrize(
+    "material", ["SheetMetal002", "Fabric084", "Ground111", "Bark014", "Wicker010A",
+                 "Planks037A", "Fence001", "MetalWalkway010"]
+)
 def test_analytic_packed_maps_match_individual_bakes(material):
     shape = (81, 112)
     seed = 71

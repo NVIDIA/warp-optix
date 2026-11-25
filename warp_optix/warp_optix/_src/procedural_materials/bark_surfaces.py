@@ -98,6 +98,10 @@ def bark_surface(uv: wp.vec2, seed: int, resolution: float, style: int):
     warped = uv + wp.vec2(0.029 * bend + 0.013 * sway + 0.0016 * splinters + 0.00052 * fray, 0.027 * sway)
     top, under, pigment, slope = _cork_scales(warped, seed, columns, rows)
     splits = _bark_grooves(warped, seed + 29, columns, rows - 3)
+    broad_top, broad_under, broad_pigment, broad_slope = _cork_scales(warped, seed + 31, columns // 3, 5)
+    broad_plate = wp.smoothstep(-0.14, 0.58, broad_top + 0.12 * sway)
+    broad_split = 1.0 - wp.smoothstep(0.019, 0.15, broad_top - broad_under + 0.21 * sway)
+    broad_split *= 0.78 + 0.22 * wp.smoothstep(-0.7, 0.7, broad_slope)
     aa = 0.42 * float(columns) / resolution
     groove = 1.0 - wp.smoothstep(-aa, 0.047 + aa, splits + 0.093 * splinters + 0.061 * fray)
     pocket = 1.0 - wp.smoothstep(-0.17 - aa, 0.045 + aa, top + 0.25 * splinters)
@@ -143,7 +147,10 @@ def bark_surface(uv: wp.vec2, seed: int, resolution: float, style: int):
         roughness -= 0.037 * moss
     base += wp.vec3(detail + 0.028 * pigment * flake)
     crevice += wp.vec3(0.13 * granules + 0.072 * fray + 0.086 * grain)
-    color = wp.lerp(base, crevice, 0.64 * fissure)
+    color = wp.lerp(base, crevice, wp.max(0.60 * fissure, 0.32 * broad_split))
+    color += wp.vec3(0.025 * broad_pigment * broad_plate)
+    # Longer slopes survive texture filtering on a small or distant sample.
+    height += 0.10 * broad_plate - 0.072 * broad_split
     height += 0.027 * splinters + 0.021 * fray + 0.012 * grain + 0.006 * grit + 0.009 * granules
-    occlusion = 0.985 - 0.29 * fissure - 0.048 * (1.0 - plate)
+    occlusion = 0.985 - 0.30 * fissure - 0.10 * broad_split - 0.048 * (1.0 - plate)
     return color, height, roughness, occlusion

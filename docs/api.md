@@ -36,8 +36,8 @@ staggered pattern repeats vertically. Its mortar fraction is measured relative
 to the width or height of a brick cell on each axis.
 
 The `textures.reference_ids()` function lists materials in the current installation.
-Default wheels include eight built-in materials and 33 based on ambientCG references.
-The source checkout and full-catalog wheel include 254 materials, including 138 from the first batch of the
+Default wheels include eight built-in materials and 45 based on ambientCG references.
+The source checkout and full-catalog wheel include 263 materials, including 138 from the first batch of the
 [ambientCG popularity listing](https://ambientcg.com/list?type=material%2Cdecal%2Catlas&sort=popular),
 plus 22 selected surfaces such as leather, carbon fiber, diamond plate, cork,
 bamboo, and ice, and every material in the
@@ -91,7 +91,12 @@ perforated sheet and riveted metal, and two styles of bark. Cutout coverage and
 beveled relief come from the same geometry for perforated sheet, wicker, and
 open-weave fabric. The glTF baker evaluates each direct surface once per texel,
 packs the color and material properties immediately, and derives normals from
-one scalar relief buffer.
+one scalar relief buffer. Additional generators cover rope fibers, corrosion,
+exposed reinforcement, chain-link fence, slotted walkway, tufted carpet,
+crumpled foil, moss, grass, stitched leather, layered onyx, and fractured marble.
+The fence and walkway bake opacity from their wire or slot geometry.
+`bake(..., map_type="displacement")` exposes relief separately for callers that
+want to displace geometry, as the gallery does for bark.
 
 For new families, compare the physical feature sizes and palette with the CC0
 reference, then inspect a native-resolution crop and a lit sphere or tile.

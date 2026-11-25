@@ -9,8 +9,8 @@ from functools import lru_cache
 import numpy as np
 
 
-@lru_cache(maxsize=3)
-def _lathe(profile, planar_uv=False, shell_tiles=0):
+@lru_cache(maxsize=6)
+def _lathe(profile, planar_uv=False, shell_tiles=0, segments=96):
     """Revolve a front-to-back (radius, axial position) profile around local Z."""
     profile = np.asarray(profile, dtype=np.float64)
     radius, axial = profile.T
@@ -21,7 +21,6 @@ def _lathe(profile, planar_uv=False, shell_tiles=0):
         normal[0] = (0, 1)
     if radius[-1] == 0:
         normal[-1] = (0, -1)
-    segments = 96
     u = np.linspace(0, 1, segments + 1)
     angle = 2 * math.pi * u
     if shell_tiles:
@@ -82,7 +81,26 @@ _PEDESTAL = (
 )
 
 
-def add_shader_ball(api, x, z, material, graphite, trim):
+def _refine_profile(profile, spacing):
+    refined = []
+    for (radius, axial), (next_radius, next_axial) in zip(profile, profile[1:], strict=False):
+        pieces = max(1, math.ceil(math.hypot(next_radius - radius, next_axial - axial) / spacing))
+        for t in np.arange(pieces) / pieces:
+            refined.append((radius + t * (next_radius - radius), axial + t * (next_axial - axial)))
+    return (*refined, profile[-1])
+
+
+def _sample_height(height, uvs):
+    h, w = height.shape
+    point = uvs * (w, h) - 0.5
+    x, y = np.floor(point).astype(np.int64).T
+    u, v = (point - np.floor(point)).T
+    near = (1 - u) * height[y % h, x % w] + u * height[y % h, (x + 1) % w]
+    far = (1 - u) * height[(y + 1) % h, x % w] + u * height[(y + 1) % h, (x + 1) % w]
+    return (1 - v) * near + v * far
+
+
+def add_shader_ball(api, x, z, material, graphite, trim, *, height=None):
     """Create the sample face, shell and a neutral metal plinth."""
     axis = np.array((-.27, .23, 1.0))
     axis /= np.linalg.norm(axis)
@@ -90,16 +108,33 @@ def add_shader_ball(api, x, z, material, graphite, trim):
     right /= np.linalg.norm(right)
     rotation = np.stack((right, np.cross(axis, right), axis))
     base_rotation = np.array(((1, 0, 0), (0, 0, -1), (0, 1, 0)))
+    face = _FACE
+    shell = _SHELL
+    if height is not None:
+        face = _refine_profile(face, 0.008)
+        shell = _refine_profile(shell, 0.012)
     parts = (
-        (_FACE, True, 0, rotation, (x, .91, z), (material,) * (len(_FACE) - 1)),
-        (_BEZEL + _SHELL, False, 2, rotation, (x, .91, z),
+        (face, True, 0, rotation, (x, .91, z), (material,) * (len(face) - 1)),
+        (_BEZEL + shell, False, 2, rotation, (x, .91, z),
          (material, graphite, graphite, trim, trim, trim, trim, trim, graphite, graphite,
-          material, material, graphite, graphite, trim, trim, material) + (material,) * (len(_SHELL) - 1)),
+          material, material, graphite, graphite, trim, trim, material) + (material,) * (len(shell) - 1)),
         (_PEDESTAL, False, 0, base_rotation, (x, 0, z),
          (graphite,) * 8 + (trim,) * 3 + (graphite,) * 4),
     )
     for profile, planar, shell_tiles, basis, origin, materials in parts:
-        positions, normals, uvs, indices, bands = _lathe(profile, planar, shell_tiles)
+        displaced = height is not None and (planar or shell_tiles > 0)
+        positions, normals, uvs, indices, bands = _lathe(profile, planar, shell_tiles, 192 if displaced else 96)
+        if displaced:
+            radius = np.linalg.norm(positions[:, :2], axis=1)
+            if planar:
+                taper = np.clip((face[-1][0] - radius) / 0.032, 0, 1)
+            else:
+                # Fade before the metal rim and the rear pole so the UV seam
+                # remains closed and the two parts meet cleanly.
+                blend_at_bezel = np.clip((_SHELL[0][1] - positions[:, 2]) / 0.055, 0, 1)
+                taper = blend_at_bezel * np.clip(radius / 0.12, 0, 1)
+            offset = 0.15 * taper * (_sample_height(height, uvs) - np.median(height))
+            positions = positions + normals * offset[:, None]
         mesh = api.create_mesh(
             positions @ basis + origin, indices, normals=normals @ basis, uvs=uvs,
             material_id=material, material_ids=np.asarray(materials, dtype=np.int32)[bands],
