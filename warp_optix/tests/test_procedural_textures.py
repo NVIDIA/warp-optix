@@ -163,3 +163,19 @@ def test_configurable_metal_uses_the_same_bake_api():
     np.testing.assert_array_equal(layered, maps)
     with pytest.raises(ValueError, match="roughness"):
         textures.MetalSurface(roughness=2.0)
+
+
+def test_metal_scratches_change_relief_and_normal_together():
+    shape = (256, 384)
+    clean = textures.MetalSurface("aluminum", finish="polished", scratches=0.0)
+    worn = textures.MetalSurface("aluminum", finish="polished", scratches=1.0, direction=27)
+    height = textures.bake(worn, shape, map_type="displacement", device="cpu", seed=19).numpy()[..., 0]
+    normals = 2.0 * textures.bake(worn, shape, map_type="normal", device="cpu", seed=19).numpy() - 1.0
+    clean_normal = textures.bake(clean, shape, map_type="normal", device="cpu").numpy()
+    np.testing.assert_array_equal(clean_normal, np.broadcast_to((0.5, 0.5, 1.0), (*shape, 3)))
+    assert height.min() < 0.54 and height.max() > 0.55
+    assert np.ptp(normals[..., 0]) > 0.02 and np.ptp(normals[..., 1]) > 0.02
+    dx = np.roll(height, 1, axis=1) - np.roll(height, -1, axis=1)
+    dy = np.roll(height, -1, axis=0) - np.roll(height, 1, axis=0)
+    assert np.corrcoef(dx.ravel(), normals[..., 0].ravel())[0, 1] > 0.97
+    assert np.corrcoef(dy.ravel(), normals[..., 1].ravel())[0, 1] > 0.97

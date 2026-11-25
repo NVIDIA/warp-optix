@@ -157,7 +157,9 @@ images, gltf = textures.bake_gltf(surface, (2048, 2048), seed=12, device="cuda")
 ```
 
 Finishes are `polished`, `brushed`, and `scratched`. Optional controls override
-the finish defaults. Brushing uses directional grooves in the baked maps. The
+the finish defaults. Scratches vary in length, width, and depth. Grooves and
+raised edges appear in both displacement and tangent-space normals.
+Brushing uses directional grooves in the baked maps. The
 roughness channel remains scalar for glTF compatibility. Preview a finish with
 `example_material_gallery.py --metal copper --finish brushed --scratches 0.24 --direction 25`.
 Use `--metals` to compare all ten metals in polished, brushed, and scratched rows.
