@@ -113,6 +113,34 @@ def test_path_tracing_scenes_build_and_render(pathtracing):
             api.close()
 
 
+def test_material_gallery_renders_and_wraps_pages(monkeypatch):
+    from warp_optix.pathtracing import PathTracer
+
+    from warp_optix import procedural_textures
+
+    monkeypatch.syspath_prepend(str(EXAMPLES))
+    example = importlib.import_module("example_material_gallery")
+    api = PathTracer(width=96, height=56, denoiser="none", enable_set=False)
+    try:
+        gallery = example.Gallery(api, texture_size=48)
+        assets = procedural_textures.reference_ids()
+        gallery.load(0, None)
+        api.render_frame()
+        first = api.get_frame().copy()
+        assert gallery.visible_ids == assets[: example.PAGE_SIZE]
+        assert np.isfinite(first).all() and first[..., :3].std() > 0.02
+
+        gallery.load(-1, 42)
+        api.render_frame()
+        last = api.get_frame()
+        assert gallery.visible_ids == assets[(gallery.page_count - 1) * example.PAGE_SIZE :]
+        assert gallery.seed == 42
+        assert api.scene.texture_count == 3 * len(gallery.visible_ids)
+        assert np.isfinite(last).all() and not np.allclose(first, last)
+    finally:
+        api.close()
+
+
 def test_scene_downloads_stay_in_their_cache_and_publish_only_complete_scenes(pathtracing, tmp_path, monkeypatch):
     from scenes import mitsuba
 

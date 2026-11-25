@@ -45,6 +45,22 @@ Image credits and rendering details are in [docs/images/README.md](../docs/image
 Common options: `--width`, `--height`, `--denoiser {auto,optix,none}`, `--exposure`,
 `--max-frames N`, `--screenshot out.png`. Run with `--help` for per-scene options.
 
+### Procedural material gallery
+
+[`example_material_gallery.py`](example_material_gallery.py) shows eight materials
+per page. Each material is path traced on the same UV sphere and flat tile under
+studio lighting, so you can compare its highlights and surface pattern. The
+gallery generates its own geometry and textures.
+
+```bash
+uv run --extra pathtracing python examples/example_material_gallery.py
+uv run --extra pathtracing python examples/example_material_gallery.py --page 2 --output materials.png
+```
+
+Press **Left** or **Right** to browse the full library, **V** for a new seeded
+variation, and **R** to return to the reference fit. Use `--page` and `--seed`
+to start at a particular page or variation.
+
 ## Ray tracing with the core API
 
 These write a BMP image (`--output`); `example_raytracing.py --live` opens a viewer.
