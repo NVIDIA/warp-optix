@@ -77,6 +77,7 @@ class GLInteropViewer:
         self._on_resize_callback = on_resize
         self._on_draw_overlay = on_draw_overlay
         self._dispatching_events = False
+        self._pending_size = None
         self._fallback_to_copy = bool(fallback_to_copy)
 
         self.window = pyglet.window.Window(width=width, height=height, caption=title, vsync=bool(vsync), resizable=True)
@@ -158,6 +159,15 @@ class GLInteropViewer:
     def _render_frame(self):
         if self._render_callback is None:
             return
+        if self._pending_size is not None:
+            size, self._pending_size = self._pending_size, None
+            if size != (self.width, self.height):
+                self.width, self.height = size
+                self._recreate_gl_resources()
+                if self._on_resize_callback is not None:
+                    self._on_resize_callback(*size)
+            else:
+                self.sprite.scale_x = self.sprite.scale_y = 1.0
         with wp.ScopedDevice(self.device):
             with wp.ScopedStream(self.render_stream, sync_enter=False, sync_exit=False):
                 mapped = self.cuda_gl.map(dtype=wp.uint32, shape=(self.width * self.height,))
@@ -243,9 +253,12 @@ class GLInteropViewer:
         if width <= 0 or height <= 0:
             return
 
-        self.width = int(width)
-        self.height = int(height)
-        self._recreate_gl_resources()
-
-        if self._on_resize_callback is not None:
-            self._on_resize_callback(self.width, self.height)
+        self._pending_size = int(width), int(height)
+        # The Windows sizing loop can delay scheduled CUDA frames. Present the
+        # last completed texture until rendering resumes at the final size.
+        if self.frame_index and not self.closed:
+            self.sprite.scale_x = width / self.width
+            self.sprite.scale_y = height / self.height
+            self.window.clear()
+            self.sprite.draw()
+            self.window.flip()
