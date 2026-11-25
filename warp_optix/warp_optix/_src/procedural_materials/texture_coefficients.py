@@ -69,8 +69,8 @@ DIRECT_REFERENCES = {
     "Concrete008": (-15, ("occlusion",), 0.00045),
     "Concrete015": (-16, (), 0.0009),
     "Concrete036": (-17, (), 0.00065),
-    "RoofingTiles008": (-18, ("occlusion",), 0.02745),
-    "RoofingTiles014A": (-19, ("occlusion",), 0.01472),
+    "RoofingTiles008": (-18, ("occlusion",), 0.024),
+    "RoofingTiles014A": (-19, ("occlusion",), 0.016),
     "Tiles071": (-20, ("occlusion",), 0.00418),
     "Wood096": (-21, (), 0.0035),
     "Fabric004": (-22, ("metalness",), 0.006),
@@ -88,6 +88,9 @@ DIRECT_REFERENCES = {
     "Onyx015": (-34, (), 0.00035),
     "Marble012": (-35, (), 0.00055),
     "Ice003": (-36, (), 0.0012),
+    "Chipboard002": (-37, ("occlusion",), 0.00078),
+    "Sponge001": (-38, ("occlusion",), 0.01043),
+    "Paper001": (-39, (), 0.002367),
 }
 
 LEVELS = 3

@@ -19,52 +19,74 @@ def _roof_course(uv: wp.vec2, seed: int, resolution: float, dark: bool):
         columns, courses = 8, 8
         course_phase = 0.015
 
-    broad = _noise(uv, seed, 7, 9)
-    dirt = _noise(uv, seed + 3, 63, 61)
-    clay = _noise(uv, seed + 5, 203, 169) * wp.smoothstep(120.0, 410.0, resolution)
-    grain = _noise(uv, seed + 13, 710, 648) * wp.smoothstep(350.0, 1280.0, resolution)
-    pattern_x = uv[0] * float(columns) + 0.012 * dirt
+    mottling = _noise(uv, seed, 23, 29)
+    patches = _noise(uv, seed + 3, 61, 68)
+    clay = _noise(uv, seed + 5, 199, 211) * wp.smoothstep(115.0, 440.0, resolution)
+    grain = _noise(uv, seed + 13, 591, 643) * wp.smoothstep(300.0, 1260.0, resolution)
+    pattern_x = uv[0] * float(columns) + 0.023 * _noise(uv, seed + 2, 11, 17) + 0.007 * patches
     col = int(wp.floor(pattern_x))
     column_seed = wp.rand_init(seed + 17, (col % columns + columns) % columns)
-    pattern_y = uv[1] * float(courses) + course_phase + wp.randf(column_seed, -0.015, 0.015) + 0.013 * dirt
+    x = pattern_x - wp.floor(pattern_x)
+    pattern_y = uv[1] * float(courses) + course_phase + wp.randf(column_seed, -0.014, 0.014)
+    # Each molded nose sits a little forward at the crown of the tile.
+    nose = 0.017 if not dark else 0.006
+    pattern_y += nose * wp.cos(2.0 * wp.pi * x) + nose * _noise(uv, seed + 7, 13, 19)
     row = int(wp.floor(pattern_y))
-    x, y = pattern_x - wp.floor(pattern_x), pattern_y - wp.floor(pattern_y)
+    y = pattern_y - wp.floor(pattern_y)
     tile = (col % columns + columns) % columns + columns * ((row % courses + courses) % courses)
-    pigment_seed = wp.rand_init(seed + 29, tile)
-    pigment = wp.randf(pigment_seed, -0.049, 0.049)
+    material_seed = wp.rand_init(seed + 29, tile)
+    pigment = wp.randf(material_seed, -0.024, 0.024)
+    thickness = wp.randf(material_seed, 0.273, 0.291)
 
-    # The downslope lip of each course projects out over the course below.
-    # Widen its bevel just enough to keep the edge stable at smaller sizes.
-    lap_bevel = wp.clamp(1.45 * float(courses) / resolution, 0.062, 0.48)
-    lap = y * (1.0 - wp.smoothstep(0.993 - lap_bevel, 0.993, y))
-    vertical_join = wp.min(x, 1.0 - x)
-    rolled_edge = wp.sin(wp.pi * x) ** 1.58
-    rough = 0.69 + 0.08 * broad + 0.082 * clay - 0.13 * rolled_edge
-    ao = (0.63 + 0.36 * rolled_edge) * (0.76 + 0.24 * wp.smoothstep(0.0, 0.09, y))
-    height = 0.275 + 0.435 * rolled_edge + 0.255 * lap
-    color = wp.vec3(0.563, 0.360, 0.268)
-    clay_tone = pigment + 0.032 * dirt + 0.044 * clay + 0.035 * grain
-    color += wp.vec3(1.0, 0.87, 0.70) * clay_tone
-    color *= 0.91 + 0.09 * wp.smoothstep(0.01, 0.105, vertical_join)
+    # A full course rises gradually over its neighbor, ending in a short
+    # rounded lap joint. The small ceramic chips interrupt only that lip.
+    chip_field = _noise(uv, seed + 31, 247, 219)
+    chipped = wp.smoothstep(0.22, 0.48, chip_field + 0.35 * patches)
+    bevel_width = wp.clamp(1.7 * float(courses) / resolution, 0.019, 0.21)
+    bevel = wp.smoothstep(1.0 - bevel_width - 0.019 * chipped, 1.0, y)
+    lap = y - bevel
+    lower_tile = 1.0 - wp.smoothstep(0.0, 0.052, y)
+    lip = wp.smoothstep(0.91, 0.981, y) * (1.0 - bevel)
+    room = wp.smoothstep(0.015, 0.14, y) * wp.smoothstep(0.015, 0.14, 1.0 - y)
+    pits = wp.smoothstep(0.23, 0.57, -clay + 0.54 * grain)
+    mineral = wp.smoothstep(0.31, 0.60, clay + 0.48 * grain)
+
+    # The curved cross-sections are low-order approximations of the measured
+    # reference relief. The cleaner barrel is broad and rounded. The older
+    # interlocking pantile has a pronounced trough and an asymmetric crest.
+    phase = 2.0 * wp.pi * x
+    profile = -0.202 * wp.cos(phase) - 0.048 * wp.cos(2.0 * phase) - 0.012 * wp.cos(3.0 * phase)
+    crown = wp.smoothstep(-0.25, 0.24, profile)
+    height = 0.548 + profile + thickness * lap
+    height += 0.007 * (clay + grain) - 0.021 * pits - 0.022 * chipped * lip
+    seam = 1.0 - wp.smoothstep(0.008, 0.041, wp.min(x, 1.0 - x))
+    temper = pigment + 0.047 * mottling + 0.027 * patches + 0.022 * clay + 0.017 * grain
+    color = wp.vec3(0.563, 0.357, 0.263) + wp.vec3(1.0, 0.87, 0.78) * temper
+    color += wp.vec3(0.022 * lip + 0.031 * mineral - 0.039 * pits - 0.030 * seam - 0.029 * lower_tile)
+    rough = 0.674 + 0.098 * mottling + 0.079 * clay + 0.070 * pits - 0.062 * lip
+    ao = (0.72 + 0.27 * crown) * (1.0 - 0.20 * lower_tile - 0.10 * bevel)
 
     if dark:
-        folded = 0.5 + 0.5 * wp.cos(2.0 * wp.pi * (x - 0.704))
-        rolled_edge = wp.smoothstep(0.15, 0.92, folded)
-        height = 0.07 + 0.58 * rolled_edge + 0.35 * lap
-        # Dark growth collects in sheltered valleys and survives as scattered
-        # patina on exposed ridges. It follows the same profile as the relief.
-        patina = _noise(uv, seed + 23, 33, 43)
-        wet_edge = 1.0 - wp.smoothstep(0.018, 0.20 + 0.13 * dirt, y)
-        exposed = wp.smoothstep(0.16, 0.85, rolled_edge + 0.52 * broad + 0.36 * patina + 0.25 * dirt + 0.14 * clay)
-        exposed *= 1.0 - 0.58 * wet_edge
-        clay_tone = 1.38 * pigment + 0.075 * broad + 0.055 * dirt + 0.061 * clay
-        valley = wp.vec3(0.092, 0.062, 0.029) + wp.vec3(0.030 * broad + 0.026 * clay)
-        crest = wp.vec3(0.407, 0.233, 0.145) + wp.vec3(clay_tone)
-        color = wp.lerp(valley, crest, exposed) + 0.036 * wp.vec3(grain)
-        rough = 0.68 - 0.13 * exposed + 0.103 * dirt + 0.075 * clay
-        ao = (0.48 + 0.51 * rolled_edge) * (0.76 + 0.24 * wp.smoothstep(0.0, 0.08, y))
+        profile = 0.335 * wp.cos(phase + 1.935) + 0.023 * wp.cos(2.0 * phase + 2.723)
+        profile += 0.037 * wp.cos(3.0 * phase + 2.778) + 0.014 * wp.cos(4.0 * phase + 3.026)
+        crown = wp.smoothstep(-0.30, 0.28, profile)
+        height = 0.347 + profile + (thickness + 0.039) * lap + 0.013 * room * mottling
+        # Water and dirt gather below the rounded-over edge. Weathering
+        # breaks into islands where the clay surface dries unevenly.
+        rainfall = _noise(uv, seed + 23, 16, 19) + 0.51 * mottling + 0.15 * patches
+        damp = 1.0 - wp.smoothstep(0.02, 0.125 + 0.029 * mottling, y)
+        drying = 0.83 * crown + 0.38 * rainfall + 0.076 * clay - 0.36 * damp
+        exposed = wp.smoothstep(0.17, 0.84, drying)
+        algae = (1.0 - exposed) * wp.smoothstep(0.08, 0.50, rainfall + 0.64 * patches + 0.52 * damp)
+        dark_clay = wp.vec3(0.083, 0.048, 0.016) + wp.vec3(0.017 * clay + 0.028 * mottling)
+        dark_clay = wp.lerp(dark_clay, wp.vec3(0.078, 0.089, 0.025), 0.66 * algae)
+        kiln = wp.vec3(0.428, 0.259, 0.169) + wp.vec3(1.0, 0.80, 0.68) * (1.21 * temper)
+        color = wp.lerp(dark_clay, kiln, exposed) + wp.vec3(0.022 * grain - 0.023 * pits + 0.017 * mineral)
+        height += 0.012 * algae + 0.008 * grain - 0.015 * pits - 0.019 * chipped * lip
+        rough = 0.65 - 0.083 * exposed + 0.092 * patches + 0.080 * clay + 0.11 * algae
+        ao = (0.57 + 0.41 * crown) * (1.0 - 0.27 * lower_tile - 0.13 * bevel)
 
-    return color, height + 0.017 * clay + 0.012 * grain, rough, ao
+    return color, height, rough, ao
 
 
 @wp.func

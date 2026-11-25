@@ -12,10 +12,10 @@ from warp_optix import procedural_textures as textures
 def test_new_material_families_provide_aligned_maps():
     ids = textures.reference_ids()
     assert {"LimewashWall", "WhiteSubwayTile", "GraphiteConcrete"} <= set(ids)
-    if len(ids) == 54:
+    if len(ids) == 57:
         assert {"WoodFloor071", "Fabric004", "Leather037", "Metal064", "Bricks113A", "RoofingTiles013A"} <= set(ids)
         return
-    assert len(ids) == 263
+    assert len(ids) == 266
     assert sum(asset.startswith("WoodFloor") for asset in ids) == 74
     for material in ("Leather037", "Fabric004", "DiamondPlate009", "Bamboo001C", "Ice003", "Cork004"):
         assert {"color", "normal", "roughness", "displacement"} <= set(textures.reference_maps(material))
@@ -140,3 +140,26 @@ def test_dark_foam_packs_color_with_sub_byte_precision():
     reference = textures.bake("AcousticFoam001", shape, device="cpu").numpy()
     np.testing.assert_allclose(actual, reference, atol=0.5 / (8.0 * 255.0) + 1e-7)
     assert len(np.unique(images[0][..., 0])) > 3
+
+
+def test_configurable_metal_uses_the_same_bake_api():
+    shape = (64, 80)
+    polished = textures.MetalSurface("copper", finish="polished")
+    worn = textures.MetalSurface("copper", finish="scratched", scratches=1.0, direction=32)
+    assert "titanium" in textures.metal_names()
+    assert textures.reference_maps(worn) == ("color", "normal", "roughness", "displacement", "metalness")
+    polished_roughness = textures.bake(polished, shape, map_type="roughness", device="cpu").numpy()
+    worn_roughness = textures.bake(worn, shape, map_type="roughness", device="cpu", seed=7).numpy()
+    assert np.max(polished_roughness) < np.min(worn_roughness)
+    maps, kwargs = textures.bake_gltf(worn, shape, device="cpu", seed=7)
+    normal = textures.bake(worn, shape, map_type="normal", device="cpu", seed=7).numpy()
+    np.testing.assert_array_equal(maps[1][..., :3], (255.0 * normal + 0.5).astype(np.uint8))
+    assert kwargs["metallic_roughness_texture"] == {"index": 2}
+    assert (maps[2][..., 2] == 255).all()
+    assert not np.array_equal(
+        normal, textures.bake(worn, shape, map_type="normal", device="cpu", seed=8).numpy()
+    )
+    layered, _ = textures.bake_layered_gltf(polished, worn, shape, mask=np.ones(shape), device="cpu", seed=7)
+    np.testing.assert_array_equal(layered, maps)
+    with pytest.raises(ValueError, match="roughness"):
+        textures.MetalSurface(roughness=2.0)

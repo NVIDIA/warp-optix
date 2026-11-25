@@ -29,9 +29,12 @@ PREVIEW_RELIEF = {
     "Bark014": (0.10, 0.62),
     "Bark016": (0.10, 0.62),
     "AcousticFoam001": (0.052, 0.72),
+    "RoofingTiles008": (0.085, 0.70),
+    "RoofingTiles014A": (0.067, 0.73),
+    "Concrete041D": (0.050, 0.88),
 }
 
-CONTROLS = "WASD: move   Q/E: down/up   Drag: look   Home: reset   Arrows: browse   V/R: variation/reference"
+CONTROLS = "WASD: move   Q/E: down/up   Drag: look   Home: reset   Arrows: browse   V/R: variation/reference   L: labels"
 
 
 # Give overview slots to different construction and surface features.
@@ -45,7 +48,7 @@ OVERVIEW = (
     "Wood096", "WoodFloor071", "PavingStones153", "Terrazzo004", "Bricks101",
     "SheetMetal002", "TactilePaving004", "MetalPlates001", "AcousticFoam001", "Wicker010A",
     "Fabric013", "WhiteSubwayTile", "Tiles071", "Cardboard001", "Ground031",
-    "Ground094C", "DiamondPlate009", "CorrugatedSteel009", "Bamboo001C", "Ice003",
+    "Ground094C", "DiamondPlate009", "CorrugatedSteel009", "Chipboard002", "Ice003",
 )
 def _select_materials(available, materials, query, all_materials):
     if materials:
@@ -144,7 +147,7 @@ class Gallery:
             x, z = self.slot_center(slot)
             height = None
             height_scale = 0.0
-            if asset in PREVIEW_RELIEF:
+            if isinstance(asset, str) and asset in PREVIEW_RELIEF:
                 height_scale, normal_scale = PREVIEW_RELIEF[asset]
                 relief = textures.bake(asset, (256, 256), map_type="displacement", device="cuda", seed=seed)
                 height = relief.numpy()[..., 0].reshape(64, 4, 64, 4).mean(axis=(1, 3))
@@ -175,23 +178,25 @@ class Gallery:
             if clip[3] > 0.0:
                 ndc_x, ndc_y = clip[:2] / clip[3]
                 if abs(ndc_x) < 0.96 and abs(ndc_y) < 0.89:
-                    yield asset, width * (0.5 + 0.5 * ndc_x), height * (0.5 - 0.5 * ndc_y)
+                    label = f"{asset.metal.replace('_', ' ').title()} ? {asset.finish}" if isinstance(asset, textures.MetalSurface) else asset
+                    yield label, width * (0.5 + 0.5 * ndc_x), height * (0.5 - 0.5 * ndc_y)
         yield CONTROLS, width / 2, 19
 
-    def save(self, path, frames):
+    def save(self, path, frames, *, show_labels=True):
         from PIL import Image, ImageDraw
 
         for _ in range(frames):
             self.api.render_frame()
         image = Image.fromarray(np.ascontiguousarray(self.api.get_frame_uint8()[::-1, :, :3]))
-        draw = ImageDraw.Draw(image)
-        for caption, x, y in self.annotations():
-            draw.text((x, image.height - y), caption, anchor="mm", fill="white", stroke_width=1, stroke_fill="black")
+        if show_labels:
+            draw = ImageDraw.Draw(image)
+            for caption, x, y in self.annotations():
+                draw.text((x, image.height - y), caption, anchor="mm", fill="white", stroke_width=1, stroke_fill="black")
         path.parent.mkdir(parents=True, exist_ok=True)
         image.save(path)
 
 
-def _show(gallery):
+def _show(gallery, *, show_labels=True):
     from example_pathtracing import FreeCameraController, View, _pack_display_rgba8
     from warp_optix.gl import GLInteropViewer
 
@@ -247,7 +252,11 @@ def _show(gallery):
     controller = FreeCameraController(viewer, api, home_view(), use_arrows=False, on_change=refresh)
 
     def on_key_press(symbol, _modifiers):
-        nonlocal frames_left
+        nonlocal frames_left, show_labels
+        if symbol == key.L:
+            show_labels = not show_labels
+            viewer.window.draw(0.0)
+            return
         if symbol in (key.LEFT, key.RIGHT):
             gallery.load(gallery.page + (1 if symbol == key.RIGHT else -1), gallery.seed)
         elif symbol == key.V:
@@ -262,6 +271,8 @@ def _show(gallery):
         frames_left = 32
 
     def overlay():
+        if not show_labels:
+            return
         annotations = list(gallery.annotations())
         for index, label in enumerate(labels):
             if index < len(annotations):
@@ -299,6 +310,12 @@ def main():
     parser.add_argument("--page", type=int, default=1, help="Initial page, starting at 1.")
     parser.add_argument("--single", action="store_true", help="Inspect one material per page at a larger scale.")
     parser.add_argument("--materials", nargs="+", metavar="ID", help="Present these materials in the given order.")
+    parser.add_argument("--metal", choices=textures.metal_names(), help="Preview a configurable metal in single view.")
+    parser.add_argument("--finish", choices=("polished", "brushed", "scratched"), default="brushed")
+    parser.add_argument("--scratches", type=float, help="Scratch amount from 0 to 1 for --metal.")
+    parser.add_argument("--roughness", type=float, help="Perceptual roughness from 0 to 1 for --metal.")
+    parser.add_argument("--direction", type=float, default=0.0, help="Brush and scratch direction in degrees.")
+    parser.add_argument("--no-labels", action="store_true", help="Hide gallery labels and controls.")
     parser.add_argument("--all-materials", action="store_true", help="Browse the entire catalog, including variants.")
     parser.add_argument("--filter", default="", help="Show only material IDs containing this text, e.g. WoodFloor.")
     parser.add_argument("--seed", type=int, help="Initial material variation seed.")
@@ -308,6 +325,10 @@ def main():
     parser.add_argument("--output", type=Path, help="Render one page to a PNG without opening a window.")
     parser.add_argument("--frames", type=int, default=16, help="Frames to accumulate for --output.")
     args = parser.parse_args()
+    if args.metal and (args.materials or args.filter or args.all_materials):
+        parser.error("--metal cannot be combined with catalog selection.")
+    if args.metal:
+        args.single = True
     if args.texture_size is None:
         args.texture_size = 2048 if args.single else 1024
     if min(args.width, args.height, args.texture_size, args.frames) < 1:
@@ -316,7 +337,16 @@ def main():
     unknown = set(args.materials or ()).difference(available)
     if unknown:
         parser.error(f"materials unavailable in this installation: {', '.join(sorted(unknown))}")
-    ids = _select_materials(available, args.materials, args.filter, args.all_materials)
+    if args.metal:
+        try:
+            ids = [textures.MetalSurface(
+                args.metal, finish=args.finish, scratches=args.scratches,
+                roughness=args.roughness, direction=args.direction,
+            )]
+        except ValueError as exc:
+            parser.error(str(exc))
+    else:
+        ids = _select_materials(available, args.materials, args.filter, args.all_materials)
     if not ids:
         parser.error(f"no materials match {args.filter!r}")
     page_count = math.ceil(len(ids) / (1 if args.single else PAGE_SIZE))
@@ -332,9 +362,9 @@ def main():
         gallery = Gallery(api, args.texture_size, single=args.single, ids=ids)
         gallery.load(args.page - 1, args.seed)
         if args.output is None:
-            _show(gallery)
+            _show(gallery, show_labels=not args.no_labels)
         else:
-            gallery.save(args.output, args.frames)
+            gallery.save(args.output, args.frames, show_labels=not args.no_labels)
     finally:
         api.close()
 

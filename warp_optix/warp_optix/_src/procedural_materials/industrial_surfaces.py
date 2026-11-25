@@ -65,8 +65,6 @@ def _rust(uv: wp.vec2, seed: int, resolution: float):
 
 @wp.func
 def _reinforcement(uv: wp.vec2, seed: int, resolution: float):
-    # Rust bleeds from exposed wires. The same crumbling islands conceal
-    # both those wires and their corresponding stains and metalness.
     warp_x = _noise(uv, seed, 9, 13)
     warp_y = _noise(uv, seed + 2, 13, 9)
     concrete = _noise(uv, seed + 3, 5, 7) + 0.37 * _noise(uv, seed + 5, 11, 10)
@@ -74,25 +72,43 @@ def _reinforcement(uv: wp.vec2, seed: int, resolution: float):
     speckle = _noise(uv, seed + 13, 647, 693) * wp.smoothstep(360.0, 1350.0, resolution)
     gx = _fraction(16.0 * uv[0] + 0.071 * warp_x)
     gy = _fraction(16.0 * uv[1] + 0.071 * warp_y)
-    distance = wp.min(wp.min(gx, 1.0 - gx), wp.min(gy, 1.0 - gy))
-    distance += 0.032 * sand + 0.010 * speckle
-    unbroken = wp.smoothstep(-0.07, 0.29, concrete + 0.095 * sand)
-    aa = wp.min(0.10, 8.4 / resolution)
-    wire_width = 0.031 + 0.009 * sand
-    wire = (1.0 - wp.smoothstep(wire_width - aa, wire_width + aa, distance)) * (1.0 - unbroken)
-    trench = (1.0 - wp.smoothstep(0.036, 0.11, distance + 0.016 * sand)) * (1.0 - unbroken)
-    stain = (1.0 - wp.smoothstep(0.071, 0.21, distance + 0.047 * sand)) * (1.0 - unbroken)
+    x_distance = wp.min(gx, 1.0 - gx)
+    y_distance = wp.min(gy, 1.0 - gy)
+    distance = wp.min(x_distance, y_distance)
+    contact = wp.max(x_distance, y_distance)
+    joint = 1.0 - wp.smoothstep(0.015, 0.08, contact)
+    unbroken = wp.smoothstep(-0.18, 0.19, concrete + 0.083 * sand + 0.027 * speckle)
+    exposed = 1.0 - unbroken
+
+    # The exposed rod is round. Its steel core sits above a narrow cavity,
+    # with rust on the rod and a separate, softer stain in the concrete.
+    aa = wp.min(0.09, 7.0 / resolution)
+    radius = 0.033 + 0.007 * sand + 0.005 * joint
+    wire = 1.0 - wp.smoothstep(radius - aa, radius + aa, distance)
+    cross_section = wp.sqrt(wp.max(0.0, 1.0 - (distance / radius) * (distance / radius)))
+    trench = (1.0 - wp.smoothstep(0.052, 0.106 + 1.4 * aa, distance + 0.025 * sand)) * exposed
+    stain = (1.0 - wp.smoothstep(0.058, 0.21, distance + 0.052 * sand)) * exposed
     aggregate = wp.smoothstep(0.14, 0.37, sand + 0.34 * speckle)
-    cement = wp.vec3(0.414, 0.380, 0.353) + wp.vec3(0.051 * sand + 0.089 * concrete + 0.040 * speckle)
+    cement = wp.vec3(0.441, 0.416, 0.384) + wp.vec3(0.067 * sand + 0.085 * concrete + 0.045 * speckle)
     cement -= wp.vec3(0.096, 0.081, 0.058) * aggregate
-    oxide = wp.vec3(0.288, 0.158, 0.093) + wp.vec3(0.142 * sand + 0.078 * speckle)
-    color = wp.lerp(cement, oxide, wp.clamp(0.52 * stain + 0.52 * wire, 0.0, 1.0))
-    height = 0.323 + 0.31 * concrete + 0.26 * unbroken + 0.049 * sand + 0.018 * speckle
-    height = wp.max(0.0, height + 0.121 * wire - 0.069 * trench - 0.023 * aggregate)
-    ao = 0.94 - 0.17 * trench - 0.04 * aggregate + 0.023 * unbroken
-    rough = 0.68 - 0.15 * wire + 0.085 * aggregate + 0.077 * sand
-    bare_wire = wire * wp.smoothstep(0.24, 0.5, speckle + 0.38 * sand)
-    return color, height, rough, ao, 0.013 * wire + 0.095 * bare_wire, 1.0
+    stain_color = wp.vec3(0.331, 0.210, 0.147) + wp.vec3(0.092 * sand + 0.082 * speckle)
+    color = wp.lerp(cement, stain_color, 0.69 * stain)
+    color = wp.lerp(color, wp.vec3(0.175, 0.151, 0.136), 0.53 * trench)
+
+    oxide_field = _noise(uv, seed + 21, 147, 145) + 0.49 * speckle
+    bare = wp.smoothstep(0.06, 0.46, oxide_field + 0.17 * joint) * wp.smoothstep(0.05, 0.92, cross_section)
+    rust = wp.vec3(0.334, 0.196, 0.122) + wp.vec3(0.121 * sand + 0.106 * speckle)
+    steel = wp.vec3(0.408, 0.396, 0.373) + wp.vec3(0.088 * speckle)
+    coverage = wire * exposed
+    color = wp.lerp(color, wp.lerp(rust, steel, bare), coverage)
+
+    height = 0.39 + 0.19 * concrete + 0.15 * unbroken + 0.048 * sand + 0.023 * speckle
+    height -= 0.118 * trench + 0.024 * aggregate
+    shaft_height = 0.43 + 0.142 * cross_section + 0.02 * joint + 0.027 * oxide_field
+    height = wp.lerp(height, shaft_height, coverage)
+    ao = 0.98 - 0.36 * trench * (1.0 - 0.83 * coverage) - 0.048 * aggregate
+    rough = wp.lerp(0.75 + 0.075 * aggregate + 0.062 * sand, 0.85 - 0.32 * bare, coverage)
+    return color, height, rough, ao, coverage * 0.72 * bare, 1.0
 
 
 @wp.func

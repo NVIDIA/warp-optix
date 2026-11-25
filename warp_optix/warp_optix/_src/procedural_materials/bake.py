@@ -13,6 +13,8 @@ import warp as wp
 
 from .bark_surfaces import bark_surface
 from .carbon_fiber import carbon_fiber
+from .chipboard import chipboard
+from .configurable_metals import METAL_MAPS, MetalSurface, bake_metal, pack_metal
 from .functional_surfaces import functional_surface
 from .industrial_surfaces import industrial_surface
 from .lawn_leather_stone import fractured_marble, lake_ice, lawn_surface, leather_panel, onyx_layers
@@ -21,7 +23,9 @@ from .mineral_surfaces import perforated_sheet, riveted_metal, tactile_paving, t
 from .natural_and_foil import natural_or_foil
 from .organic_surfaces import organic_surface
 from .reclaimed_planks import reclaimed_planks
+from .relief import _normal_from_relief
 from .roof_and_mosaic import roof_or_mosaic
+from .sponge_and_paper import sponge_or_paper
 from .textile_surfaces import textile_surface
 from .texture_coefficients import (
     ANALYTIC_MATERIALS,
@@ -456,8 +460,12 @@ def _surface_maps(
         return onyx_layers(uv, seed, resolution)
     elif style == -35:
         return fractured_marble(uv, seed, resolution)
-    else:
+    elif style == -36:
         return lake_ice(uv, seed, resolution)
+    elif style == -37:
+        return chipboard(uv, seed, resolution)
+    else:
+        return sponge_or_paper(uv, seed, resolution, -style - 38)
     return color, height, roughness, ao, 0.0, 1.0
 
 
@@ -473,14 +481,17 @@ def _linear_color(color: wp.vec3) -> wp.vec3:
 @wp.kernel(enable_backward=False)
 def _bake_surface(
     style: int, seed: int, palette: wp.vec3, contrast: float, base_roughness: float, pattern: float,
-    columns: int, rows: int, channel: int, image: wp.array2d(dtype=wp.vec3),
+    columns: int, rows: int, channel: int, image: wp.array2d(dtype=wp.vec3), relief: wp.array2d(dtype=float),
 ):
     row, col = wp.tid()
-    h, w = image.shape[0], image.shape[1]
+    h, w = wp.max(image.shape[0], relief.shape[0]), wp.max(image.shape[1], relief.shape[1])
     color, height, roughness, ao, metal, alpha = _surface_maps(
         _texel_uv(row, col, h, w), float(wp.min(h, w)), style, seed,
         palette, contrast, base_roughness, pattern, columns, rows,
     )
+    if channel == 1:
+        relief[row, col] = wp.clamp(height, 0.0, 1.0)
+        return
     result = wp.vec3(height)
     if channel == 0:
         result = _linear_color(color)
@@ -496,14 +507,10 @@ def _bake_surface(
 
 
 
-@wp.kernel
-def _height_normals(height: wp.array2d(dtype=wp.vec3), strength: float, image: wp.array2d(dtype=wp.vec3)):
+@wp.kernel(enable_backward=False)
+def _height_normals(relief: wp.array2d(dtype=float), strength: float, image: wp.array2d(dtype=wp.vec3)):
     row, col = wp.tid()
-    h, w = height.shape[0], height.shape[1]
-    dx = height[row, (col + w - 1) % w][0] - height[row, (col + 1) % w][0]
-    dy = height[(row + 1) % h, col][0] - height[(row + h - 1) % h, col][0]
-    n = wp.normalize(wp.vec3(strength * float(w) * dx, strength * float(h) * dy, 1.0))
-    image[row, col] = 0.5 * n + wp.vec3(0.5)
+    image[row, col] = _normal_from_relief(relief, row, col, strength)
 
 
 @wp.func
@@ -733,8 +740,10 @@ def reference_ids() -> tuple[str, ...]:
     return tuple(dict.fromkeys((*INDEX, *BUILTIN_SURFACES, *DIRECT_REFERENCES)))
 
 
-def reference_maps(material: str) -> tuple[str, ...]:
+def reference_maps(material: str | MetalSurface) -> tuple[str, ...]:
     """List the maps available for a material."""
+    if isinstance(material, MetalSurface):
+        return METAL_MAPS
     if material in DIRECT_REFERENCES:
         return (*_SURFACE_CHANNELS[:4], *DIRECT_REFERENCES[material][1])
     if material in BUILTIN_SURFACES:
@@ -815,7 +824,7 @@ def _surface_configuration(material, seed):
 
 
 def bake(
-    material: str,
+    material: str | MetalSurface,
     shape: tuple[int, int],
     *,
     map_type: str = "color",
@@ -832,17 +841,22 @@ def bake(
     height, width = shape
     if height < 1 or width < 1:
         raise ValueError("Texture dimensions must be positive.")
+    if isinstance(material, MetalSurface):
+        return bake_metal(material, shape, map_type, device, seed)
     if material in ANALYTIC_MATERIALS or material in DIRECT_REFERENCES:
         if map_type not in reference_maps(material):
             raise KeyError(map_type)
         channel = _SURFACE_CHANNELS.index(map_type)
         image = wp.empty(shape, dtype=wp.vec3, device=device)
         params, strength = _surface_configuration(material, seed)
-        wp.launch(_bake_surface, dim=shape, inputs=[*params, channel], outputs=[image], device=image.device)
         if channel == 1:
-            normal = wp.empty_like(image)
-            wp.launch(_height_normals, dim=shape, inputs=[image, strength], outputs=[normal], device=image.device)
-            return normal
+            relief = wp.empty(shape, dtype=float, device=image.device)
+            unused = wp.empty((0, 0), dtype=wp.vec3, device=image.device)
+            wp.launch(_bake_surface, dim=shape, inputs=[*params, channel], outputs=[unused, relief], device=image.device)
+            wp.launch(_height_normals, dim=shape, inputs=[relief, strength], outputs=[image], device=image.device)
+        else:
+            unused = wp.empty((0, 0), dtype=float, device=image.device)
+            wp.launch(_bake_surface, dim=shape, inputs=[*params, channel], outputs=[image, unused], device=image.device)
         return image
     field, _ = _field(material, map_type)
     resolution = min(height, width)
@@ -946,15 +960,11 @@ def _pack_relief_normals(
     relief: wp.array2d(dtype=float), strength: float, packed: wp.array3d(dtype=wp.vec4ub),
 ):
     row, col = wp.tid()
-    h, w = relief.shape[0], relief.shape[1]
-    dx = relief[row, (col + w - 1) % w] - relief[row, (col + 1) % w]
-    dy = relief[(row + 1) % h, col] - relief[(row + h - 1) % h, col]
-    n = wp.normalize(wp.vec3(strength * float(w) * dx, strength * float(h) * dy, 1.0))
-    packed[1, row, col] = _rgba8(0.5 * n + wp.vec3(0.5), 1.0)
+    packed[1, row, col] = _rgba8(_normal_from_relief(relief, row, col, strength), 1.0)
 
 
 def bake_gltf(
-    material: str,
+    material: str | MetalSurface,
     shape: tuple[int, int],
     *,
     device: wp.DeviceLike = None,
@@ -980,6 +990,10 @@ def bake_gltf(
 
 
 def _bake_gltf_arrays(material, shape, device, seed, *, color_gain=1.0):
+    if isinstance(material, MetalSurface):
+        if min(shape) < 1:
+            raise ValueError("Texture dimensions must be positive.")
+        return pack_metal(material, shape, device, seed)
     maps = reference_maps(material)
 
     def generate(map_type: str) -> wp.array:
@@ -1037,8 +1051,8 @@ def _gltf_properties(first_texture_index, has_occlusion, has_opacity):
     return kwargs
 
 def bake_layered_gltf(
-    base: str,
-    overlay: str,
+    base: str | MetalSurface,
+    overlay: str | MetalSurface,
     shape: tuple[int, int],
     *,
     mask: np.ndarray | wp.array | None = None,

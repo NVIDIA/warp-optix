@@ -36,8 +36,8 @@ staggered pattern repeats vertically. Its mortar fraction is measured relative
 to the width or height of a brick cell on each axis.
 
 The `textures.reference_ids()` function lists materials in the current installation.
-Default wheels include eight built-in materials and 46 based on ambientCG references.
-The source checkout and full-catalog wheel include 263 materials, including 138 from the first batch of the
+Default wheels include eight built-in materials and 49 based on ambientCG references.
+The source checkout and full-catalog wheel include 266 materials, including 138 from the first batch of the
 [ambientCG popularity listing](https://ambientcg.com/list?type=material%2Cdecal%2Catlas&sort=popular),
 plus 22 selected surfaces such as leather, carbon fiber, diamond plate, cork,
 bamboo, and ice, and every material in the
@@ -93,7 +93,8 @@ perforated sheet and riveted metal, and two styles of bark. Cutout coverage and
 beveled relief come from the same geometry for perforated sheet, wicker, and
 open-weave fabric. The glTF baker evaluates each direct surface once per texel,
 packs the color and material properties immediately, and derives normals from
-one scalar relief buffer. Additional generators cover rope fibers, corrosion,
+one scalar relief buffer. At preview resolutions the gradient blends nearby
+rows and columns to reduce stair-step artifacts on diagonal features. Additional generators cover rope fibers, corrosion,
 exposed reinforcement, chain-link fence, slotted walkway, tufted carpet,
 crumpled foil, moss, grass, stitched leather, layered onyx, and fractured marble.
 The fence and walkway bake opacity from their wire or slot geometry.
@@ -135,6 +136,30 @@ python examples/procedural_textures/fit_detail.py maps examples/procedural_textu
 The public API is `warp_optix.procedural_textures`. Material family generators,
 map packing, and coefficient decoding are in
 [`warp_optix/_src/procedural_materials`](../warp_optix/warp_optix/_src/procedural_materials).
+
+The material gallery shows 45 representative shader balls. Press **L** to
+hide or show the overlay. Use `--no-labels` to start with a clear view or save
+a PNG without annotations.
+
+### Configurable metals
+
+A `MetalSurface` can be passed wherever the bakers accept a material ID.
+`metal_names()` lists the conductor presets. To represent an unlisted alloy,
+supply its normal-incidence reflectance as a linear RGB tuple.
+
+```python
+surface = textures.MetalSurface(
+    "copper", finish="brushed", roughness=0.29, scratches=0.24,
+    scratch_density=14, direction=25,
+)
+height = textures.bake(surface, (2048, 2048), map_type="displacement", seed=12, device="cuda")
+images, gltf = textures.bake_gltf(surface, (2048, 2048), seed=12, device="cuda")
+```
+
+Finishes are `polished`, `brushed`, and `scratched`. Optional controls override
+the finish defaults. Brushing uses directional grooves in the baked maps. The
+roughness channel remains scalar for glTF compatibility. Preview a finish with
+`example_material_gallery.py --metal copper --finish brushed --scratches 0.24 --direction 25`.
 
 ### Layered materials
 

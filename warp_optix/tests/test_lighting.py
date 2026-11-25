@@ -11,6 +11,7 @@ from warp_optix._src.pathtracing.pathtracing_warp_kernels import (
     SphereLight,
     _bsdf_evaluate,
     _bsdf_sample,
+    _correct_metal_reflection,
     _eval_physical_sky,
     _evaluate_material_from_payload,
     _filter_roughness_for_normal_map,
@@ -449,3 +450,29 @@ def test_backface_keeps_faceforward_frame_and_selects_volume_medium():
     np.testing.assert_allclose(clearcoat[:3], (0.0, 0.0, 1.0), atol=1.0e-7)
     np.testing.assert_allclose((normal[3], geometric[3]), (1.5, 1.0), atol=1.0e-7)
     np.testing.assert_allclose(thin_iors[:2], (1.0, 1.5), atol=1.0e-7)
+
+@wp.kernel
+def _test_reflection_frames(output: wp.array(dtype=wp.vec3)):
+    i = wp.tid()
+    hit = ShadedHitData()
+    hit.Ng = wp.vec3(0.0, 0.0, 1.0)
+    hit.normal = wp.normalize(wp.vec3(-0.51, 0.0, 0.86))
+    hit.T = wp.normalize(wp.vec3(0.86, 0.0, 0.51))
+    hit.B = wp.vec3(0.0, -1.0, 0.0)
+    hit.metallic = 1.0 if i < 2 else 0.0
+    hit.roughness = 0.014
+    view = wp.normalize(wp.vec3(0.984, 0.0, 0.18)) if i != 1 else wp.vec3(0.0, 0.0, 1.0)
+    original = hit.normal
+    hit = _correct_metal_reflection(hit, -view)
+    reflection = 2.0 * wp.dot(hit.normal, view) * hit.normal - view
+    output[i] = wp.vec3(reflection[2], wp.length(hit.normal - original), wp.dot(hit.B, wp.cross(hit.normal, hit.T)))
+
+
+def test_glossy_metal_keeps_reflection_above_geometric_surface():
+    values = wp.empty(3, dtype=wp.vec3, device="cpu")
+    wp.launch(_test_reflection_frames, dim=3, outputs=[values], device="cpu")
+    result = values.numpy()
+    assert result[0, 0] >= 0.07 and result[0, 1] > 0
+    assert result[1, 1] == 0 and result[2, 1] == 0
+    assert result[2, 0] < 0
+    np.testing.assert_allclose(result[:, 2], -1.0, atol=1e-6)

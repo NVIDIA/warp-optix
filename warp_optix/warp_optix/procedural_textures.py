@@ -13,5 +13,10 @@ from warp_optix._src.procedural_materials.bake import (
     reference_maps,
     wood,
 )
+from warp_optix._src.procedural_materials.configurable_metals import MetalSurface, metal_names
 
-__all__ = ["bake", "bake_gltf", "bake_layered_gltf", "brick", "marble", "reference_ids", "reference_maps", "wood"]
+
+__all__ = [
+    "MetalSurface", "bake", "bake_gltf", "bake_layered_gltf", "brick",
+    "marble", "metal_names", "reference_ids", "reference_maps", "wood",
+]
