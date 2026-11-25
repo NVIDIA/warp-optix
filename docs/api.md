@@ -35,9 +35,9 @@ Wood grain runs along the image rows. Brick uses two rows per row pair so the
 staggered pattern repeats vertically. Its mortar fraction is measured relative
 to the width or height of a brick cell on each axis.
 
-For reference-based textures, `textures.reference_ids()` lists the materials
-available in the current installation. Default wheels include 12 fitted
-materials. The source checkout and full-catalog wheel include 230: 138 from the first batch of the
+The `textures.reference_ids()` function lists materials in the current installation.
+Default wheels include eight built-in materials and 12 based on ambientCG references.
+The source checkout and full-catalog wheel include 238 materials, including 138 from the first batch of the
 [ambientCG popularity listing](https://ambientcg.com/list?type=material%2Cdecal%2Catlas&sort=popular),
 plus 22 selected surfaces such as leather, carbon fiber, diamond plate, cork,
 bamboo, and ice, and every material in the
@@ -75,14 +75,17 @@ Pass a non-negative integer `seed` to either bake call to vary the tile's
 layout and fine detail. Use the same seed for all maps of a material. Omit
 it for the closest match to the reference.
 
-Seven materials generate their surface directly from UV coordinates and a seed.
+The analytical materials generate their surfaces directly from UV coordinates and a seed.
 Wood097, Wood098 and Wood099 use growth rings, knots and pores. WoodFloor071
 orients that grain independently on each parquet strip. PavingStones153 and
 Bricks101 evaluate stone or brick boundaries and recess the joints. Concrete049
 embeds three sizes of mineral aggregate in a cement binder. For these materials
 the same surface features drive color, roughness, displacement and available
 occlusion. Normals come from periodic central differences of the baked height.
-They require no fitted image payload.
+They require no fitted image payload. The catalog also includes analytical
+concrete, asphalt, plaster, and ceramic and stone tiles. Eight original
+presets, including WhiteSubwayTile and BoardFormedConcrete, ship in both
+wheel configurations without fitted data.
 
 For new families, compare the physical feature sizes and palette with the CC0
 reference, then inspect a native-resolution crop and a lit sphere or tile.

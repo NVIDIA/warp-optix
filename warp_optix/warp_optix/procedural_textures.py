@@ -11,7 +11,7 @@ from zlib import decompress
 import numpy as np
 import warp as wp
 
-from warp_optix._src.texture_coefficients import ANALYTIC_MATERIALS, decode, read_index, read_record
+from warp_optix._src.texture_coefficients import ANALYTIC_MATERIALS, BUILTIN_SURFACES, SURFACE_PRESETS, decode, read_index, read_record
 
 __all__ = ["bake", "bake_gltf", "brick", "marble", "reference_ids", "reference_maps", "wood"]
 
@@ -22,6 +22,7 @@ if not (_catalog / "models" / "index.json").is_file():
 _MODELS = _catalog / "models"
 _DETAIL = _catalog / "detail"
 INDEX = read_index(_MODELS) if (_MODELS / "index.json").is_file() else {}
+_SURFACE_CHANNELS = ("color", "normal", "roughness", "displacement", "occlusion", "metalness")
 DETAIL_INDEX = read_index(_DETAIL) if (_DETAIL / "index.json").is_file() else {}
 
 
@@ -296,6 +297,64 @@ def _brick_wall_surface(uv: wp.vec2, seed: int, resolution: float):
 
 
 @wp.func
+def _mineral_finish(uv: wp.vec2, seed: int, resolution: float):
+    cloud = _surface_noise(seed, uv, 5, 7) + 0.45 * _surface_noise(seed + 3, uv, 17, 19)
+    stipple = _surface_noise(seed + 4, uv, 211, 201) * wp.smoothstep(110.0, 420.0, resolution)
+    micro = _surface_noise(seed + 5, uv, 670, 700) * wp.smoothstep(350.0, 1400.0, resolution)
+    pore = wp.smoothstep(0.27, 0.55, stipple + 0.33 * micro)
+    return cloud, stipple, micro, pore
+
+
+@wp.func
+def _finish_surface(uv: wp.vec2, seed: int, resolution: float, palette: wp.vec3, contrast: float,
+                    base_roughness: float, formwork: float):
+    cloud, stipple, micro, pore = _mineral_finish(uv, seed, resolution)
+    cast = _surface_noise(seed + 23, uv, 90, 8) + 0.45 * _surface_noise(seed + 9, uv, 210, 28)
+    if formwork < 0.0:
+        grain_uv = uv + 0.0007 * wp.vec2(stipple, micro)
+        coverage, stone = _concrete_chip(grain_uv, seed + 29, 154, 105.0 / resolution)
+        exposed = coverage * (0.65 + 0.35 * micro)
+        color = palette + wp.vec3(0.087 * stipple + 0.24 * micro)
+        color += -formwork * exposed * wp.vec3(0.10 + 0.38 * stone[0])
+        return color, 0.48 + 0.11 * exposed + 0.075 * micro, 0.86 - 0.1 * exposed, 0.91 + 0.08 * exposed
+    tone = contrast * (0.58 * cloud + 0.36 * stipple + 0.31 * micro - 0.62 * pore + formwork * cast)
+    height = 0.55 + 0.04 * cloud + 0.025 * stipple + 0.030 * micro - 0.12 * pore + 0.07 * formwork * cast
+    return palette + wp.vec3(tone), height, base_roughness + 0.087 * pore - 0.047 * cloud, 0.96 - 0.16 * pore
+
+
+@wp.func
+def _tile_surface(uv: wp.vec2, seed: int, resolution: float, palette: wp.vec3, contrast: float,
+                  base_roughness: float, columns: int, rows: int, stagger: float):
+    cloud, stipple, micro, pore = _mineral_finish(uv, seed, resolution)
+    grid_y = uv[1] * float(rows)
+    row = int(wp.floor(grid_y))
+    grid_x = uv[0] * float(columns) + stagger * float(row & 1)
+    col = int(wp.floor(grid_x))
+    cell = (col % columns + columns) % columns + columns * ((row % rows + rows) % rows)
+    state = wp.rand_init(seed + 81, cell)
+    clay_brick = rows >= 16 and base_roughness >= 0.60
+    grout_width = wp.randf(state, 0.009, 0.013)
+    if clay_brick:
+        grout_width *= 4.0
+    x, y = grid_x - wp.floor(grid_x), grid_y - wp.floor(grid_y)
+    d = wp.min(wp.min(x, 1.0 - x), wp.min(y, 1.0 - y))
+    chip = 0.08 * contrast * wp.smoothstep(0.30, 0.61, stipple + 0.5 * cloud)
+    aa = float(wp.max(columns, rows)) / resolution
+    face = wp.smoothstep(grout_width - aa, grout_width + aa, d - chip)
+    bevel = wp.smoothstep(0.35 * grout_width, grout_width * 1.8 + aa, d - chip)
+    tone = contrast * (wp.randf(state, -0.57, 0.57) + 0.44 * cloud + 0.45 * stipple + 0.24 * micro - 0.76 * pore)
+    tile_color = palette + wp.vec3(tone)
+    grout_color = wp.lerp(wp.vec3(0.26, 0.24, 0.22), palette, 0.38)
+    if clay_brick:
+        grout_color = wp.vec3(0.65, 0.61, 0.52)
+    grout_color += wp.vec3(0.08 * stipple)
+    relief = wp.lerp(0.43, 0.66 + 0.04 * wp.sin(wp.PI * x) * wp.sin(wp.PI * y), bevel)
+    relief += contrast * (0.16 * stipple + 0.065 * micro - 0.35 * pore) * face
+    return wp.lerp(grout_color, tile_color, face), relief, wp.lerp(0.85, base_roughness + 0.11 * pore, face), 0.76 + 0.24 * bevel
+
+
+
+@wp.func
 def _analytic_surface(uv: wp.vec2, seed: int, style: int, resolution: float):
     if style == 4:
         return _concrete_surface(uv, seed, resolution)
@@ -309,12 +368,20 @@ def _analytic_surface(uv: wp.vec2, seed: int, style: int, resolution: float):
 
 
 @wp.kernel
-def _bake_surface(style: int, channel: int, seed: int, image: wp.array2d(dtype=wp.vec3)):
+def _bake_surface(
+    style: int, channel: int, seed: int, palette: wp.vec3, contrast: float, roughness: float, pattern: float,
+    columns: int, rows: int, image: wp.array2d(dtype=wp.vec3),
+):
     row, col = wp.tid()
     h, w = image.shape[0], image.shape[1]
     uv = _texel_uv(row, col, h, w)
     resolution = float(wp.min(h, w))
-    color, height, roughness, ao = _analytic_surface(uv, seed, style, resolution)
+    if columns > 0:
+        color, height, roughness, ao = _tile_surface(uv, seed, resolution, palette, contrast, roughness, columns, rows, pattern)
+    elif style >= 7:
+        color, height, roughness, ao = _finish_surface(uv, seed, resolution, palette, contrast, roughness, pattern)
+    else:
+        color, height, roughness, ao = _analytic_surface(uv, seed, style, resolution)
     result = wp.vec3(height)
     if channel == 0:
         result = wp.vec3(_srgb_to_linear(color[0]), _srgb_to_linear(color[1]), _srgb_to_linear(color[2]))
@@ -322,6 +389,8 @@ def _bake_surface(style: int, channel: int, seed: int, image: wp.array2d(dtype=w
         result = wp.vec3(roughness)
     elif channel == 4:
         result = wp.vec3(ao)
+    elif channel == 5:
+        result = wp.vec3(0.0)  # The mineral surfaces are dielectrics.
     image[row, col] = wp.vec3(wp.clamp(result[0], 0.0, 1.0), wp.clamp(result[1], 0.0, 1.0), wp.clamp(result[2], 0.0, 1.0))
 
 
@@ -559,12 +628,14 @@ def _bake_reference(
 
 
 def reference_ids() -> tuple[str, ...]:
-    """List the fitted ambientCG material IDs."""
-    return tuple(INDEX)
+    """List the ambientCG and built-in material IDs."""
+    return (*INDEX, *BUILTIN_SURFACES)
 
 
 def reference_maps(material: str) -> tuple[str, ...]:
-    """List the fitted maps for an ambientCG material ID."""
+    """List the maps available for a material."""
+    if material in BUILTIN_SURFACES:
+        return _SURFACE_CHANNELS[:5]
     return tuple(INDEX[material])
 
 
@@ -632,7 +703,7 @@ def bake(
     device: wp.DeviceLike = None,
     seed: int | None = None,
 ) -> wp.array:
-    """Bake a fitted ambientCG texture into a Warp array of shape (height, width).
+    """Bake a material texture into a Warp array of shape (height, width).
 
     Color is linear RGB. Normals are OpenGL tangent-space normals encoded
     in [0, 1]. Scalar maps repeat the normalized value in all three output
@@ -643,17 +714,24 @@ def bake(
     if height < 1 or width < 1:
         raise ValueError("Texture dimensions must be positive.")
     if material in ANALYTIC_MATERIALS:
-        if map_type not in INDEX[material]:
+        if map_type not in reference_maps(material):
             raise KeyError(map_type)
-        channel = ("color", "normal", "roughness", "displacement", "occlusion").index(map_type)
+        channel = _SURFACE_CHANNELS.index(map_type)
         state = 173 if seed is None else int(np.random.default_rng(seed).integers(1, 1 << 30))
         image = wp.empty(shape, dtype=wp.vec3, device=device)
         style = ANALYTIC_MATERIALS.index(material)
-        wp.launch(_bake_surface, dim=shape, inputs=[style, channel, state], outputs=[image], device=image.device)
+        preset = SURFACE_PRESETS.get(material, ((0.0, 0.0, 0.0), 0.0, 0.0, 0.0))
+        palette, contrast, roughness, pattern, *grid = preset
+        columns, rows = grid or (0, 0)
+        wp.launch(
+            _bake_surface, dim=shape,
+            inputs=[style, channel, state, wp.vec3(*palette), contrast, roughness, pattern, columns, rows],
+            outputs=[image], device=image.device,
+        )
         if channel == 1:
             normal = wp.empty_like(image)
             # Match the slope amplitude of the reference NormalGL map.
-            strength = (0.0009, 0.0008, 0.0007, 0.004, 0.0032, 0.00028, 0.003)[style]
+            strength = (0.0009, 0.0008, 0.0007, 0.004, 0.0032, 0.00028, 0.003)[style] if style < 7 else (0.0013 if columns else 0.0009)
             wp.launch(_height_normals, dim=shape, inputs=[image, strength], outputs=[normal], device=image.device)
             return normal
         return image

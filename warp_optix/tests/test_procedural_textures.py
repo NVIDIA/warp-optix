@@ -11,10 +11,11 @@ from warp_optix import procedural_textures as textures
 
 def test_new_material_families_provide_aligned_maps():
     ids = textures.reference_ids()
-    if len(ids) == 12:
+    assert {"LimewashWall", "WhiteSubwayTile", "GraphiteConcrete"} <= set(ids)
+    if len(ids) == 20:
         assert {"WoodFloor071", "Fabric004", "Leather037", "Metal064", "Bricks113A", "RoofingTiles013A"} <= set(ids)
         return
-    assert len(ids) == 230
+    assert len(ids) == 238
     assert sum(asset.startswith("WoodFloor") for asset in ids) == 74
     for material in ("Leather037", "Fabric004", "DiamondPlate009", "Bamboo001C", "Ice003", "Cork004"):
         assert {"color", "normal", "roughness", "displacement"} <= set(textures.reference_maps(material))
@@ -73,7 +74,9 @@ def test_seeded_variants_repeat_and_keep_maps_aligned():
     np.testing.assert_array_equal(a[1][..., :3], (normal * 255.0 + 0.5).astype(np.uint8))
 
 
-@pytest.mark.parametrize("material", ["PavingStones153", "Concrete049", "Wood099", "WoodFloor071", "Bricks101"])
+@pytest.mark.parametrize(
+    "material", ["PavingStones153", "Concrete049", "Wood099", "WoodFloor071", "Bricks101", "WhiteSubwayTile", "LimewashWall"]
+)
 def test_analytic_normals_follow_seeded_height(material):
     if material not in textures.reference_ids():
         pytest.skip("Material requires the full catalog")

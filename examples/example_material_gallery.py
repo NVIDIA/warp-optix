@@ -6,6 +6,7 @@
 import argparse
 import math
 from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 import warp as wp
@@ -13,26 +14,18 @@ from warp_optix.pathtracing import PathTracer
 
 from warp_optix import procedural_textures as textures
 
+from scenes.shader_ball import add_shader_ball
+from scenes.style import add_checker_ground
+
 COLUMNS = 4
 ROWS = 2
 PAGE_SIZE = COLUMNS * ROWS
-PITCH_X = 2.65
-PITCH_Y = 2.05
-CAMERA_DISTANCE = 8.0
+PITCH_X = 2.15
+PITCH_Z = 3.95
+CAMERA_PITCH = 30.0
+CAMERA_TARGET_Y = 0.72
+CAMERA_DISTANCE = 12.0
 CONTROLS = "WASD: move   Q/E: down/up   Drag: look   Home: reset   Arrows: browse   V/R: variation/reference"
-
-
-def _add_tile(api, x, y, material):
-    # A slightly tilted flat swatch complements the curved UV sphere.
-    corners = ((0.18, -0.48, 0.06), (1.14, -0.48, -0.08), (1.14, 0.48, -0.16), (0.18, 0.48, -0.02))
-    vertices = np.array(
-        [[x + dx, y + dy, dz] for dx, dy, dz in corners],
-        dtype=np.float32,
-    )
-    indices = np.array(((0, 1, 2), (0, 2, 3)), dtype=np.uint32)
-    uvs = np.array(((0, 1), (1, 1), (1, 0), (0, 0)), dtype=np.float32)
-    mesh = api.create_mesh(vertices, indices, uvs=uvs, material_id=material)
-    api.create_instance(mesh)
 
 
 class Gallery:
@@ -50,24 +43,52 @@ class Gallery:
         api.initialize()
         api.viewer.accumulate_samples = True
         api.tonemap_exposure = 0.75
-        api.set_use_procedural_sky(False)
-        api.set_environment_color((0.28, 0.28, 0.28))
+        api.set_use_procedural_sky(True)
+        api.set_sky_parameters(
+            (-0.5, 0.76, 0.42), grayscale=1.0, multiplier=0.85, haze=0.22,
+            sun_disk_intensity=0.12, sun_glow_intensity=0.38,
+            ground_color=(0.30, 0.30, 0.30),
+        )
         self.resize(api.width, api.height)
 
     def slot_center(self, index):
         row, col = divmod(index, self.columns)
-        return (col - (self.columns - 1) / 2) * PITCH_X, ((self.rows - 1) / 2 - row) * PITCH_Y
+        return (col - (self.columns - 1) / 2) * PITCH_X, (row - (self.rows - 1) / 2) * PITCH_Z
 
     def resize(self, width, height, *, reframe=True):
         if (width, height) != (self.api.width, self.api.height):
             self.api.resize(width, height)
-        self.half_height = max(1.36 if self.page_size == 1 else 2.43, (self.columns * 1.32 + 0.22) * height / width)
+        # Include the near row's perspective growth and the labels below it.
+        # Project conservative bounds on each pedestal and ball into the home view.
+        angle = math.radians(CAMERA_PITCH)
+        sine, cosine = math.sin(angle), math.cos(angle)
+        distance = self.home_distance
+        horizontal = vertical = 0.0
+        for slot in range(self.page_size):
+            x, z = self.slot_center(slot)
+            points = ((0.0, 0.82, 0.0), (1.62, -0.72, 0.72), (1.62, 0.72, 0.72),
+                      (0.0, 0.60, 0.60), (0.0, -0.60, 0.60))
+            for y, dz, radius in points:
+                relative_y = y - CAMERA_TARGET_Y
+                depth = distance - sine * relative_y - cosine * (z + dz)
+                horizontal = max(horizontal, (abs(x) + radius) / depth)
+                vertical = max(vertical, abs(cosine * relative_y - sine * (z + dz)) / depth)
+        self.half_height = distance * max(horizontal * height / width / 0.91, vertical / 0.82)
         if reframe:
-            self.api.set_camera_look_at((0, 0, CAMERA_DISTANCE), (0, 0, 0), fov=self.home_fov)
+            self.api.set_camera_look_at(self.home_position, (0, CAMERA_TARGET_Y, 0), fov=self.home_fov)
+
+    @property
+    def home_distance(self):
+        return 8.0 if self.page_size == 1 else CAMERA_DISTANCE
+
+    @property
+    def home_position(self):
+        angle = math.radians(CAMERA_PITCH)
+        return (0, CAMERA_TARGET_Y + self.home_distance * math.sin(angle), self.home_distance * math.cos(angle))
 
     @property
     def home_fov(self):
-        return math.degrees(2 * math.atan(self.half_height / CAMERA_DISTANCE))
+        return math.degrees(2 * math.atan(self.half_height / self.home_distance))
 
     def load(self, page, seed):
         page %= self.page_count
@@ -84,13 +105,15 @@ class Gallery:
         self.api.clear_scene()
         scene = self.api.scene
         scene.set_gltf_textures(images)
+        graphite = self.api.create_pbr_material((0.046, 0.046, 0.046), roughness=0.43, metallic=0.52)
+        trim = self.api.create_pbr_material((0.36, 0.36, 0.36), roughness=0.26, metallic=0.85)
+        add_checker_ground(self.api, height=-0.002, size=160)
         for slot, kwargs in enumerate(materials):
             material = scene.materials.add_gltf_material(**kwargs)
-            x, y = self.slot_center(slot)
-            self.api.add_sphere((x - 0.60, y, 0), 0.61, 48, material)
-            _add_tile(self.api, x, y, material)
-        scene.add_light_sphere((-6, 7, 9), 2.4, (1.0, 0.96, 0.91), 17.0)
-        scene.add_light_sphere((6, 3, 6), 1.8, (0.91, 0.95, 1.0), 10.0)
+            x, z = self.slot_center(slot)
+            add_shader_ball(self.api, x, z, material, graphite, trim)
+        scene.add_light_sphere((-4, 6, 5), 1.25, (1.0, 1.0, 1.0), 11.0)
+        scene.add_light_sphere((5, 4, -3), 1.4, (1.0, 1.0, 1.0), 8.0)
         self.api.build_scene()
         self.page, self.seed, self.visible_ids = page, seed, ids
 
@@ -101,8 +124,8 @@ class Gallery:
         camera = self.api.viewer.camera
         view_projection = camera.get_view_matrix() @ camera.get_projection_matrix()
         for slot, asset in enumerate(self.visible_ids):
-            x, y = self.slot_center(slot)
-            clip = np.array((x, y - 0.80, 0.0, 1.0)) @ view_projection
+            x, z = self.slot_center(slot)
+            clip = np.array((x, 0.0, z + 0.82, 1.0)) @ view_projection
             if clip[3] > 0.0:
                 ndc_x, ndc_y = clip[:2] / clip[3]
                 if abs(ndc_x) < 0.96 and abs(ndc_y) < 0.89:
@@ -130,14 +153,27 @@ def _show(gallery):
     frames_left = 32
     pending_size = None
     previous_time = 0.0
+    last_camera_change = float("-inf")
+    settle_samples = api.samples_per_frame
 
     def refresh():
-        nonlocal frames_left
+        nonlocal frames_left, last_camera_change
+        last_camera_change = perf_counter()
         frames_left = 32
 
     def resize(width, height):
         nonlocal pending_size
         pending_size = width, height
+
+    def prepare(elapsed):
+        nonlocal frames_left, pending_size, previous_time
+        if pending_size is not None:
+            gallery.resize(*pending_size, reframe=False)
+            pending_size = None
+            frames_left = 32
+        controller.update(elapsed - previous_time)
+        previous_time = elapsed
+        return frames_left > 0
 
     viewer = GLInteropViewer(
         api.width,
@@ -146,7 +182,8 @@ def _show(gallery):
         title="Warp OptiX Material Gallery",
         on_resize=resize,
         show_fps=False,
-        fps=30,
+        fps=60,
+        should_render=prepare,
     )
     viewer.window.set_minimum_size(320, 180)
     labels = [
@@ -156,7 +193,7 @@ def _show(gallery):
     key = viewer.pyglet.window.key
 
     def home_view():
-        return View((0, 0, CAMERA_DISTANCE), 180.0, 0.0, gallery.home_fov, speed=2.0)
+        return View(gallery.home_position, 180.0, -CAMERA_PITCH, gallery.home_fov, speed=2.0)
 
     controller = FreeCameraController(viewer, api, home_view(), use_arrows=False, on_change=refresh)
 
@@ -180,17 +217,14 @@ def _show(gallery):
             label.text, label.x, label.y = caption, x, y
             label.draw()
 
-    def render(mapped_image, _frame, elapsed):
-        nonlocal frames_left, pending_size, previous_time
-        if pending_size is not None:
-            gallery.resize(*pending_size, reframe=False)
-            pending_size = None
-            frames_left = 32
-        controller.update(elapsed - previous_time)
-        previous_time = elapsed
-        if frames_left:
-            api.render_frame()
-            frames_left -= 1
+    def render(mapped_image, _frame, _elapsed):
+        nonlocal frames_left
+        moving = perf_counter() - last_camera_change < 0.18
+        samples = 1 if moving else settle_samples
+        if api.samples_per_frame != samples:
+            api.set_ray_budget(samples_per_frame=samples)
+        api.render_frame()
+        frames_left -= 1
         output = api.viewer.tonemapped_output
         if output.shape != (viewer.height, viewer.width):
             raise RuntimeError("The path tracer output size does not match the display buffer.")
