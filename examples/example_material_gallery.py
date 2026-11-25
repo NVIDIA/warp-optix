@@ -62,12 +62,26 @@ def _select_materials(available, materials, query, all_materials):
     return [asset for asset in selected if query in asset.casefold()]
 
 
+def _metal_overview():
+    return tuple(
+        textures.MetalSurface(metal, finish=finish)
+        for finish in ("polished", "brushed", "scratched")
+        for metal in textures.metal_names()
+    )
+
+
 class Gallery:
     def __init__(self, api, texture_size, single=False, ids=None):
         self.api = api
         self.texture_size = texture_size
         self.ids = textures.reference_ids() if ids is None else tuple(ids)
-        self.columns, self.rows = (1, 1) if single else (COLUMNS, ROWS)
+        if single:
+            self.columns, self.rows = 1, 1
+        elif self.ids and all(isinstance(asset, textures.MetalSurface) for asset in self.ids):
+            self.columns = min(len(textures.metal_names()), len(self.ids))
+            self.rows = min(3, math.ceil(len(self.ids) / self.columns))
+        else:
+            self.columns, self.rows = COLUMNS, ROWS
         self.page_size = self.columns * self.rows
         self.page_count = math.ceil(len(self.ids) / self.page_size)
         self.page = 0
@@ -178,7 +192,10 @@ class Gallery:
             if clip[3] > 0.0:
                 ndc_x, ndc_y = clip[:2] / clip[3]
                 if abs(ndc_x) < 0.96 and abs(ndc_y) < 0.89:
-                    label = f"{asset.metal.replace('_', ' ').title()} ? {asset.finish}" if isinstance(asset, textures.MetalSurface) else asset
+                    label = asset
+                    if isinstance(asset, textures.MetalSurface):
+                        name = asset.metal.replace("_", " ").title()
+                        label = f"{name} / {asset.finish}"
                     yield label, width * (0.5 + 0.5 * ndc_x), height * (0.5 - 0.5 * ndc_y)
         yield CONTROLS, width / 2, 19
 
@@ -310,7 +327,9 @@ def main():
     parser.add_argument("--page", type=int, default=1, help="Initial page, starting at 1.")
     parser.add_argument("--single", action="store_true", help="Inspect one material per page at a larger scale.")
     parser.add_argument("--materials", nargs="+", metavar="ID", help="Present these materials in the given order.")
-    parser.add_argument("--metal", choices=textures.metal_names(), help="Preview a configurable metal in single view.")
+    metals = parser.add_mutually_exclusive_group()
+    metals.add_argument("--metal", choices=textures.metal_names(), help="Preview a configurable metal in single view.")
+    metals.add_argument("--metals", action="store_true", help="Compare every metal in three rows of finishes.")
     parser.add_argument("--finish", choices=("polished", "brushed", "scratched"), default="brushed")
     parser.add_argument("--scratches", type=float, help="Scratch amount from 0 to 1 for --metal.")
     parser.add_argument("--roughness", type=float, help="Perceptual roughness from 0 to 1 for --metal.")
@@ -325,8 +344,8 @@ def main():
     parser.add_argument("--output", type=Path, help="Render one page to a PNG without opening a window.")
     parser.add_argument("--frames", type=int, default=16, help="Frames to accumulate for --output.")
     args = parser.parse_args()
-    if args.metal and (args.materials or args.filter or args.all_materials):
-        parser.error("--metal cannot be combined with catalog selection.")
+    if (args.metal or args.metals) and (args.materials or args.filter or args.all_materials):
+        parser.error("--metal and --metals cannot be combined with catalog selection.")
     if args.metal:
         args.single = True
     if args.texture_size is None:
@@ -345,6 +364,8 @@ def main():
             )]
         except ValueError as exc:
             parser.error(str(exc))
+    elif args.metals:
+        ids = _metal_overview()
     else:
         ids = _select_materials(available, args.materials, args.filter, args.all_materials)
     if not ids:
