@@ -35,8 +35,9 @@ Wood grain runs along the image rows. Brick uses two rows per row pair so the
 staggered pattern repeats vertically. Its mortar fraction is measured relative
 to the width or height of a brick cell on each axis.
 
-For reference-based textures, `textures.reference_ids()` lists 230 materials.
-It includes 138 materials from the first batch of the
+For reference-based textures, `textures.reference_ids()` lists the materials
+available in the current installation. Default wheels include 12 fitted
+materials. The source checkout and full-catalog wheel include 230: 138 from the first batch of the
 [ambientCG popularity listing](https://ambientcg.com/list?type=material%2Cdecal%2Catlas&sort=popular),
 plus 22 selected surfaces such as leather, carbon fiber, diamond plate, cork,
 bamboo, and ice, and every material in the
@@ -74,18 +75,31 @@ Pass a non-negative integer `seed` to either bake call to vary the tile's
 layout and fine detail. Use the same seed for all maps of a material. Omit
 it for the closest match to the reference.
 
-Fitted textures combine localized, compressed coefficients and tileable
-procedural grain. Maps use a shared coordinate deformation for variations.
-Fine normal detail follows the grain slopes, and the normal follows the
-deformed surface. Embedded coefficients and the Warp kernels are sufficient
-to bake at runtime. The
+Fitted textures combine localized, compressed coefficients with small,
+seamless patches of high-frequency detail sampled from the reference maps.
+Warp applies additional detail bands as the bake resolution goes up, including
+at 2048×2048 and 4096×4096. Sparse corrections retain the positions of hard
+edges such as plank joins and grout. Tileable gradient noise and jittered
+cellular spots vary the finest synthesized bands when a bake exceeds the
+source resolution. All maps use aligned patches and a shared coordinate
+deformation for a seeded variation. The normal follows the deformed surface.
+The coefficients and detail patches are stored in small compressed NumPy
+archives loaded on demand, so the bake needs no external images at runtime.
+Build a wheel with `--config-setting=cmake.define.WARP_OPTIX_FULL_MATERIAL_CATALOG=ON`
+to include the complete collection. The
 [fitting script](../examples/procedural_textures/fit.py) measures the benefit
 of higher resolutions for each map and allocates them within a storage budget.
 It regenerates the coefficients from extracted ambientCG maps and the
 [material list](../examples/procedural_textures/ambientcg-materials.txt).
-Rename the `NormalGL`,
+The [detail fitting script](../examples/procedural_textures/fit_detail.py)
+extracts and compresses the aligned detail patches. Rename the `NormalGL`,
 `AmbientOcclusion`, and other input files to match the map names above
 (for example, `Bricks113A_normal.jpg`).
+
+```bash
+python examples/procedural_textures/fit.py maps examples/procedural_textures/ambientcg-materials.txt material_catalog/models
+python examples/procedural_textures/fit_detail.py maps examples/procedural_textures/ambientcg-materials.txt material_catalog/detail --models material_catalog/models
+```
 
 ## Devices, contexts, and lifetime
 

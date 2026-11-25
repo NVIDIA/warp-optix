@@ -3,7 +3,8 @@
 
 """Decode localized, periodic basis coefficients used by procedural textures."""
 
-from base64 import b85decode
+import json
+from functools import lru_cache
 from struct import unpack_from
 from zlib import decompress
 
@@ -36,7 +37,7 @@ def quantize_bands(values, strength, *, restore=False):
 
 
 def decode(encoded, kind):
-    packed = decompress(b85decode(encoded))
+    packed = decompress(encoded)
     size, channels, strength, *detail = unpack_from("<HBB3f", packed)
     values = np.frombuffer(packed, dtype="<i2", offset=16).copy().reshape(size, size, channels)
     for channel in range(channels):
@@ -57,3 +58,19 @@ def decode(encoded, kind):
     else:
         values = np.repeat(values, 3, axis=2)
     return (np.clip(values, 0, 255).astype(np.float32) / 255.0), detail
+
+
+def read_index(directory):
+    return json.loads((directory / "index.json").read_text(encoding="utf-8"))
+
+
+@lru_cache(maxsize=16)
+def _archive_payload(path):
+    with np.load(path, allow_pickle=False) as archive:
+        return archive["payload"]
+
+
+def read_record(directory, spans):
+    return b"".join(
+        _archive_payload(directory / archive)[offset : offset + length].tobytes() for archive, offset, length in spans
+    )

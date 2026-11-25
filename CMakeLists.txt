@@ -120,3 +120,17 @@ install(DIRECTORY "${optix_headers_SOURCE_DIR}/include/"
         DESTINATION ${WARP_OPTIX_INSTALL_DIR}/include)
 install(FILES "${optix_headers_SOURCE_DIR}/LICENSE.txt"
         DESTINATION ${WARP_OPTIX_INSTALL_DIR}/include RENAME OptiX_LICENSE.txt)
+
+option(WARP_OPTIX_FULL_MATERIAL_CATALOG "Install all fitted procedural materials in the wheel" OFF)
+foreach(_catalog_part models detail)
+  set(_catalog_src "${CMAKE_CURRENT_SOURCE_DIR}/material_catalog/${_catalog_part}")
+  set(_catalog_dest "${WARP_OPTIX_INSTALL_DIR}/_src/material_catalog/${_catalog_part}")
+  if(WARP_OPTIX_FULL_MATERIAL_CATALOG)
+    install(DIRECTORY "${_catalog_src}/" DESTINATION "${_catalog_dest}" FILES_MATCHING
+            PATTERN "*.npz" PATTERN "index.json")
+  else()
+    install(DIRECTORY "${_catalog_src}/" DESTINATION "${_catalog_dest}" FILES_MATCHING
+            PATTERN "starter-*.npz")
+    install(FILES "${_catalog_src}/starter-index.json" DESTINATION "${_catalog_dest}" RENAME index.json)
+  endif()
+endforeach()

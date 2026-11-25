@@ -137,6 +137,28 @@ def test_material_gallery_renders_and_wraps_pages(monkeypatch):
         assert gallery.seed == 42
         assert api.scene.texture_count == 3 * len(gallery.visible_ids)
         assert np.isfinite(last).all() and not np.allclose(first, last)
+
+        controls = importlib.import_module("example_pathtracing")
+        symbols = "W A S D Q E UP DOWN LEFT RIGHT LSHIFT RSHIFT".split()
+        keys = SimpleNamespace(**dict(zip(symbols, range(len(symbols)), strict=True)))
+        window = SimpleNamespace(push_handlers=lambda _handler: None)
+        viewer = SimpleNamespace(window=window, pyglet=SimpleNamespace(window=SimpleNamespace(key=keys)))
+        home = controls.View((0, 0, example.CAMERA_DISTANCE), 180.0, 0.0, gallery.home_fov)
+        camera = controls.FreeCameraController(viewer, api, home, use_arrows=False)
+        name = gallery.visible_ids[0]
+        label_x = {caption: x for caption, x, _ in gallery.annotations()}[name]
+        camera.keys_down = {keys.RIGHT}
+        camera.update(0.1)
+        np.testing.assert_allclose(api.viewer.camera.position, home.position)
+        camera.keys_down = {keys.D, keys.E, keys.W}
+        camera.update(0.1)
+        x, y, z = api.viewer.camera.position
+        assert x > 0 and y > 0 and z < home.position[2]
+        assert {caption: x for caption, x, _ in gallery.annotations()}[name] < label_x
+        gallery.resize(100, 64, reframe=False)
+        np.testing.assert_allclose(api.viewer.camera.position, (x, y, z))
+        camera.set_view(home)
+        np.testing.assert_allclose(api.viewer.camera.position, home.position)
     finally:
         api.close()
 

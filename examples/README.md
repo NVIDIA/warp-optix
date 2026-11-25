@@ -60,9 +60,14 @@ uv run --extra pathtracing python examples/example_material_gallery.py --page 2 
 Press **Left** or **Right** to browse the full library, **V** for a new seeded
 variation, and **R** to return to the reference fit. Use `--page` and `--seed`
 to start at a particular page or variation. Add `--single` to inspect one
-material at a time at a larger scale. The gallery uses 1024×1024 bakes by
-default. Use `--texture-size` to change the bake resolution, or `--filter WoodFloor`
-to browse all wood flooring materials together.
+material at a time at a larger scale. Use **WASD** to fly, **Q/E** to move down
+or up, left-drag to look, the mouse wheel to zoom, and **Home** to reset the view.
+The grid bakes at 1024×1024 and single-material view at 2048×2048 by default.
+For a 4K close-up, try `--single --texture-size 4096 --filter WoodFloor071`.
+Use `--filter WoodFloor` to browse all wood flooring materials together.
+The checkout provides the full catalog. Default wheels ship 12 starter
+materials. Build with `--config-setting=cmake.define.WARP_OPTIX_FULL_MATERIAL_CATALOG=ON`
+to include all 230 in a wheel.
 
 ## Ray tracing with the core API
 

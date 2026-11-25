@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
+import pytest
+import warp as wp
 from warp_optix.pathtracing import Scene
 
 from warp_optix import procedural_textures as textures
@@ -9,6 +11,9 @@ from warp_optix import procedural_textures as textures
 
 def test_new_material_families_provide_aligned_maps():
     ids = textures.reference_ids()
+    if len(ids) == 12:
+        assert {"WoodFloor071", "Fabric004", "Leather037", "Metal064", "Bricks113A", "RoofingTiles013A"} <= set(ids)
+        return
     assert len(ids) == 230
     assert sum(asset.startswith("WoodFloor") for asset in ids) == 74
     for material in ("Leather037", "Fabric004", "DiamondPlate009", "Bamboo001C", "Ice003", "Cork004"):
@@ -19,6 +24,16 @@ def test_reference_normals_have_unit_length():
     normals = textures.bake("Bricks113A", (64, 96), map_type="normal", device="cpu").numpy()
     np.testing.assert_allclose(np.linalg.norm(2.0 * normals - 1.0, axis=-1), 1.0, atol=1.0e-5)
     assert np.std(normals[..., 0]) > 0.01
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not wp.is_cuda_available(), reason="CUDA unavailable")
+def test_2k_bake_adds_fine_surface_detail():
+    image = textures.bake("Concrete049", (2048, 2048), device="cuda").numpy()
+    assert image.shape == (2048, 2048, 3)
+    groups = image[..., 0].reshape(512, 4, 512, 4)
+    average = groups.mean(axis=(1, 3), keepdims=True)
+    assert np.sqrt(np.mean((groups - average) ** 2)) > 0.01
 
 
 def test_gltf_textures_pack_metalness_and_keep_existing_textures():

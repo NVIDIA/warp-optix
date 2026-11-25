@@ -178,7 +178,7 @@ exclude = [
 ]
 
 [tool.typos.files]
-extend-exclude = ["third_party", "uv.lock", "licenses", "*_LICENSE.txt", "LICENSE.*", "**/procedural_texture_models/_data*.py"]
+extend-exclude = ["third_party", "uv.lock", "licenses", "*_LICENSE.txt", "LICENSE.*"]
 
 [tool.typos.default.extend-words]
 CLAS = "CLAS"
