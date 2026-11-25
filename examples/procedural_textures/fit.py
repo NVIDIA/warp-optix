@@ -1,0 +1,149 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Fit sparse, tileable Fourier models from extracted ambientCG texture maps."""
+
+import argparse
+import struct
+from base64 import b85encode
+from pathlib import Path
+from textwrap import wrap
+from zlib import compress
+
+import numpy as np
+from PIL import Image
+
+SIZE = 256
+LIMITS = {
+    "color": 160,
+    "normal": 96,
+    "roughness": 48,
+    "displacement": 48,
+    "occlusion": 48,
+    "metalness": 112,
+    "opacity": 96,
+}
+STRUCTURED = (
+    "Bricks",
+    "PavingStones",
+    "Tiles",
+    "Marble",
+    "WoodFloor",
+    "Road",
+    "CorrugatedSteel",
+    "RoofingTiles",
+    "Planks",
+)
+
+
+def coefficients(path: Path, map_type: str) -> np.ndarray:
+    with Image.open(path) as image:
+        if map_type in ("color", "normal"):
+            image = image.convert("RGB")
+        elif image.mode not in ("I", "I;16"):
+            image = image.convert("L")
+        scale = 65535.0 if image.mode.startswith("I") else 255.0
+        # Pillow cannot resize every 16-bit PNG mode with Lanczos.
+        if image.mode.startswith("I"):
+            image = image.convert("F")
+        pixels = np.asarray(image.resize((SIZE, SIZE), Image.Resampling.LANCZOS), dtype=np.float32) / scale
+    if pixels.ndim == 2:
+        pixels = pixels[:, :, None]
+    if map_type == "normal":
+        # Store the OpenGL tangent X/Y channels. The bake reconstructs positive Z.
+        pixels = pixels[:, :, :2]
+    return np.fft.rfft2(pixels, axes=(0, 1), norm="forward")
+
+
+def fit(coeff: np.ndarray, map_type: str, limit: int, modes, power, shared, x, y) -> str:
+    channels = coeff.shape[2]
+    # Preserve the shared structure, while letting each map spend most of
+    # its budget on features that are strong in that particular map.
+    priority = power.copy()
+    priority[shared] *= 4.0
+    pick = np.argsort(-priority, kind="stable")[:limit]
+    pick = pick[power[pick] > 1.0e-10]
+    # Measure unresolved fine detail in two frequency bands. The bake uses
+    # periodic value noise to reproduce some of that contrast.
+    residual = np.abs(modes) ** 2
+    residual[pick] = 0.0
+    frequency = np.hypot(x, y)
+    detail_gain = 0.0 if map_type in ("opacity", "metalness") else 2.5
+    detail = [
+        detail_gain * np.sqrt(2.0 * np.sum(residual[band], axis=0))
+        for band in ((frequency >= 12) & (frequency < 32), frequency >= 32)
+    ]
+    x, y = x[pick], y[pick]
+    # The FFT uses corner coordinates. Shift phases for texel-center UVs.
+    modes = 2.0 * modes[pick] * np.exp(-1j * np.pi * (x + y) / SIZE)[:, None]
+    weights = np.concatenate((modes.real, -modes.imag), axis=1)
+    step = float(np.max(np.abs(weights), initial=0.0) / 127.0) or 1.0
+    packed = np.column_stack((x, y, np.rint(weights / step))).astype(np.int8)
+    header = struct.pack(f"<{1 + 3 * channels}f", step, *coeff[0, 0].real, *detail[0], *detail[1])
+    return b85encode(compress(header + packed.tobytes(), level=9)).decode("ascii")
+
+
+def fit_material(material: str, paths: dict[str, Path]) -> dict[str, str]:
+    fy = np.fft.fftfreq(SIZE, d=1.0 / SIZE).astype(int)
+    y, x = np.broadcast_arrays(fy[:, None], np.arange(SIZE // 2 + 1))
+    # Keep one of each conjugate pair and omit the Nyquist bins.
+    mask = (np.abs(y) < SIZE // 2) & (x < SIZE // 2) & ((x > 0) | (y > 0))
+    coeff = {name: coefficients(path, name) for name, path in paths.items()}
+    modes = {name: values[mask] for name, values in coeff.items()}
+    power = {name: np.sum(np.abs(values) ** 2, axis=1) for name, values in modes.items()}
+    structure = np.zeros_like(power["color"])
+    for name in ("color", "normal", "displacement"):
+        maximum = power[name].max()
+        if maximum > 0.0:
+            structure += np.sqrt(power[name] / maximum)
+    shared = np.argsort(-structure, kind="stable")[:24]
+    x, y = x[mask], y[mask]
+    limits = LIMITS.copy()
+    if material.startswith(STRUCTURED):
+        # Keep more localized detail in seams, joints, and vein boundaries.
+        limits.update(color=352, normal=176, displacement=88)
+    return {
+        name: fit(values, name, limits[name], modes[name], power[name], shared, x, y) for name, values in coeff.items()
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("maps", type=Path, help="Directory containing extracted <ID>_<map> files")
+    parser.add_argument("ids", type=Path, help="Text file with one material ID per line")
+    parser.add_argument("output", type=Path, help="Output Python data module")
+    args = parser.parse_args()
+    lines = [
+        "# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.",
+        "# SPDX-License-Identifier: Apache-2.0",
+        "",
+        '"""Fourier coefficients fitted to CC0 ambientCG material maps."""',
+        "",
+        "# Generated by examples/procedural_textures/fit.py.",
+        "REFERENCES = {",
+    ]
+    for material in args.ids.read_text().splitlines():
+        lines.append(f'    "{material}": {{')
+        inputs = {}
+        for map_type in LIMITS:
+            paths = sorted(args.maps.glob(f"{material}_{map_type}.*"))
+            if not paths:
+                if map_type in ("color", "normal", "roughness", "displacement"):
+                    raise FileNotFoundError(f"No {map_type} map for {material}")
+                continue
+            inputs[map_type] = paths[0]
+        for map_type, encoded in fit_material(material, inputs).items():
+            chunks = wrap(encoded, 102, break_on_hyphens=False)
+            if len(chunks) == 1:
+                lines.append(f'        "{map_type}": ("{encoded}"),')
+            else:
+                lines.append(f'        "{map_type}": (')
+                lines.extend(f'            "{part}"' for part in chunks)
+                lines.append("        ),")
+        lines.append("    },")
+    lines.append("}")
+    args.output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main()

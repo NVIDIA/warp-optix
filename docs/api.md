@@ -4,6 +4,84 @@ The [README](../README.md) walks through warp-optix by example. This page has th
 lists, lifetime rules, and every device builtin family. The path tracer has its own
 [guide](pathtracing.md).
 
+## Procedural material textures
+
+The `warp_optix.procedural_textures` module provides tileable linear RGB base
+color kernels for wood grain, marble, and staggered brick. Launch them with
+`wp.launch` on a CPU or CUDA device. Use an output array of shape
+`(height, width)` and dtype `wp.vec3`, and launch over the full array:
+
+```python
+import warp as wp
+from warp_optix import procedural_textures as textures
+
+image = wp.empty((256, 512), dtype=wp.vec3, device="cpu")
+light = wp.vec3(0.48, 0.24, 0.09)
+dark = wp.vec3(0.12, 0.044, 0.012)
+wp.launch(textures.wood, dim=image.shape, inputs=[light, dark, 16, 42],
+          outputs=[image], device=image.device)
+```
+
+Supply palette colors in linear RGB. The kernels sample at texel centers, so
+use repeat addressing when sampling the baked image across tile boundaries.
+
+| Kernel | Inputs before the output array |
+| --- | --- |
+| `wood` | Light color, dark color, positive grain count, integer seed |
+| `marble` | Stone color, vein color, positive vein count, integer seed |
+| `brick` | Clay color, mortar color, positive column count, positive row pair count, mortar fraction in `[0, 1)` |
+
+Wood grain runs along the image rows. Brick uses two rows per row pair so the
+staggered pattern repeats vertically. Its mortar fraction is measured relative
+to the width or height of a brick cell on each axis.
+
+For reference-based textures, `textures.reference_ids()` lists the 138 materials
+from the first batch of the [ambientCG popularity listing](https://ambientcg.com/list?type=material%2Cdecal%2Catlas&sort=popular)
+as downloaded on November 25, 2026. The atlas and decal in that batch are outside
+this material collection. The reference textures are [CC0](https://docs.ambientcg.com/license/).
+
+```python
+asset = "Bricks113A"
+color = textures.bake(asset, (512, 512), device="cuda:0")
+roughness = textures.bake(asset, (512, 512), map_type="roughness", device="cuda:0")
+```
+
+All reference materials provide `color`, `normal`, `roughness`, and
+`displacement`. Use `textures.reference_maps(asset)` to check for
+`occlusion`, `metalness`, and `opacity`. Color is linear RGB, normals use
+the OpenGL tangent-space convention, and scalar maps repeat their value in
+all three channels. Displacement is available separately for callers that
+use height data.
+
+For a new path tracer scene, bake and register the maps together:
+
+```python
+images, material_kwargs = textures.bake_gltf("Bricks113A", (512, 512), device="cuda:0")
+scene.set_gltf_textures(images)
+material_id = scene.materials.add_gltf_material(**material_kwargs)
+```
+
+The helper packs linear color and opacity, tangent-space normals, and glTF's
+occlusion, roughness, and metalness channels into three RGBA8 images. It does
+one readback for all three. For an existing scene, pass
+`first_texture_index` equal to the current texture count and use
+`scene.set_gltf_textures(images, append=True)`.
+
+Pass a non-negative integer `seed` to either bake call to vary the tile's
+layout and fine detail. Use the same seed for all maps of a material. Omit
+it for the closest match to the reference.
+
+The fitted textures combine a small number of periodic Fourier modes with
+procedural grain calibrated from the reference maps. The maps share important
+frequencies and a single fine detail field. Fine normal detail follows the
+slopes of that field. All coefficients are
+embedded, so baking needs no image files. The fit preserves broad patterns
+and approximates fine or irregular detail. The
+[fitting script](../examples/procedural_textures/fit.py) regenerates the
+coefficients from extracted ambientCG maps. Rename the `NormalGL`,
+`AmbientOcclusion`, and other input files to match the map names above
+(for example, `Bricks113A_normal.jpg`).
+
 ## Devices, contexts, and lifetime
 
 Like Warp's CUDA context, the OptiX device context is implicit: each CUDA device gets one, created
