@@ -228,12 +228,22 @@ void validate_pyoptix_bindings(py::module_ upstream) {
     // Validate all shared layouts before any upstream object reaches this
     // extension. PyOptiX remains the sole owner of these native types.
     require_upstream_type<pyoptix::DeviceContext>(upstream.attr("DeviceContext"));
+    require_upstream_type<pyoptix::PipelineCompileOptions>(upstream.attr("PipelineCompileOptions"));
     require_upstream_type<pyoptix::ModuleCompileBoundValueEntry>(upstream.attr("ModuleCompileBoundValueEntry"));
     require_upstream_type<pyoptix::PayloadType>(upstream.attr("PayloadType"));
     require_upstream_type<pyoptix::ModuleCompileOptions>(upstream.attr("ModuleCompileOptions"));
     require_upstream_type<OptixDenoiserGuideLayer>(upstream.attr("DenoiserGuideLayer"));
     require_upstream_type<OptixDenoiserParams>(upstream.attr("DenoiserParams"));
     require_upstream_type<OptixDenoiserSizes>(upstream.attr("DenoiserSizes"));
+
+    // Sizes alone cannot detect reordered members. setAllowClusteredGeometry writes
+    // through the mirrored PipelineCompileOptions, so also check its field placement.
+    py::object probe = upstream.attr("PipelineCompileOptions")(py::arg("numPayloadValues") = 5,
+                                                               py::arg("pipelineLaunchParamsVariableName") = "probe");
+    const auto& options = probe.cast<const pyoptix::PipelineCompileOptions&>();
+    if (options.pipelineLaunchParamsVariableName != "probe" || options.options.numPayloadValues != 5) {
+        throw py::import_error("warp-optix requires the pyoptix 9.1.1 PipelineCompileOptions layout.");
+    }
 }
 
 } // namespace
@@ -241,6 +251,9 @@ void validate_pyoptix_bindings(py::module_ upstream) {
 #ifdef WARP_OPTIX_ENABLE_DLSS
 void register_dlss_bindings(py::module_& m); // src/dlss.cpp
 #endif
+
+#include "clusters.h"
+#include "spheres.h"
 
 PYBIND11_MODULE(_ext, m) {
     m.doc() = "Additional OptiX bindings for the pyoptix dependency";
@@ -253,6 +266,7 @@ PYBIND11_MODULE(_ext, m) {
     m.def("optix_version", &optix_version, "OptiX SDK version used to compile this supplemental extension.");
     m.def("validate_pyoptix_bindings", &validate_pyoptix_bindings);
     m.def("sync_module_options", &sync_module_options);
+    bind_clusters(m);
     m.def("getCoopVecProperty", [](const pyoptix::DeviceContext& context) {
         ensure_optix_initialized();
         uint32_t flags = 0;
@@ -335,4 +349,5 @@ PYBIND11_MODULE(_ext, m) {
     m.attr("DENOISER_MODEL_KIND_UPSCALE2X") = py::int_(static_cast<unsigned int>(OPTIX_DENOISER_MODEL_KIND_UPSCALE2X));
     m.attr("DENOISER_MODEL_KIND_TEMPORAL_UPSCALE2X") =
         py::int_(static_cast<unsigned int>(OPTIX_DENOISER_MODEL_KIND_TEMPORAL_UPSCALE2X));
+    bind_spheres(m);
 }

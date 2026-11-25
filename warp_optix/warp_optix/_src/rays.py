@@ -32,6 +32,7 @@ class AccelQueryRay:
         instance_id: User id of the hit instance (``0xFFFFFFFF`` when querying a geometry acceleration
             structure directly, which has no instance).
         primitive_index: Index of the hit primitive within its build input.
+        cluster_id: User-defined cluster (CLAS) ID, or ``0xFFFFFFFF`` for ordinary geometry.
     """
 
     result: wp.bool
@@ -40,6 +41,7 @@ class AccelQueryRay:
     v: float
     instance_id: wp.uint32
     primitive_index: wp.uint32
+    cluster_id: wp.uint32
 
 
 @wp.func
@@ -88,6 +90,7 @@ def accel_query_ray(
         # Other primitives (e.g. built-in spheres) have no hit parameters; u and v stay 0.
         query.instance_id = wp.optix_hit_object_get_instance_id()
         query.primitive_index = wp.optix_hit_object_get_primitive_index()
+        query.cluster_id = wp.optix_hit_object_get_cluster_id()
     return query
 
 
@@ -99,8 +102,19 @@ def accel_query_ray_anyhit(
     max_t: float,
     min_t: float = 0.0,
     mask: wp.Int = 0xFF,
+    flags: wp.Int = 0,
 ) -> bool:
-    """Return whether anything intersects the ray in ``[min_t, max_t]``, stopping at the first hit."""
-    flags = RayFlags.TERMINATE_ON_FIRST_HIT | RayFlags.DISABLE_CLOSESTHIT | RayFlags.DISABLE_ANYHIT
-    wp.optix_traverse(id, start, dir, max_t, min_t, 0.0, mask, flags)
+    """Return whether anything intersects the ray in ``[min_t, max_t]``, stopping at the first hit.
+
+    ``flags`` accepts one triangle face-culling flag and
+    :attr:`RayFlags.FORCE_OPACITY_MICROMAP_2_STATE`. Other flags are ignored.
+    Supplying both face-culling flags returns ``False`` without traversing.
+    """
+    required = wp.static(int(RayFlags.TERMINATE_ON_FIRST_HIT | RayFlags.DISABLE_CLOSESTHIT | RayFlags.DISABLE_ANYHIT))
+    face_culling = wp.static(int(RayFlags.CULL_BACK_FACING_TRIANGLES | RayFlags.CULL_FRONT_FACING_TRIANGLES))
+    micromap = wp.static(int(RayFlags.FORCE_OPACITY_MICROMAP_2_STATE))
+    traverse_flags = wp.uint32(flags) & wp.uint32(face_culling | micromap)
+    if (traverse_flags & wp.uint32(face_culling)) == wp.uint32(face_culling):
+        return False
+    wp.optix_traverse(id, start, dir, max_t, min_t, 0.0, mask, traverse_flags | wp.uint32(required))
     return wp.optix_hit_object_is_hit()

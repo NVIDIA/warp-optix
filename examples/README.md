@@ -77,6 +77,41 @@ These write a BMP image (`--output`); `example_raytracing.py --live` opens a vie
 uv run python examples/example_raytracing.py --live
 ```
 
+## Dynamic OptiX clusters
+
+[`example_clusters.py`](example_clusters.py) generates an animated parametric knot
+in Warp and rebuilds real CLAS/GAS with the reusable `ClusterAccel` API. It is
+written for this project and needs no downloaded assets, geometry library, or
+additional build step. The scene uses a teal metallic material, large soft lights,
+reflections and ground shadows. Pausing the animation accumulates samples.
+
+```bash
+python examples/example_clusters.py --live
+python examples/example_clusters.py --live --view clusters
+python examples/example_clusters.py --samples 64 --animate 0 --output clusters.bmp
+```
+
+Drag to orbit, scroll to dolly, Space to pause/refine, V to cycle shaded/cluster/
+normal views, and +/- to change tessellation. `--along`, `--around`, and
+`--cluster-size` control the grid decomposition; `--truncate` exercises position
+quantization. The knot is evaluated on the GPU every frame. `ClusterAccel` owns
+templates, argument packing and acceleration buffers. The floor is intersected
+analytically; shadow and visibility rays traverse the actual cluster geometry.
+
+[`example_deforming_objects.py`](example_deforming_objects.py) updates many
+independently deforming bodies and traces one verification ray per body. Use
+`clusters` for separate GASes built in one batch. The per-GAS cluster counts stay
+fixed while vertices, grid dimensions and offsets can change in place. Use
+`triangles` to combine fixed triangle topology in one OptiX refit, or `warp` for
+one grouped Warp mesh refit with body-local queries. Group bodies by update rate
+if some move much less often, and rebuild refitted trees if traversal degrades.
+
+```bash
+python examples/example_deforming_objects.py --mode clusters --bodies 1000
+python examples/example_deforming_objects.py --mode triangles --bodies 1000
+python examples/example_deforming_objects.py --mode warp --bodies 1000
+```
+
 ## Neural texture compression
 
 [`neural_texture/`](neural_texture/README.md) trains a compressed neural texture with

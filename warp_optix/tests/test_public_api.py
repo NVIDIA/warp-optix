@@ -48,6 +48,10 @@ def test_public_surface():
         "AccelQueryRay",
         "BuildFlags",
         "BuildInput",
+        "ClusterAccel",
+        "ClusterAccelBatch",
+        "ClusterTemplates",
+        "TriangleClusterAccel",
         "ExceptionFlags",
         "GeometryFlags",
         "HitGroup",
@@ -64,6 +68,7 @@ def test_public_surface():
         "TraversableGraphFlags",
         "aabbs",
         "compact",
+        "cluster_capabilities",
         "accel_query_ray",
         "accel_query_ray_anyhit",
         "config",
@@ -73,6 +78,7 @@ def test_public_surface():
         "kernel",
         "launch",
         "make_instance",
+        "spheres",
         "triangles",
     }
     # Each public module exports exactly its __all__; everything else lives in warp_optix._src.

@@ -9,7 +9,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "warp-optix"
-version = "0.3.0"
+version = "0.3.1"
 description = "Warp ray tracing with PyOptiX"
 readme = "docs/pypi.md"
 requires-python = ">=3.12,<3.13"
@@ -181,6 +181,8 @@ exclude = [
 extend-exclude = ["third_party", "uv.lock", "licenses", "*_LICENSE.txt", "LICENSE.*"]
 
 [tool.typos.default.extend-words]
+CLAS = "CLAS"
+clas = "clas"
 # Rendering terminology
 lod = "lod"
 mis = "mis"
