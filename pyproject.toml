@@ -80,9 +80,11 @@ skip = ["*-musllinux_*"]
 build-verbosity = 1
 
 [tool.cibuildwheel.linux]
-archs = ["x86_64"]
+# Build for the runner's own architecture: x86_64 or aarch64.
+archs = ["auto64"]
 # PyOptiX publishes manylinux_2_28 wheels.
 manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
 # The extension loads the NVIDIA driver at runtime and links no CUDA library.
 # Never bundle the driver of the build machine should a link to it be added.
 repair-wheel-command = "auditwheel repair --exclude libcuda.so.1 -w {dest_dir} {wheel}"
