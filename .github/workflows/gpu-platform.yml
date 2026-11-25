@@ -21,6 +21,16 @@ on:
         description: NVIDIA self-hosted GPU runner that tests the wheels
         required: true
         type: string
+      gpu-name:
+        description: GPU of the test runner, shown in the job name
+        default: RTX PRO 6000
+        type: string
+      build-pyoptix:
+        description: >-
+          Build PyOptiX from its locked sdist for platforms without a PyOptiX
+          wheel on PyPI (linux-aarch64). Remove once PyOptiX publishes them.
+        default: false
+        type: boolean
       release:
         description: Test release wheels without restoring or saving caches
         default: false
@@ -37,7 +47,8 @@ jobs:
   # The NVIDIA GPU runner images ship without compilers, so wheels are built on
   # GitHub-hosted runners and only tested on the GPU runners. Building needs a
   # C++ compiler only: cuda.h comes from a pip build requirement and PyOptiX
-  # from its PyPI wheel. Linux wheels are built in a manylinux container.
+  # from its PyPI wheel (or, with build-pyoptix, from its sdist built here).
+  # Linux wheels are built in a manylinux container.
   build:
     name: Build wheels
     runs-on: ${{ inputs.build-os }}
@@ -70,9 +81,65 @@ jobs:
           path: wheelhouse/*.whl
           retention-days: 7
           if-no-files-found: error
+      # PyOptiX publishes no wheel for this platform yet, and the GPU runner
+      # cannot build its sdist. Build the locked sdist the way PyOptiX builds its
+      # own wheels: in a manylinux container against a minimal, hash-pinned CUDA
+      # Toolkit, with the CUDA runtime linked statically.
+      - name: Download the locked PyOptiX sdist
+        if: inputs.build-pyoptix
+        shell: bash
+        run: |
+          read -r url sha256 < <(python3 -I -c '
+          import tomllib
+          lock = tomllib.load(open("uv.lock", "rb"))
+          (sdist,) = [p["sdist"] for p in lock["package"] if p["name"] == "pyoptix"]
+          print(sdist["url"], sdist["hash"].removeprefix("sha256:"))')
+          mkdir pyoptix-sdist
+          curl -fsSL -o "pyoptix-sdist/${url##*/}" "$url"
+          echo "$sha256  pyoptix-sdist/${url##*/}" | sha256sum --check --strict
+          echo "PYOPTIX_SDIST=$(echo pyoptix-sdist/*.tar.gz)" >> "$GITHUB_ENV"
+      - name: Build PyOptiX wheel
+        if: inputs.build-pyoptix
+        uses: pypa/cibuildwheel@f9b966cfadf4109556cadc5bb39ddb72d0ce664e # v4.3.5
+        with:
+          package-dir: ${{ env.PYOPTIX_SDIST }}
+          output-dir: pyoptix-wheelhouse
+        env:
+          CIBW_BUILD: cp312-*
+          CIBW_ARCHS_LINUX: auto64
+          CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
+          # CUDA 12.9.1 cudart and nvcc for linux-sbsa, as in PyOptiX's
+          # .github/scripts/install_cuda.py. Hashes are from
+          # https://developer.download.nvidia.com/compute/cuda/redist/redistrib_12.9.1.json.
+          CIBW_BEFORE_ALL_LINUX: >-
+            set -eu;
+            mkdir -p /opt/cuda;
+            for archive in
+            "cuda_cudart/linux-sbsa/cuda_cudart-linux-sbsa-12.9.79-archive.tar.xz 8b422a3b2cb8452cb678181b0bf9d7aa7342df168b5319c5488ae3b8514101fc"
+            "cuda_nvcc/linux-sbsa/cuda_nvcc-linux-sbsa-12.9.86-archive.tar.xz 0aa1fce92dbae76c059c27eefb9d0ffb58e1291151e44ff7c7f1fc2dd9376c0d";
+            do
+            set -- $archive;
+            curl -fsSL -o /tmp/cuda.tar.xz "https://developer.download.nvidia.com/compute/cuda/redist/$1";
+            echo "$2  /tmp/cuda.tar.xz" | sha256sum --check --strict;
+            tar -xJf /tmp/cuda.tar.xz -C /opt/cuda --strip-components=1;
+            done;
+            rm /tmp/cuda.tar.xz
+          CIBW_ENVIRONMENT_LINUX: >-
+            CUDA_PATH=/opt/cuda
+            CUDAToolkit_ROOT=/opt/cuda
+            PATH="$PATH:/opt/cuda/bin"
+            SKBUILD_CMAKE_DEFINE="CUDA_cudart_LIBRARY=/opt/cuda/lib/libcudart_static.a"
+      - name: Upload PyOptiX wheel
+        if: inputs.build-pyoptix
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: pyoptix-wheel-${{ inputs.platform }}
+          path: pyoptix-wheelhouse/*.whl
+          retention-days: 7
+          if-no-files-found: error
 
   test:
-    name: Full suite on RTX PRO 6000
+    name: Full suite on ${{ inputs.gpu-name }}
     needs: build
     runs-on: ${{ inputs.gpu-runner }}
     timeout-minutes: 30
@@ -105,10 +172,25 @@ jobs:
         with:
           name: wheel-${{ inputs.platform }}
           path: dist
+      - name: Download PyOptiX wheel
+        if: inputs.build-pyoptix
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pyoptix-wheel-${{ inputs.platform }}
+          path: pyoptix-dist
+      # With build-pyoptix, uv must not build the locked PyOptiX sdist itself,
+      # so the wheel built from that same sdist is installed instead.
       - name: Install locked dependencies and the built wheel
         shell: bash
+        env:
+          BUILD_PYOPTIX: ${{ inputs.build-pyoptix }}
         run: |
-          uv sync --locked --no-install-project --group test --all-extras
+          if [ "$BUILD_PYOPTIX" = true ]; then
+            uv sync --locked --no-install-project --group test --all-extras --no-install-package pyoptix
+            uv pip install --no-deps pyoptix-dist/*.whl
+          else
+            uv sync --locked --no-install-project --group test --all-extras
+          fi
           uv pip install --no-deps dist/*.whl
       - name: Cache Warp kernels
         if: ${{ !inputs.release }}

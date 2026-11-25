@@ -33,12 +33,23 @@ jobs:
             platform: linux-x86_64
             build-os: ubuntu-24.04
             gpu-runner: linux-amd64-gpu-rtxpro6000-latest-1
+            gpu-name: RTX PRO 6000
+          - os-name: Linux ARM
+            platform: linux-aarch64
+            build-os: ubuntu-24.04-arm
+            gpu-runner: linux-arm64-gpu-l4-latest-1
+            gpu-name: L4
+            # PyOptiX publishes no aarch64 wheels yet. Remove once it does.
+            build-pyoptix: true
           - os-name: Windows
             platform: windows-x86_64
             build-os: windows-2022
             gpu-runner: windows-amd64-gpu-rtxpro6000-latest-1
+            gpu-name: RTX PRO 6000
     uses: ./.github/workflows/gpu-platform.yml
     with:
       platform: ${{ matrix.platform }}
       build-os: ${{ matrix.build-os }}
       gpu-runner: ${{ matrix.gpu-runner }}
+      gpu-name: ${{ matrix.gpu-name }}
+      build-pyoptix: ${{ matrix.build-pyoptix || false }}
