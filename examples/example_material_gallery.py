@@ -22,11 +22,6 @@ CAMERA_DISTANCE = 8.0
 CONTROLS = "Left / Right: browse   V: next variation   R: reference"
 
 
-def _slot_center(index):
-    row, col = divmod(index, COLUMNS)
-    return (col - (COLUMNS - 1) / 2) * PITCH_X, ((ROWS - 1) / 2 - row) * PITCH_Y
-
-
 def _add_tile(api, x, y, material):
     # A slightly tilted flat swatch complements the curved UV sphere.
     corners = ((0.18, -0.48, 0.06), (1.14, -0.48, -0.08), (1.14, 0.48, -0.16), (0.18, 0.48, -0.02))
@@ -41,11 +36,13 @@ def _add_tile(api, x, y, material):
 
 
 class Gallery:
-    def __init__(self, api, texture_size):
+    def __init__(self, api, texture_size, single=False, ids=None):
         self.api = api
         self.texture_size = texture_size
-        self.ids = textures.reference_ids()
-        self.page_count = math.ceil(len(self.ids) / PAGE_SIZE)
+        self.ids = textures.reference_ids() if ids is None else tuple(ids)
+        self.columns, self.rows = (1, 1) if single else (COLUMNS, ROWS)
+        self.page_size = self.columns * self.rows
+        self.page_count = math.ceil(len(self.ids) / self.page_size)
         self.page = 0
         self.seed = None
         self.visible_ids = ()
@@ -57,16 +54,20 @@ class Gallery:
         api.set_environment_color((0.28, 0.28, 0.28))
         self.resize(api.width, api.height)
 
+    def slot_center(self, index):
+        row, col = divmod(index, self.columns)
+        return (col - (self.columns - 1) / 2) * PITCH_X, ((self.rows - 1) / 2 - row) * PITCH_Y
+
     def resize(self, width, height):
         if (width, height) != (self.api.width, self.api.height):
             self.api.resize(width, height)
-        self.half_height = max(2.43, 5.5 * height / width)
+        self.half_height = max(1.36 if self.page_size == 1 else 2.43, (self.columns * 1.32 + 0.22) * height / width)
         fov = math.degrees(2 * math.atan(self.half_height / CAMERA_DISTANCE))
         self.api.set_camera_look_at((0, 0, CAMERA_DISTANCE), (0, 0, 0), fov=fov)
 
     def load(self, page, seed):
         page %= self.page_count
-        ids = self.ids[page * PAGE_SIZE : (page + 1) * PAGE_SIZE]
+        ids = self.ids[page * self.page_size : (page + 1) * self.page_size]
         images = []
         materials = []
         for asset in ids:
@@ -81,7 +82,7 @@ class Gallery:
         scene.set_gltf_textures(images)
         for slot, kwargs in enumerate(materials):
             material = scene.materials.add_gltf_material(**kwargs)
-            x, y = _slot_center(slot)
+            x, y = self.slot_center(slot)
             self.api.add_sphere((x - 0.60, y, 0), 0.61, 48, material)
             _add_tile(self.api, x, y, material)
         scene.add_light_sphere((-6, 7, 9), 2.4, (1.0, 0.96, 0.91), 17.0)
@@ -95,7 +96,7 @@ class Gallery:
         yield f"Material gallery    Page {self.page + 1}/{self.page_count}    {variation}", width / 2, height - 24
         scale = height / (2 * self.half_height)
         for slot, asset in enumerate(self.visible_ids):
-            x, y = _slot_center(slot)
+            x, y = self.slot_center(slot)
             yield asset, width / 2 + x * scale, height / 2 + (y - 0.80) * scale
         yield CONTROLS, width / 2, 19
 
@@ -117,27 +118,39 @@ def _show(gallery):
     from warp_optix.gl import GLInteropViewer
 
     api = gallery.api
+    frames_left = 32
+
+    def resize(width, height):
+        nonlocal frames_left
+        gallery.resize(width, height)
+        frames_left = 32
+
     viewer = GLInteropViewer(
         api.width,
         api.height,
         device="cuda",
         title="Warp OptiX Material Gallery",
-        on_resize=gallery.resize,
+        on_resize=resize,
         show_fps=False,
+        fps=30,
     )
     labels = [
         viewer.pyglet.text.Label(font_size=11, anchor_x="center", anchor_y="center", color=(255, 255, 255, 255))
-        for _ in range(PAGE_SIZE + 2)
+        for _ in range(gallery.page_size + 2)
     ]
     key = viewer.pyglet.window.key
 
     def on_key_press(symbol, _modifiers):
+        nonlocal frames_left
         if symbol in (key.LEFT, key.RIGHT):
             gallery.load(gallery.page + (1 if symbol == key.RIGHT else -1), gallery.seed)
         elif symbol == key.V:
             gallery.load(gallery.page, 0 if gallery.seed is None else gallery.seed + 1)
         elif symbol == key.R and gallery.seed is not None:
             gallery.load(gallery.page, None)
+        else:
+            return
+        frames_left = 32
 
     def overlay():
         for label, (caption, x, y) in zip(labels, gallery.annotations(), strict=False):
@@ -145,7 +158,10 @@ def _show(gallery):
             label.draw()
 
     def render(mapped_image, _frame, _elapsed):
-        api.render_frame()
+        nonlocal frames_left
+        if frames_left:
+            api.render_frame()
+            frames_left -= 1
         output = api.viewer.tonemapped_output
         wp.launch(_pack_display_rgba8, dim=output.shape, inputs=[output, mapped_image], device="cuda")
 
@@ -160,16 +176,21 @@ def _show(gallery):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--page", type=int, default=1, help="Initial page, starting at 1.")
+    parser.add_argument("--single", action="store_true", help="Inspect one material per page at a larger scale.")
+    parser.add_argument("--filter", default="", help="Show only material IDs containing this text, e.g. WoodFloor.")
     parser.add_argument("--seed", type=int, help="Initial material variation seed.")
     parser.add_argument("--width", type=int, default=1200)
     parser.add_argument("--height", type=int, default=700)
-    parser.add_argument("--texture-size", type=int, default=512)
+    parser.add_argument("--texture-size", type=int, default=1024)
     parser.add_argument("--output", type=Path, help="Render one page to a PNG without opening a window.")
     parser.add_argument("--frames", type=int, default=16, help="Frames to accumulate for --output.")
     args = parser.parse_args()
     if min(args.width, args.height, args.texture_size, args.frames) < 1:
         parser.error("width, height, texture size, and frames must be positive")
-    page_count = math.ceil(len(textures.reference_ids()) / PAGE_SIZE)
+    ids = [asset for asset in textures.reference_ids() if args.filter.casefold() in asset.casefold()]
+    if not ids:
+        parser.error(f"no materials match {args.filter!r}")
+    page_count = math.ceil(len(ids) / (1 if args.single else PAGE_SIZE))
     if not 1 <= args.page <= page_count:
         parser.error(f"page must be between 1 and {page_count}")
     if args.seed is not None and args.seed < 0:
@@ -179,7 +200,7 @@ def main():
         width=args.width, height=args.height, denoiser="none", samples_per_frame=4, enable_texture_mipmaps=True
     )
     try:
-        gallery = Gallery(api, args.texture_size)
+        gallery = Gallery(api, args.texture_size, single=args.single, ids=ids)
         gallery.load(args.page - 1, args.seed)
         if args.output is None:
             _show(gallery)

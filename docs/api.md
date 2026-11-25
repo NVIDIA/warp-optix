@@ -35,10 +35,13 @@ Wood grain runs along the image rows. Brick uses two rows per row pair so the
 staggered pattern repeats vertically. Its mortar fraction is measured relative
 to the width or height of a brick cell on each axis.
 
-For reference-based textures, `textures.reference_ids()` lists the 138 materials
-from the first batch of the [ambientCG popularity listing](https://ambientcg.com/list?type=material%2Cdecal%2Catlas&sort=popular)
-as downloaded on November 25, 2026. The atlas and decal in that batch are outside
-this material collection. The reference textures are [CC0](https://docs.ambientcg.com/license/).
+For reference-based textures, `textures.reference_ids()` lists 230 materials.
+It includes 138 materials from the first batch of the
+[ambientCG popularity listing](https://ambientcg.com/list?type=material%2Cdecal%2Catlas&sort=popular),
+plus 22 selected surfaces such as leather, carbon fiber, diamond plate, cork,
+bamboo, and ice, and every material in the
+[WoodFloor category](https://ambientcg.com/list?category=WoodFloor&type=material&sort=popular)
+on November 25, 2026. The reference textures are [CC0](https://docs.ambientcg.com/license/).
 
 ```python
 asset = "Bricks113A"
@@ -71,14 +74,16 @@ Pass a non-negative integer `seed` to either bake call to vary the tile's
 layout and fine detail. Use the same seed for all maps of a material. Omit
 it for the closest match to the reference.
 
-The fitted textures combine a small number of periodic Fourier modes with
-procedural grain calibrated from the reference maps. The maps share important
-frequencies and a single fine detail field. Fine normal detail follows the
-slopes of that field. All coefficients are
-embedded, so baking needs no image files. The fit preserves broad patterns
-and approximates fine or irregular detail. The
-[fitting script](../examples/procedural_textures/fit.py) regenerates the
-coefficients from extracted ambientCG maps. Rename the `NormalGL`,
+Fitted textures combine localized, compressed coefficients and tileable
+procedural grain. Maps use a shared coordinate deformation for variations.
+Fine normal detail follows the grain slopes, and the normal follows the
+deformed surface. Embedded coefficients and the Warp kernels are sufficient
+to bake at runtime. The
+[fitting script](../examples/procedural_textures/fit.py) measures the benefit
+of higher resolutions for each map and allocates them within a storage budget.
+It regenerates the coefficients from extracted ambientCG maps and the
+[material list](../examples/procedural_textures/ambientcg-materials.txt).
+Rename the `NormalGL`,
 `AmbientOcclusion`, and other input files to match the map names above
 (for example, `Bricks113A_normal.jpg`).
 

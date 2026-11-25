@@ -59,7 +59,10 @@ uv run --extra pathtracing python examples/example_material_gallery.py --page 2 
 
 Press **Left** or **Right** to browse the full library, **V** for a new seeded
 variation, and **R** to return to the reference fit. Use `--page` and `--seed`
-to start at a particular page or variation.
+to start at a particular page or variation. Add `--single` to inspect one
+material at a time at a larger scale. The gallery uses 1024×1024 bakes by
+default. Use `--texture-size` to change the bake resolution, or `--filter WoodFloor`
+to browse all wood flooring materials together.
 
 ## Ray tracing with the core API
 

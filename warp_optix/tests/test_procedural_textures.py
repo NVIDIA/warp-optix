@@ -7,6 +7,14 @@ from warp_optix.pathtracing import Scene
 from warp_optix import procedural_textures as textures
 
 
+def test_new_material_families_provide_aligned_maps():
+    ids = textures.reference_ids()
+    assert len(ids) == 230
+    assert sum(asset.startswith("WoodFloor") for asset in ids) == 74
+    for material in ("Leather037", "Fabric004", "DiamondPlate009", "Bamboo001C", "Ice003", "Cork004"):
+        assert {"color", "normal", "roughness", "displacement"} <= set(textures.reference_maps(material))
+
+
 def test_reference_normals_have_unit_length():
     normals = textures.bake("Bricks113A", (64, 96), map_type="normal", device="cpu").numpy()
     np.testing.assert_allclose(np.linalg.norm(2.0 * normals - 1.0, axis=-1), 1.0, atol=1.0e-5)

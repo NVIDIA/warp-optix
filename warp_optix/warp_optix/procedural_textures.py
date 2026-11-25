@@ -3,14 +3,14 @@
 
 """Tileable material textures generated with standard Warp launches."""
 
-from base64 import b85decode
-from struct import unpack_from
-from zlib import decompress
+from functools import lru_cache
+from importlib import import_module
 
 import numpy as np
 import warp as wp
 
-from warp_optix._src.procedural_texture_data import REFERENCES
+from warp_optix._src.procedural_texture_models import INDEX
+from warp_optix._src.texture_coefficients import decode
 
 __all__ = ["bake", "bake_gltf", "brick", "marble", "reference_ids", "reference_maps", "wood"]
 
@@ -143,86 +143,85 @@ def _map_detail(noise: wp.vec3, amplitude: wp.vec3, normal_map: bool) -> wp.vec3
     return amplitude * noise[0]
 
 
-@wp.kernel
-def _separate_waves(
-    frequencies: wp.array(dtype=wp.vec2),
-    cosine: wp.array(dtype=wp.vec3),
-    sine: wp.array(dtype=wp.vec3),
-    offsets: wp.array(dtype=int),
-    row_cosine: wp.array2d(dtype=wp.vec3),
-    row_sine: wp.array2d(dtype=wp.vec3),
-    columns: wp.array2d(dtype=wp.vec2),
-):
-    group, index = wp.tid()
-    start = offsets[group]
-    width = columns.shape[1]
-    if index < width:
-        u = (float(index) + 0.5) / float(width)
-        phase = frequencies[start][0] * u
-        columns[group, index] = wp.vec2(wp.cos(phase), wp.sin(phase))
-    height = row_cosine.shape[0]
-    if index < height:
-        v = (float(index) + 0.5) / float(height)
-        a = wp.vec3(0.0)
-        b = wp.vec3(0.0)
-        for i in range(start, offsets[group + 1]):
-            phase = frequencies[i][1] * v
-            c = wp.cos(phase)
-            s = wp.sin(phase)
-            a += cosine[i] * c + sine[i] * s
-            b += sine[i] * c - cosine[i] * s
-        row_cosine[index, group] = a
-        row_sine[index, group] = b
+@wp.func
+def _cubic_weights(t: float) -> wp.vec4:
+    t2 = t * t
+    t3 = t2 * t
+    return wp.vec4(
+        -0.5 * t + t2 - 0.5 * t3, 1.0 - 2.5 * t2 + 1.5 * t3, 0.5 * t + 2.0 * t2 - 1.5 * t3, -0.5 * t2 + 0.5 * t3
+    )
+
+
+@wp.func
+def _sample_field(field: wp.array2d(dtype=wp.vec3), uv: wp.vec2) -> wp.vec3:
+    size = field.shape[0]
+    p = uv * float(size) - wp.vec2(0.5)
+    x = int(wp.floor(p[0]))
+    y = int(wp.floor(p[1]))
+    wx = _cubic_weights(p[0] - float(x))
+    wy = _cubic_weights(p[1] - float(y))
+    value = wp.vec3(0.0)
+    for j in range(4):
+        row = (y + j - 1) & (size - 1)
+        for i in range(4):
+            col = (x + i - 1) & (size - 1)
+            value += (wx[i] * wy[j]) * field[row, col]
+    return value
 
 
 @wp.kernel
 def _bake_reference(
-    row_cosine: wp.array2d(dtype=wp.vec3),
-    row_sine: wp.array2d(dtype=wp.vec3),
-    columns: wp.array2d(dtype=wp.vec2),
-    mean: wp.vec3,
-    detail: wp.vec3,
-    grain: wp.vec3,
+    field: wp.array2d(dtype=wp.vec3),
+    microdetail: wp.vec3,
+    offset: wp.vec2,
+    phase: wp.vec2,
     noise_seed: int,
     srgb: bool,
     normal_map: bool,
     image: wp.array2d(dtype=wp.vec3),
 ):
     row, col = wp.tid()
-    height, width = image.shape[0], image.shape[1]
-    uv = _texel_uv(row, col, height, width)
-    value = mean
-    for i in range(columns.shape[0]):
-        phase = columns[i, col]
-        value += row_cosine[row, i] * phase[0] + row_sine[row, i] * phase[1]
-    if wp.dot(detail, detail) > 0.0:
-        value += _map_detail(_value_noise(uv, 48, noise_seed + 157), detail, normal_map)
-    if wp.dot(grain, grain) > 0.0:
-        value += _map_detail(_value_noise(uv, 128, noise_seed + 173), grain, normal_map)
+    uv = _texel_uv(row, col, image.shape[0], image.shape[1])
+    shear_u = 0.0
+    shear_v = 0.0
+    if noise_seed != 0:
+        # Every map uses the same periodic deformation. Keep the Jacobian
+        # so slopes in the tangent-space normal follow the remapped surface.
+        wave_u = 4.0 * wp.PI * uv[1] + phase[0]
+        wave_v = 6.0 * wp.PI * uv[0] + phase[1]
+        shear_u = 0.020 * 4.0 * wp.PI * wp.cos(wave_u)
+        shear_v = 0.015 * 6.0 * wp.PI * wp.cos(wave_v)
+        uv += offset + wp.vec2(0.020 * wp.sin(wave_u), 0.015 * wp.sin(wave_v))
+        uv -= wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
+    value = _sample_field(field, uv)
+    if wp.dot(microdetail, microdetail) > 0.0:
+        value += _map_detail(_value_noise(uv, 256, noise_seed + 157), microdetail, normal_map)
     value = wp.vec3(wp.clamp(value[0], 0.0, 1.0), wp.clamp(value[1], 0.0, 1.0), wp.clamp(value[2], 0.0, 1.0))
     if srgb:
         value = wp.vec3(_srgb_to_linear(value[0]), _srgb_to_linear(value[1]), _srgb_to_linear(value[2]))
     if normal_map:
         xy = 2.0 * wp.vec2(value[0], value[1]) - wp.vec2(1.0)
-        length_squared = wp.dot(xy, xy)
-        xy /= wp.sqrt(wp.max(1.0, length_squared))
-        value = 0.5 * wp.vec3(xy[0], xy[1], wp.sqrt(wp.max(0.0, 1.0 - length_squared))) + wp.vec3(0.5)
+        z = wp.sqrt(wp.max(1.0e-8, 1.0 - wp.dot(xy, xy)))
+        n = wp.normalize(wp.vec3(xy[0] - shear_v * xy[1], xy[1] - shear_u * xy[0], z))
+        value = 0.5 * n + wp.vec3(0.5)
     image[row, col] = value
 
 
 def reference_ids() -> tuple[str, ...]:
-    """List the ambientCG material IDs in the order of the reference snapshot."""
-    return tuple(REFERENCES)
+    """List the fitted ambientCG material IDs."""
+    return tuple(INDEX)
 
 
 def reference_maps(material: str) -> tuple[str, ...]:
     """List the fitted maps for an ambientCG material ID."""
-    return tuple(REFERENCES[material])
+    return INDEX[material][1]
 
 
-def _smoothstep(low: float, high: float, value):
-    t = np.clip((value - low) / (high - low), 0.0, 1.0)
-    return t * t * (3.0 - 2.0 * t)
+@lru_cache(maxsize=64)
+def _field(material, map_type):
+    shard, _ = INDEX[material]
+    models = import_module(f"._src.procedural_texture_models._data{shard:02}", __package__)
+    return decode(models.MODELS[material][map_type], map_type)
 
 
 def bake(
@@ -243,87 +242,28 @@ def bake(
     height, width = shape
     if height < 1 or width < 1:
         raise ValueError("Texture dimensions must be positive.")
-    encoded = decompress(b85decode(REFERENCES[material][map_type]))
-    channels = {"color": 3, "normal": 2}.get(map_type, 1)
-    header_size = 1 + 3 * channels
-    scale, *levels = unpack_from(f"<{header_size}f", encoded)
-    mean, detail, grain = [levels[i : i + channels] for i in range(0, len(levels), channels)]
-    modes = np.frombuffer(encoded, dtype=np.int8, offset=4 * header_size).reshape(-1, 2 + 2 * channels)
-    frequencies = modes[:, :2].astype(np.float32)
-    cosine = modes[:, 2 : 2 + channels].astype(np.float32) * scale
-    sine = modes[:, 2 + channels :].astype(np.float32) * scale
-    # Cull or fade modes that the requested image cannot resolve. Do this once
-    # per bake instead of repeating the filtering for every texel.
-    cycles_per_texel = np.max(np.abs(frequencies) / np.asarray((width, height), dtype=np.float32), axis=1)
-    weights = 1.0 - _smoothstep(0.35, 0.5, cycles_per_texel)
-    keep = weights > 0.0
-    frequencies = frequencies[keep]
-    cosine = cosine[keep] * weights[keep, None]
-    sine = sine[keep] * weights[keep, None]
+    field, microdetail = _field(material, map_type)
+    resolution = min(height, width)
+    while field.shape[0] > 2 * resolution:
+        size = field.shape[0] // 2
+        field = field.reshape(size, 2, size, 2, 3).mean(axis=(1, 3))
+    gain = min(1.0, max(0.0, (resolution - 256.0) / 256.0))
+    offset, phase = wp.vec2(0.0), wp.vec2(0.0)
     noise_seed = 0
     if seed is not None:
         rng = np.random.default_rng(seed)
-        origin = rng.random(2, dtype=np.float32)
-        jitter = rng.uniform(0.5, 6.0, 2).astype(np.float32)
-        phase = (2.0 * np.pi) * (frequencies @ origin)
-        # Shift every map together and perturb finer waves using the same
-        # phase for a given frequency, independent of each map's mode order.
-        radius = np.hypot(frequencies[:, 0], frequencies[:, 1])
-        phase += 0.5 * _smoothstep(3.0, 18.0, radius) * np.sin(frequencies @ jitter)
-        c = np.cos(phase[:, None])
-        s = np.sin(phase[:, None])
-        cosine, sine = cosine * c + sine * s, sine * c - cosine * s
+        offset = wp.vec2(*rng.random(2))
+        phase = wp.vec2(*rng.uniform(0.0, 2.0 * np.pi, 2))
         noise_seed = int(rng.integers(1, 1 << 30))
-    frequencies *= 2.0 * np.pi
-    if channels == 1:
-        mean *= 3
-        detail *= 3
-        grain *= 3
-        cosine = np.repeat(cosine, 3, axis=1)
-        sine = np.repeat(sine, 3, axis=1)
-    elif channels == 2:
-        mean.append(0.0)
-        detail.append(0.0)
-        grain.append(0.0)
-        cosine = np.pad(cosine, ((0, 0), (0, 1)))
-        sine = np.pad(sine, ((0, 0), (0, 1)))
-    resolution = min(height, width)
-    detail_gain = _smoothstep(24.0, 60.0, resolution)
-    grain_gain = _smoothstep(64.0, 160.0, resolution)
     image = wp.empty(shape, dtype=wp.vec3, device=device)
-    order = np.argsort(frequencies[:, 0], kind="stable")
-    frequencies = frequencies[order]
-    _, starts = np.unique(frequencies[:, 0], return_index=True)
-    groups = len(starts)
-    row_cosine = wp.empty((height, groups), dtype=wp.vec3, device=image.device)
-    row_sine = wp.empty_like(row_cosine)
-    columns = wp.empty((groups, width), dtype=wp.vec2, device=image.device)
-    if groups:
-        # Collapse waves with the same horizontal frequency. The final pass
-        # reuses phases across rows and columns without per-pixel trigonometry.
-        offsets = np.append(starts, len(frequencies)).astype(np.int32)
-        wp.launch(
-            _separate_waves,
-            dim=(groups, max(height, width)),
-            inputs=[
-                wp.array(frequencies, dtype=wp.vec2, device=image.device),
-                wp.array(cosine[order], dtype=wp.vec3, device=image.device),
-                wp.array(sine[order], dtype=wp.vec3, device=image.device),
-                wp.array(offsets, dtype=int, device=image.device),
-            ],
-            outputs=[row_cosine, row_sine, columns],
-            device=image.device,
-        )
     wp.launch(
         _bake_reference,
         dim=shape,
         inputs=[
-            row_cosine,
-            row_sine,
-            columns,
-            wp.vec3(*mean),
-            wp.vec3(*(v * detail_gain for v in detail)),
-            wp.vec3(*(v * grain_gain for v in grain)),
+            wp.array(field, dtype=wp.vec3, device=image.device),
+            wp.vec3(*(value * gain for value in microdetail)),
+            offset,
+            phase,
             noise_seed,
             map_type == "color",
             map_type == "normal",
