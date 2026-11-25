@@ -119,11 +119,11 @@ def _show(gallery):
 
     api = gallery.api
     frames_left = 32
+    pending_size = None
 
     def resize(width, height):
-        nonlocal frames_left
-        gallery.resize(width, height)
-        frames_left = 32
+        nonlocal pending_size
+        pending_size = width, height
 
     viewer = GLInteropViewer(
         api.width,
@@ -134,6 +134,7 @@ def _show(gallery):
         show_fps=False,
         fps=30,
     )
+    viewer.window.set_minimum_size(320, 180)
     labels = [
         viewer.pyglet.text.Label(font_size=11, anchor_x="center", anchor_y="center", color=(255, 255, 255, 255))
         for _ in range(gallery.page_size + 2)
@@ -158,11 +159,17 @@ def _show(gallery):
             label.draw()
 
     def render(mapped_image, _frame, _elapsed):
-        nonlocal frames_left
+        nonlocal frames_left, pending_size
+        if pending_size is not None:
+            gallery.resize(*pending_size)
+            pending_size = None
+            frames_left = 32
         if frames_left:
             api.render_frame()
             frames_left -= 1
         output = api.viewer.tonemapped_output
+        if output.shape != (viewer.height, viewer.width):
+            raise RuntimeError("The path tracer output size does not match the display buffer.")
         wp.launch(_pack_display_rgba8, dim=output.shape, inputs=[output, mapped_image], device="cuda")
 
     viewer.window.push_handlers(on_key_press=on_key_press)
