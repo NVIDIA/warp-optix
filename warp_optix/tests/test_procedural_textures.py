@@ -12,10 +12,10 @@ from warp_optix import procedural_textures as textures
 def test_new_material_families_provide_aligned_maps():
     ids = textures.reference_ids()
     assert {"LimewashWall", "WhiteSubwayTile", "GraphiteConcrete"} <= set(ids)
-    if len(ids) == 20:
+    if len(ids) == 31:
         assert {"WoodFloor071", "Fabric004", "Leather037", "Metal064", "Bricks113A", "RoofingTiles013A"} <= set(ids)
         return
-    assert len(ids) == 238
+    assert len(ids) == 245
     assert sum(asset.startswith("WoodFloor") for asset in ids) == 74
     for material in ("Leather037", "Fabric004", "DiamondPlate009", "Bamboo001C", "Ice003", "Cork004"):
         assert {"color", "normal", "roughness", "displacement"} <= set(textures.reference_maps(material))
@@ -87,3 +87,23 @@ def test_analytic_normals_follow_seeded_height(material):
     dy = np.roll(height, -1, axis=0) - np.roll(height, 1, axis=0)
     assert np.corrcoef(-dx.ravel(), normal[..., 0].ravel())[0, 1] > 0.99
     assert np.corrcoef(dy.ravel(), normal[..., 1].ravel())[0, 1] > 0.99
+
+
+@pytest.mark.parametrize("material", ["SheetMetal002", "Fabric084", "Ground111", "Bark014", "Wicker010A"])
+def test_analytic_packed_maps_match_individual_bakes(material):
+    shape = (81, 112)
+    seed = 71
+    maps, properties = textures.bake_gltf(material, shape, device="cpu", seed=seed)
+    channels = {"color": (0, slice(0, 3)), "normal": (1, slice(0, 3)), "roughness": (2, 1),
+                "occlusion": (2, 0), "metalness": (2, 2), "opacity": (0, 3)}
+    for name in textures.reference_maps(material):
+        if name == "displacement":
+            continue
+        image, channel = channels[name]
+        expected = textures.bake(material, shape, map_type=name, device="cpu", seed=seed).numpy()
+        if isinstance(channel, int):
+            expected = expected[..., 0]
+        np.testing.assert_array_equal(maps[image][..., channel], (255.0 * expected + 0.5).astype(np.uint8))
+    if "opacity" in textures.reference_maps(material):
+        assert properties["alpha_mode"] == "MASK"
+        assert np.min(maps[0][..., 3]) < 128 < np.max(maps[0][..., 3])

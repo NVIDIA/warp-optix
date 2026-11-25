@@ -18,13 +18,13 @@ from scenes.shader_ball import add_shader_ball
 from scenes.style import add_checker_ground
 
 COLUMNS = 4
-ROWS = 2
+ROWS = 3
 PAGE_SIZE = COLUMNS * ROWS
 PITCH_X = 2.15
-PITCH_Z = 3.95
-CAMERA_PITCH = 30.0
+PITCH_Z = 3.75
+CAMERA_PITCH = 32.0
 CAMERA_TARGET_Y = 0.72
-CAMERA_DISTANCE = 12.0
+CAMERA_DISTANCE = 17.0
 CONTROLS = "WASD: move   Q/E: down/up   Drag: look   Home: reset   Arrows: browse   V/R: variation/reference"
 
 

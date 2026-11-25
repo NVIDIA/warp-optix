@@ -12,7 +12,7 @@ from zlib import compress
 import numpy as np
 from fit import _resize, write_coefficients
 from PIL import Image
-from warp_optix._src.texture_coefficients import ANALYTIC_MATERIALS, decode, read_index, read_record
+from warp_optix._src.texture_coefficients import ANALYTIC_MATERIALS, DIRECT_REFERENCES, decode, read_index, read_record
 
 DETAIL_MAPS = ("color", "normal", "roughness", "displacement")
 PATCH = 16
@@ -113,7 +113,7 @@ def _fit_layout(image, kind, layout):
 
 
 def fit_material(asset, sources, high_sources, model_dir, model_index):
-    if asset in ANALYTIC_MATERIALS:
+    if asset in ANALYTIC_MATERIALS or asset in DIRECT_REFERENCES:
         return {}
     images = {}
     for kind in DETAIL_MAPS:
@@ -172,7 +172,10 @@ def main():
     if args.existing_detail:
         index = read_index(args.existing_detail)
         assets = {
-            asset: {kind: read_record(args.existing_detail, shards) for kind, shards in index[asset].items() if asset not in ANALYTIC_MATERIALS}
+            asset: (
+                {} if asset in ANALYTIC_MATERIALS or asset in DIRECT_REFERENCES else
+                {kind: read_record(args.existing_detail, shards) for kind, shards in index[asset].items()}
+            )
             for asset in ids
         }
         for asset in LAYOUTS.keys() & assets.keys():

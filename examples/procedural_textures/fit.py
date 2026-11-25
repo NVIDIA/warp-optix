@@ -13,7 +13,7 @@ from zlib import compress
 
 import numpy as np
 from PIL import Image
-from warp_optix._src.texture_coefficients import ANALYTIC_MATERIALS, LEVELS, decode, quantize_bands
+from warp_optix._src.texture_coefficients import ANALYTIC_MATERIALS, DIRECT_REFERENCES, LEVELS, decode, quantize_bands
 
 MAPS = ("color", "normal", "roughness", "displacement", "occlusion", "metalness", "opacity")
 REQUIRED = MAPS[:4]
@@ -201,12 +201,13 @@ def main():
 
     def fit_material(asset):
         result = {}
+        is_direct = asset in ANALYTIC_MATERIALS or asset in DIRECT_REFERENCES
         for kind in MAPS:
             pattern = f"{asset}_{kind}.*"
             paths = sorted(args.high_resolution_maps.glob(pattern)) if args.high_resolution_maps else []
             paths = paths or sorted(args.maps.glob(pattern))
             if paths:
-                result[kind] = None if asset in ANALYTIC_MATERIALS else fit_map(paths[0], kind)
+                result[kind] = None if is_direct else fit_map(paths[0], kind)
             elif kind in REQUIRED:
                 raise FileNotFoundError(f"No {kind} map for {asset}")
         return result

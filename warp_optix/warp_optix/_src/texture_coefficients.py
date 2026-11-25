@@ -49,6 +49,22 @@ ANALYTIC_MATERIALS = (
     "Wood097", "Wood098", "Wood099", "PavingStones153", "Concrete049", "WoodFloor071", "Bricks101", *SURFACE_PRESETS
 )
 
+# Each entry identifies a surface generator, the reference maps it provides,
+# and the strength used to convert height gradients to tangent normals.
+DIRECT_REFERENCES = {
+    "Terrazzo004": (-1, (), 0.00065),
+    "SheetMetal002": (-2, ("metalness", "opacity"), 0.0014),
+    "TactilePaving004": (-3, ("occlusion",), 0.0028),
+    "MetalPlates001": (-4, ("metalness",), 0.0013),
+    "AcousticFoam001": (-5, ("metalness",), 0.00246),
+    "Wicker010A": (-6, ("occlusion", "opacity"), 0.00964),
+    "Fabric013": (-7, ("opacity",), 0.011),
+    "Fabric084": (-8, ("occlusion",), 0.0008),
+    "Ground111": (-9, ("occlusion",), 0.0012),
+    "Bark014": (-10, ("occlusion",), 0.0047),
+    "Bark016": (-11, ("occlusion",), 0.0047),
+}
+
 LEVELS = 3
 
 

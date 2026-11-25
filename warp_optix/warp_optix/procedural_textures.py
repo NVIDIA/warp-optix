@@ -11,7 +11,19 @@ from zlib import decompress
 import numpy as np
 import warp as wp
 
-from warp_optix._src.texture_coefficients import ANALYTIC_MATERIALS, BUILTIN_SURFACES, SURFACE_PRESETS, decode, read_index, read_record
+from warp_optix._src.bark_surfaces import bark_surface
+from warp_optix._src.mineral_surfaces import perforated_sheet, riveted_metal, tactile_paving, terrazzo
+from warp_optix._src.organic_surfaces import organic_surface
+from warp_optix._src.textile_surfaces import textile_surface
+from warp_optix._src.texture_coefficients import (
+    ANALYTIC_MATERIALS,
+    BUILTIN_SURFACES,
+    DIRECT_REFERENCES,
+    SURFACE_PRESETS,
+    decode,
+    read_index,
+    read_record,
+)
 
 __all__ = ["bake", "bake_gltf", "brick", "marble", "reference_ids", "reference_maps", "wood"]
 
@@ -22,7 +34,7 @@ if not (_catalog / "models" / "index.json").is_file():
 _MODELS = _catalog / "models"
 _DETAIL = _catalog / "detail"
 INDEX = read_index(_MODELS) if (_MODELS / "index.json").is_file() else {}
-_SURFACE_CHANNELS = ("color", "normal", "roughness", "displacement", "occlusion", "metalness")
+_SURFACE_CHANNELS = ("color", "normal", "roughness", "displacement", "occlusion", "metalness", "opacity")
 DETAIL_INDEX = read_index(_DETAIL) if (_DETAIL / "index.json").is_file() else {}
 
 
@@ -367,30 +379,76 @@ def _analytic_surface(uv: wp.vec2, seed: int, style: int, resolution: float):
     return _wood_surface(uv, seed, style, resolution)
 
 
-@wp.kernel
+@wp.func
+def _surface_maps(
+    uv: wp.vec2, resolution: float, style: int, seed: int, palette: wp.vec3,
+    contrast: float, base_roughness: float, pattern: float, columns: int, rows: int,
+):
+    if style >= 0:
+        if columns > 0:
+            color, height, roughness, ao = _tile_surface(
+                uv, seed, resolution, palette, contrast, base_roughness, columns, rows, pattern
+            )
+        elif style >= 7:
+            color, height, roughness, ao = _finish_surface(
+                uv, seed, resolution, palette, contrast, base_roughness, pattern
+            )
+        else:
+            color, height, roughness, ao = _analytic_surface(uv, seed, style, resolution)
+        return color, height, roughness, ao, 0.0, 1.0
+    if style == -1:
+        color, height, roughness = terrazzo(uv, seed, resolution)
+        return color, height, roughness, 1.0, 0.0, 1.0
+    if style == -2:
+        color, height, roughness, alpha = perforated_sheet(uv, seed, resolution)
+        return color, height, roughness, 1.0, 1.0, alpha
+    if style == -3:
+        color, height, roughness, ao = tactile_paving(uv, seed, resolution)
+        return color, height, roughness, ao, 0.0, 1.0
+    if style == -4:
+        color, height, roughness = riveted_metal(uv, seed, resolution)
+        return color, height, roughness, 1.0, 1.0, 1.0
+    if style >= -7:
+        color, height, roughness, ao, alpha = textile_surface(uv, seed, resolution, -style - 5)
+        return color, height, roughness, ao, 0.0, alpha
+    if style >= -9:
+        color, height, roughness, ao = organic_surface(uv, seed, resolution, -style - 8)
+        return color, height, roughness, ao, 0.0, 1.0
+    color, height, roughness, ao = bark_surface(uv, seed, resolution, -style - 10)
+    return color, height, roughness, ao, 0.0, 1.0
+
+
+@wp.func
+def _linear_color(color: wp.vec3) -> wp.vec3:
+    return wp.vec3(
+        _srgb_to_linear(wp.clamp(color[0], 0.0, 1.0)),
+        _srgb_to_linear(wp.clamp(color[1], 0.0, 1.0)),
+        _srgb_to_linear(wp.clamp(color[2], 0.0, 1.0)),
+    )
+
+
+@wp.kernel(enable_backward=False)
 def _bake_surface(
-    style: int, channel: int, seed: int, palette: wp.vec3, contrast: float, roughness: float, pattern: float,
-    columns: int, rows: int, image: wp.array2d(dtype=wp.vec3),
+    style: int, seed: int, palette: wp.vec3, contrast: float, base_roughness: float, pattern: float,
+    columns: int, rows: int, channel: int, image: wp.array2d(dtype=wp.vec3),
 ):
     row, col = wp.tid()
     h, w = image.shape[0], image.shape[1]
-    uv = _texel_uv(row, col, h, w)
-    resolution = float(wp.min(h, w))
-    if columns > 0:
-        color, height, roughness, ao = _tile_surface(uv, seed, resolution, palette, contrast, roughness, columns, rows, pattern)
-    elif style >= 7:
-        color, height, roughness, ao = _finish_surface(uv, seed, resolution, palette, contrast, roughness, pattern)
-    else:
-        color, height, roughness, ao = _analytic_surface(uv, seed, style, resolution)
+    color, height, roughness, ao, metal, alpha = _surface_maps(
+        _texel_uv(row, col, h, w), float(wp.min(h, w)), style, seed,
+        palette, contrast, base_roughness, pattern, columns, rows,
+    )
     result = wp.vec3(height)
     if channel == 0:
-        result = wp.vec3(_srgb_to_linear(color[0]), _srgb_to_linear(color[1]), _srgb_to_linear(color[2]))
+        result = _linear_color(color)
     elif channel == 2:
         result = wp.vec3(roughness)
     elif channel == 4:
         result = wp.vec3(ao)
     elif channel == 5:
-        result = wp.vec3(0.0)  # The mineral surfaces are dielectrics.
+        result = wp.vec3(metal)
+    elif channel == 6:
+        result = wp.vec3(alpha)
     image[row, col] = wp.vec3(wp.clamp(result[0], 0.0, 1.0), wp.clamp(result[1], 0.0, 1.0), wp.clamp(result[2], 0.0, 1.0))
 
 
@@ -629,11 +687,13 @@ def _bake_reference(
 
 def reference_ids() -> tuple[str, ...]:
     """List the ambientCG and built-in material IDs."""
-    return (*INDEX, *BUILTIN_SURFACES)
+    return tuple(dict.fromkeys((*INDEX, *BUILTIN_SURFACES, *DIRECT_REFERENCES)))
 
 
 def reference_maps(material: str) -> tuple[str, ...]:
     """List the maps available for a material."""
+    if material in DIRECT_REFERENCES:
+        return (*_SURFACE_CHANNELS[:4], *DIRECT_REFERENCES[material][1])
     if material in BUILTIN_SURFACES:
         return _SURFACE_CHANNELS[:5]
     return tuple(INDEX[material])
@@ -695,6 +755,22 @@ def _layout_field(material, map_type):
     return values, mode
 
 
+def _surface_configuration(material, seed):
+    state = 173 if seed is None else int(np.random.default_rng(seed).integers(1, 1 << 30))
+    preset = SURFACE_PRESETS.get(material, ((0.0, 0.0, 0.0), 0.0, 0.0, 0.0))
+    palette, contrast, roughness, pattern, *grid = preset
+    columns, rows = grid or (0, 0)
+    if material in DIRECT_REFERENCES:
+        style, _, strength = DIRECT_REFERENCES[material]
+    else:
+        style = ANALYTIC_MATERIALS.index(material)
+        if style < 7:
+            strength = (0.0009, 0.0008, 0.0007, 0.004, 0.0032, 0.00028, 0.003)[style]
+        else:
+            strength = 0.0013 if columns else 0.0009
+    return [style, state, wp.vec3(*palette), contrast, roughness, pattern, columns, rows], strength
+
+
 def bake(
     material: str,
     shape: tuple[int, int],
@@ -713,25 +789,15 @@ def bake(
     height, width = shape
     if height < 1 or width < 1:
         raise ValueError("Texture dimensions must be positive.")
-    if material in ANALYTIC_MATERIALS:
+    if material in ANALYTIC_MATERIALS or material in DIRECT_REFERENCES:
         if map_type not in reference_maps(material):
             raise KeyError(map_type)
         channel = _SURFACE_CHANNELS.index(map_type)
-        state = 173 if seed is None else int(np.random.default_rng(seed).integers(1, 1 << 30))
         image = wp.empty(shape, dtype=wp.vec3, device=device)
-        style = ANALYTIC_MATERIALS.index(material)
-        preset = SURFACE_PRESETS.get(material, ((0.0, 0.0, 0.0), 0.0, 0.0, 0.0))
-        palette, contrast, roughness, pattern, *grid = preset
-        columns, rows = grid or (0, 0)
-        wp.launch(
-            _bake_surface, dim=shape,
-            inputs=[style, channel, state, wp.vec3(*palette), contrast, roughness, pattern, columns, rows],
-            outputs=[image], device=image.device,
-        )
+        params, strength = _surface_configuration(material, seed)
+        wp.launch(_bake_surface, dim=shape, inputs=[*params, channel], outputs=[image], device=image.device)
         if channel == 1:
             normal = wp.empty_like(image)
-            # Match the slope amplitude of the reference NormalGL map.
-            strength = (0.0009, 0.0008, 0.0007, 0.004, 0.0032, 0.00028, 0.003)[style] if style < 7 else (0.0013 if columns else 0.0009)
             wp.launch(_height_normals, dim=shape, inputs=[image, strength], outputs=[normal], device=image.device)
             return normal
         return image
@@ -813,6 +879,37 @@ def _pack_gltf(
     packed[2, row, col] = _rgba8(wp.vec3(red, rough[row, col][0], blue), 1.0)
 
 
+@wp.kernel(enable_backward=False)
+def _bake_packed_surface(
+    style: int, seed: int, palette: wp.vec3, contrast: float, base_roughness: float, pattern: float,
+    columns: int, rows: int, has_occlusion: bool,
+    relief: wp.array2d(dtype=float), packed: wp.array3d(dtype=wp.vec4ub),
+):
+    row, col = wp.tid()
+    h, w = relief.shape[0], relief.shape[1]
+    color, height, roughness, ao, metal, alpha = _surface_maps(
+        _texel_uv(row, col, h, w), float(wp.min(h, w)), style, seed,
+        palette, contrast, base_roughness, pattern, columns, rows,
+    )
+    if not has_occlusion:
+        ao = 1.0
+    packed[0, row, col] = _rgba8(_linear_color(color), wp.clamp(alpha, 0.0, 1.0))
+    packed[2, row, col] = _rgba8(wp.vec3(wp.clamp(ao, 0.0, 1.0), wp.clamp(roughness, 0.0, 1.0), metal), 1.0)
+    relief[row, col] = wp.clamp(height, 0.0, 1.0)
+
+
+@wp.kernel(enable_backward=False)
+def _pack_relief_normals(
+    relief: wp.array2d(dtype=float), strength: float, packed: wp.array3d(dtype=wp.vec4ub),
+):
+    row, col = wp.tid()
+    h, w = relief.shape[0], relief.shape[1]
+    dx = relief[row, (col + w - 1) % w] - relief[row, (col + 1) % w]
+    dy = relief[(row + 1) % h, col] - relief[(row + h - 1) % h, col]
+    n = wp.normalize(wp.vec3(strength * float(w) * dx, strength * float(h) * dy, 1.0))
+    packed[1, row, col] = _rgba8(0.5 * n + wp.vec3(0.5), 1.0)
+
+
 def bake_gltf(
     material: str,
     shape: tuple[int, int],
@@ -833,30 +930,42 @@ def bake_gltf(
     def generate(map_type: str) -> wp.array:
         return bake(material, shape, map_type=map_type, device=device, seed=seed)
 
-    base = generate("color")
-    normal = generate("normal")
-    rough = generate("roughness")
     has_occlusion = "occlusion" in maps
     has_metal = "metalness" in maps
     has_opacity = "opacity" in maps
-    packed = wp.empty((3, *shape), dtype=wp.vec4ub, device=base.device)
-    wp.launch(
-        _pack_gltf,
-        dim=shape,
-        inputs=[
-            base,
-            normal,
-            rough,
-            generate("occlusion") if has_occlusion else rough,
-            generate("metalness") if has_metal else rough,
-            generate("opacity") if has_opacity else rough,
-            has_occlusion,
-            has_metal,
-            has_opacity,
-        ],
-        outputs=[packed],
-        device=base.device,
-    )
+    if material in ANALYTIC_MATERIALS or material in DIRECT_REFERENCES:
+        if min(shape) < 1:
+            raise ValueError("Texture dimensions must be positive.")
+        packed = wp.empty((3, *shape), dtype=wp.vec4ub, device=device)
+        relief = wp.empty(shape, dtype=float, device=packed.device)
+        params, strength = _surface_configuration(material, seed)
+        wp.launch(
+            _bake_packed_surface, dim=shape, inputs=[*params, has_occlusion],
+            outputs=[relief, packed], device=packed.device,
+        )
+        wp.launch(_pack_relief_normals, dim=shape, inputs=[relief, strength], outputs=[packed], device=packed.device)
+    else:
+        base = generate("color")
+        normal = generate("normal")
+        rough = generate("roughness")
+        packed = wp.empty((3, *shape), dtype=wp.vec4ub, device=base.device)
+        wp.launch(
+            _pack_gltf,
+            dim=shape,
+            inputs=[
+                base,
+                normal,
+                rough,
+                generate("occlusion") if has_occlusion else rough,
+                generate("metalness") if has_metal else rough,
+                generate("opacity") if has_opacity else rough,
+                has_occlusion,
+                has_metal,
+                has_opacity,
+            ],
+            outputs=[packed],
+            device=base.device,
+        )
     kwargs: dict[str, dict[str, int] | str] = {
         "base_color_texture": {"index": first_texture_index},
         "normal_texture": {"index": first_texture_index + 1},
