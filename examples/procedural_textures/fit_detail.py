@@ -12,7 +12,7 @@ from zlib import compress
 import numpy as np
 from fit import _resize, write_coefficients
 from PIL import Image
-from warp_optix._src.texture_coefficients import ANALYTIC_MATERIALS, DIRECT_REFERENCES, decode, read_index, read_record
+from warp_optix._src.procedural_materials.texture_coefficients import ANALYTIC_MATERIALS, DIRECT_REFERENCES, decode, read_index, read_record
 
 DETAIL_MAPS = ("color", "normal", "roughness", "displacement")
 PATCH = 16

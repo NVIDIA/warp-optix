@@ -17,15 +17,41 @@ from warp_optix import procedural_textures as textures
 from scenes.shader_ball import add_shader_ball
 from scenes.style import add_checker_ground
 
-COLUMNS = 4
-ROWS = 3
+COLUMNS = 9
+ROWS = 5
 PAGE_SIZE = COLUMNS * ROWS
-PITCH_X = 2.15
-PITCH_Z = 3.75
+PITCH_X = 1.84
+PITCH_Z = 3.15
 CAMERA_PITCH = 32.0
-CAMERA_TARGET_Y = 0.72
-CAMERA_DISTANCE = 17.0
+CAMERA_TARGET_Y = 0.49
+CAMERA_DISTANCE = 34.0
 CONTROLS = "WASD: move   Q/E: down/up   Drag: look   Home: reset   Arrows: browse   V/R: variation/reference"
+
+
+# Give overview slots to different construction and surface features.
+# Named searches and --all-materials can still browse every reference ID.
+OVERVIEW = (
+    "Fabric084", "Ground111", "Bark014", "Bark016", "Wood096",
+    "Concrete008", "Concrete015", "Concrete036", "Concrete049", "WoodFloor071",
+    "PavingStones153", "Terrazzo004", "Bricks101", "SheetMetal002", "TactilePaving004",
+    "MetalPlates001", "AcousticFoam001", "Wicker010A", "Fabric013", "WhiteSubwayTile",
+    "Tiles071", "Tiles140", "RoofingTiles008", "RoofingTiles014A", "Cardboard001",
+    "Ground031", "Ground094C", "Wood099", "Planks037A", "Bricks113A",
+    "LimewashWall", "Asphalt031", "Marble012", "Onyx015", "Travertine009",
+    "Metal064", "DiamondPlate009", "CorrugatedSteel009", "Fabric004", "Carpet016",
+    "Leather037", "Rubber001", "Bamboo001C", "Cork004", "Ice003",
+)
+
+def _select_materials(available, materials, query, all_materials):
+    if materials:
+        selected = materials
+    elif query or all_materials:
+        selected = available
+    else:
+        supported = set(available)
+        selected = [asset for asset in OVERVIEW if asset in supported]
+    query = query.casefold()
+    return [asset for asset in selected if query in asset.casefold()]
 
 
 class Gallery:
@@ -125,7 +151,7 @@ class Gallery:
         view_projection = camera.get_view_matrix() @ camera.get_projection_matrix()
         for slot, asset in enumerate(self.visible_ids):
             x, z = self.slot_center(slot)
-            clip = np.array((x, 0.0, z + 0.82, 1.0)) @ view_projection
+            clip = np.array((x, 0.0, z + 0.69, 1.0)) @ view_projection
             if clip[3] > 0.0:
                 ndc_x, ndc_y = clip[:2] / clip[3]
                 if abs(ndc_x) < 0.96 and abs(ndc_y) < 0.89:
@@ -186,8 +212,11 @@ def _show(gallery):
         should_render=prepare,
     )
     viewer.window.set_minimum_size(320, 180)
+    label_batch = viewer.pyglet.graphics.Batch()
     labels = [
-        viewer.pyglet.text.Label(font_size=11, anchor_x="center", anchor_y="center", color=(255, 255, 255, 255))
+        viewer.pyglet.text.Label(
+            font_size=10, anchor_x="center", anchor_y="center", color=(255, 255, 255, 255), batch=label_batch,
+        )
         for _ in range(gallery.page_size + 2)
     ]
     key = viewer.pyglet.window.key
@@ -213,9 +242,16 @@ def _show(gallery):
         frames_left = 32
 
     def overlay():
-        for label, (caption, x, y) in zip(labels, gallery.annotations(), strict=False):
-            label.text, label.x, label.y = caption, x, y
-            label.draw()
+        annotations = list(gallery.annotations())
+        for index, label in enumerate(labels):
+            if index < len(annotations):
+                caption, x, y = annotations[index]
+                if label.text != caption:
+                    label.text = caption
+                label.x, label.y = x, y
+            elif label.text:
+                label.text = ""
+        label_batch.draw()
 
     def render(mapped_image, _frame, _elapsed):
         nonlocal frames_left
@@ -243,10 +279,11 @@ def main():
     parser.add_argument("--page", type=int, default=1, help="Initial page, starting at 1.")
     parser.add_argument("--single", action="store_true", help="Inspect one material per page at a larger scale.")
     parser.add_argument("--materials", nargs="+", metavar="ID", help="Present these materials in the given order.")
+    parser.add_argument("--all-materials", action="store_true", help="Browse the entire catalog, including variants.")
     parser.add_argument("--filter", default="", help="Show only material IDs containing this text, e.g. WoodFloor.")
     parser.add_argument("--seed", type=int, help="Initial material variation seed.")
-    parser.add_argument("--width", type=int, default=1200)
-    parser.add_argument("--height", type=int, default=700)
+    parser.add_argument("--width", type=int, default=1600)
+    parser.add_argument("--height", type=int, default=900)
     parser.add_argument("--texture-size", type=int, help="Texture bake size (2048 for --single, 1024 for the grid).")
     parser.add_argument("--output", type=Path, help="Render one page to a PNG without opening a window.")
     parser.add_argument("--frames", type=int, default=16, help="Frames to accumulate for --output.")
@@ -256,11 +293,10 @@ def main():
     if min(args.width, args.height, args.texture_size, args.frames) < 1:
         parser.error("width, height, texture size, and frames must be positive")
     available = textures.reference_ids()
-    selected = args.materials or available
-    unknown = set(selected).difference(available)
+    unknown = set(args.materials or ()).difference(available)
     if unknown:
         parser.error(f"materials unavailable in this installation: {', '.join(sorted(unknown))}")
-    ids = [asset for asset in selected if args.filter.casefold() in asset.casefold()]
+    ids = _select_materials(available, args.materials, args.filter, args.all_materials)
     if not ids:
         parser.error(f"no materials match {args.filter!r}")
     page_count = math.ceil(len(ids) / (1 if args.single else PAGE_SIZE))

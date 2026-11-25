@@ -123,6 +123,10 @@ def test_material_gallery_renders_and_wraps_pages(monkeypatch):
     api = PathTracer(width=96, height=56, denoiser="none", enable_set=False)
     try:
         gallery = example.Gallery(api, texture_size=48)
+        overview = example._select_materials(procedural_textures.reference_ids(), None, "", False)
+        assert example.PAGE_SIZE == 45 and len(overview) == len(set(overview))
+        assert {"Concrete008", "Concrete015", "Concrete036", "Tiles071"} <= set(overview)
+        assert "BlueCeramicTile" not in overview and "SageCeramicTile" not in overview
         assets = procedural_textures.reference_ids()
         gallery.load(0, None)
         api.render_frame()

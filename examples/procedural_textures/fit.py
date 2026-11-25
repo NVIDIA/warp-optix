@@ -13,7 +13,7 @@ from zlib import compress
 
 import numpy as np
 from PIL import Image
-from warp_optix._src.texture_coefficients import ANALYTIC_MATERIALS, DIRECT_REFERENCES, LEVELS, decode, quantize_bands
+from warp_optix._src.procedural_materials.texture_coefficients import ANALYTIC_MATERIALS, DIRECT_REFERENCES, LEVELS, decode, quantize_bands
 
 MAPS = ("color", "normal", "roughness", "displacement", "occlusion", "metalness", "opacity")
 REQUIRED = MAPS[:4]

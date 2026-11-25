@@ -12,10 +12,10 @@ from warp_optix import procedural_textures as textures
 def test_new_material_families_provide_aligned_maps():
     ids = textures.reference_ids()
     assert {"LimewashWall", "WhiteSubwayTile", "GraphiteConcrete"} <= set(ids)
-    if len(ids) == 31:
+    if len(ids) == 41:
         assert {"WoodFloor071", "Fabric004", "Leather037", "Metal064", "Bricks113A", "RoofingTiles013A"} <= set(ids)
         return
-    assert len(ids) == 245
+    assert len(ids) == 254
     assert sum(asset.startswith("WoodFloor") for asset in ids) == 74
     for material in ("Leather037", "Fabric004", "DiamondPlate009", "Bamboo001C", "Ice003", "Cork004"):
         assert {"color", "normal", "roughness", "displacement"} <= set(textures.reference_maps(material))
@@ -107,3 +107,24 @@ def test_analytic_packed_maps_match_individual_bakes(material):
     if "opacity" in textures.reference_maps(material):
         assert properties["alpha_mode"] == "MASK"
         assert np.min(maps[0][..., 3]) < 128 < np.max(maps[0][..., 3])
+
+
+def test_material_mask_preserves_endpoints_and_blends_in_between():
+    shape = (48, 64)
+    base, overlay = "Concrete008", "Ground094C"
+    a, _ = textures.bake_gltf(base, shape, device="cpu", seed=3)
+    b, _ = textures.bake_gltf(overlay, shape, device="cpu", seed=3)
+    mask = np.full(shape, 0.5, dtype=np.float32)
+    mask[:, :16] = 0
+    mask[:, -16:] = 1
+    maps, properties = textures.bake_layered_gltf(base, overlay, shape, device="cpu", seed=3, mask=mask)
+    assert "occlusion_texture" in properties
+    for actual, first, second in zip(maps, a, b, strict=True):
+        np.testing.assert_array_equal(actual[:, :16], first[:, :16])
+        np.testing.assert_array_equal(actual[:, -16:], second[:, -16:])
+    average = (a[0][:, 16:-16, :3].astype(float) + b[0][:, 16:-16, :3]) / 2
+    np.testing.assert_allclose(maps[0][:, 16:-16, :3], average, atol=0.5)
+    norm = np.linalg.norm(2 * maps[1][..., :3].astype(float) / 255 - 1, axis=-1)
+    np.testing.assert_allclose(norm, 1, atol=0.008)
+    procedural, _ = textures.bake_layered_gltf(base, overlay, shape, device="cpu", seed=3, height_blend=0.5)
+    assert not np.array_equal(procedural[0], maps[0])

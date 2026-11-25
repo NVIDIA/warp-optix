@@ -10,7 +10,7 @@ import numpy as np
 
 
 @lru_cache(maxsize=3)
-def _lathe(profile, planar_uv=False):
+def _lathe(profile, planar_uv=False, shell_tiles=0):
     """Revolve a front-to-back (radius, axial position) profile around local Z."""
     profile = np.asarray(profile, dtype=np.float64)
     radius, axial = profile.T
@@ -24,6 +24,8 @@ def _lathe(profile, planar_uv=False):
     segments = 96
     u = np.linspace(0, 1, segments + 1)
     angle = 2 * math.pi * u
+    if shell_tiles:
+        angle -= math.pi / 2  # Put the longitudinal seam on the underside.
     radial = np.stack((np.cos(angle), np.sin(angle)), axis=1)
 
     vertices = np.empty((len(profile), segments + 1, 3))
@@ -37,7 +39,14 @@ def _lathe(profile, planar_uv=False):
         uvs[..., 1] = 1 - uvs[..., 1]
     else:
         length = np.r_[0, np.cumsum(np.linalg.norm(np.diff(profile, axis=0), axis=1))]
-        uvs = np.stack(np.broadcast_arrays(u[None, :], length[:, None] / length[-1]), axis=-1)
+        if shell_tiles:
+            # Match meridian spacing to the equator's texel density. A whole
+            # number of tiles around the axis keeps periodic textures aligned.
+            v = length * shell_tiles / (2 * math.pi * radius.max())
+            u *= shell_tiles
+        else:
+            v = length / length[-1]
+        uvs = np.stack(np.broadcast_arrays(u[None, :], v[:, None]), axis=-1)
 
     start = np.arange(len(profile) - 1)[:, None] * (segments + 1) + np.arange(segments)
     next_ring = start + segments + 1
@@ -82,15 +91,15 @@ def add_shader_ball(api, x, z, material, graphite, trim):
     rotation = np.stack((right, np.cross(axis, right), axis))
     base_rotation = np.array(((1, 0, 0), (0, 0, -1), (0, 1, 0)))
     parts = (
-        (_FACE, True, rotation, (x, .91, z), (material,) * (len(_FACE) - 1)),
-        (_BEZEL + _SHELL, False, rotation, (x, .91, z),
+        (_FACE, True, 0, rotation, (x, .91, z), (material,) * (len(_FACE) - 1)),
+        (_BEZEL + _SHELL, False, 2, rotation, (x, .91, z),
          (material, graphite, graphite, trim, trim, trim, trim, trim, graphite, graphite,
           material, material, graphite, graphite, trim, trim, material) + (material,) * (len(_SHELL) - 1)),
-        (_PEDESTAL, False, base_rotation, (x, 0, z),
+        (_PEDESTAL, False, 0, base_rotation, (x, 0, z),
          (graphite,) * 8 + (trim,) * 3 + (graphite,) * 4),
     )
-    for profile, planar, basis, origin, materials in parts:
-        positions, normals, uvs, indices, bands = _lathe(profile, planar)
+    for profile, planar, shell_tiles, basis, origin, materials in parts:
+        positions, normals, uvs, indices, bands = _lathe(profile, planar, shell_tiles)
         mesh = api.create_mesh(
             positions @ basis + origin, indices, normals=normals @ basis, uvs=uvs,
             material_id=material, material_ids=np.asarray(materials, dtype=np.int32)[bands],

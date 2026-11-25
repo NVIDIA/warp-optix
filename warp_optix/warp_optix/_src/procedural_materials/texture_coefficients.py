@@ -63,6 +63,16 @@ DIRECT_REFERENCES = {
     "Ground111": (-9, ("occlusion",), 0.0012),
     "Bark014": (-10, ("occlusion",), 0.0047),
     "Bark016": (-11, ("occlusion",), 0.0047),
+    "Cardboard001": (-12, (), 0.0011),
+    "Ground031": (-13, ("occlusion",), 0.0026),
+    "Ground094C": (-14, ("occlusion",), 0.006),
+    "Concrete008": (-15, ("occlusion",), 0.00045),
+    "Concrete015": (-16, (), 0.0009),
+    "Concrete036": (-17, (), 0.00065),
+    "RoofingTiles008": (-18, ("occlusion",), 0.02745),
+    "RoofingTiles014A": (-19, ("occlusion",), 0.01472),
+    "Tiles071": (-20, ("occlusion",), 0.00418),
+    "Wood096": (-21, (), 0.0035),
 }
 
 LEVELS = 3

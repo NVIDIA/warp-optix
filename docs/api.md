@@ -36,8 +36,8 @@ staggered pattern repeats vertically. Its mortar fraction is measured relative
 to the width or height of a brick cell on each axis.
 
 The `textures.reference_ids()` function lists materials in the current installation.
-Default wheels include eight built-in materials and 23 based on ambientCG references.
-The source checkout and full-catalog wheel include 245 materials, including 138 from the first batch of the
+Default wheels include eight built-in materials and 33 based on ambientCG references.
+The source checkout and full-catalog wheel include 254 materials, including 138 from the first batch of the
 [ambientCG popularity listing](https://ambientcg.com/list?type=material%2Cdecal%2Catlas&sort=popular),
 plus 22 selected surfaces such as leather, carbon fiber, diamond plate, cork,
 bamboo, and ice, and every material in the
@@ -123,6 +123,26 @@ extracts and compresses the aligned detail patches. Rename the `NormalGL`,
 ```bash
 python examples/procedural_textures/fit.py maps examples/procedural_textures/ambientcg-materials.txt material_catalog/models
 python examples/procedural_textures/fit_detail.py maps examples/procedural_textures/ambientcg-materials.txt material_catalog/detail --models material_catalog/models
+```
+
+The public API is `warp_optix.procedural_textures`. Material family generators,
+map packing, and coefficient decoding are in
+[`warp_optix/_src/procedural_materials`](../warp_optix/warp_optix/_src/procedural_materials).
+
+### Layered materials
+
+Use `bake_layered_gltf` to combine two catalog materials into a single glTF
+texture set. The default mask is periodic noise with a soft transition. Supply
+a NumPy float array or Warp float32 array of shape `(height, width)` to control
+the weights directly. Weight zero selects the base material, and weight one
+selects the overlay. For seamless tiling, supply a periodic mask. Optional
+`height_blend` biases the transition toward the higher local displacement.
+
+```python
+images, gltf = textures.bake_layered_gltf(
+    "Concrete008", "Ground094C", (2048, 2048), seed=8, frequency=6,
+    threshold=0.57, softness=0.17, height_blend=0.5, device="cuda",
+)
 ```
 
 ## Devices, contexts, and lifetime
