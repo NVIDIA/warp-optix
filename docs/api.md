@@ -18,15 +18,19 @@ matches = textures.list_materials(family="plastic", query="automotive")
 info = textures.describe_material("plastic/pebbled")
 
 maps = textures.generate(
-    "plastic/pebbled", (1024, 1024),
+    "plastic/pebbled",
+    (1024, 1024),
     maps=("color", "normal", "roughness"),
     parameters={"color": [0.21, 0.22, 0.24], "roughness": 0.58},
-    seed=17, device="cuda",
+    seed=17,
+    device="cuda",
 )
 images, material_kwargs = textures.generate_gltf(
-    "metal/copper", (1024, 1024),
+    "metal/copper",
+    (1024, 1024),
     parameters={"finish": "brushed", "direction": 25},
-    seed=17, device="cuda",
+    seed=17,
+    device="cuda",
 )
 ```
 
@@ -55,8 +59,7 @@ from warp_optix import procedural_textures as textures
 image = wp.empty((256, 512), dtype=wp.vec3, device="cpu")
 light = wp.vec3(0.48, 0.24, 0.09)
 dark = wp.vec3(0.12, 0.044, 0.012)
-wp.launch(textures.wood, dim=image.shape, inputs=[light, dark, 16, 42],
-          outputs=[image], device=image.device)
+wp.launch(textures.wood, dim=image.shape, inputs=[light, dark, 16, 42], outputs=[image], device=image.device)
 ```
 
 Supply palette colors in linear RGB. The kernels sample at texel centers, so
@@ -73,8 +76,9 @@ staggered pattern repeats vertically. Its mortar fraction is measured relative
 to the width or height of a brick cell on each axis.
 
 The `textures.reference_ids()` function lists fixed recipe and reference IDs in
-the current installation. Default wheels ship a starter set alongside the
-procedural recipes. The checkout and full-catalog wheel include the first batch of the
+the current installation. Default wheels include 112 discoverable IDs generated
+entirely by procedural recipes and ship zero fitted material archives.
+The checkout and full-catalog wheel also include the first batch of the
 [ambientCG popularity listing](https://ambientcg.com/list?type=material%2Cdecal%2Catlas&sort=popular),
 plus 22 selected surfaces such as leather, carbon fiber, diamond plate, cork,
 bamboo, and ice, and every material in the
@@ -149,7 +153,7 @@ Inspect at least one alternate seed under the same lighting. Check that pores,
 joints and chips appear at the same UVs in every map and that the texture tiles
 at both boundaries.
 
-The other fitted textures combine localized, compressed coefficients with small,
+The optional fitted textures combine localized, compressed coefficients with small,
 seamless patches of high-frequency detail sampled from the reference maps.
 Warp applies additional detail bands as the bake resolution goes up, including
 at 2048×2048 and 4096×4096. Sparse corrections retain the positions of hard
@@ -191,8 +195,12 @@ supply its normal-incidence reflectance as a linear RGB tuple.
 
 ```python
 surface = textures.MetalSurface(
-    "copper", finish="brushed", roughness=0.29, scratches=0.24,
-    scratch_density=14, direction=25,
+    "copper",
+    finish="brushed",
+    roughness=0.29,
+    scratches=0.24,
+    scratch_density=14,
+    direction=25,
 )
 height = textures.bake(surface, (2048, 2048), map_type="displacement", seed=12, device="cuda")
 images, gltf = textures.bake_gltf(surface, (2048, 2048), seed=12, device="cuda")
@@ -229,7 +237,7 @@ Use `example_material_gallery.py --plastics` for a side-by-side comparison.
 
 The catalog includes asphalt, masonry, concrete, plaster, wood and flooring,
 ceramic tile, sheet metal, and roofing. Use `reference_ids()` for the full list.
-The following recipes model specific products and are available in starter wheels.
+The following recipes model specific products and are available in default wheels.
 
 | Material ID | Surface |
 | --- | --- |
@@ -250,8 +258,15 @@ selects the overlay. For seamless tiling, supply a periodic mask. Optional
 
 ```python
 images, gltf = textures.bake_layered_gltf(
-    "Concrete008", "Ground094C", (2048, 2048), seed=8, frequency=6,
-    threshold=0.57, softness=0.17, height_blend=0.5, device="cuda",
+    "Concrete008",
+    "Ground094C",
+    (2048, 2048),
+    seed=8,
+    frequency=6,
+    threshold=0.57,
+    softness=0.17,
+    height_blend=0.5,
+    device="cuda",
 )
 ```
 

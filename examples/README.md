@@ -66,8 +66,8 @@ or up, left-drag to look, the mouse wheel to zoom, and **Home** to reset the vie
 The grid bakes at 1024×1024 and single-material view at 2048×2048 by default.
 For a 4K close-up, try `--single --texture-size 4096 --filter WoodFloor071`.
 Use `--filter WoodFloor` to browse all wood flooring materials together.
-Default wheels include the procedural recipes and a starter set of fitted
-materials. The checkout includes the full fitted catalog. Build with
+Default wheels generate their entire catalog from procedural recipes.
+The checkout also includes the fitted catalog. Build with
 `--config-setting=cmake.define.WARP_OPTIX_FULL_MATERIAL_CATALOG=ON` to bundle it
 in a wheel.
 

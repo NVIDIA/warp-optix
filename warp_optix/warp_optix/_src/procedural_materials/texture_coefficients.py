@@ -56,6 +56,29 @@ ANALYTIC_MATERIALS = (
     *SURFACE_PRESETS,
 )
 
+ANALYTIC_EXTRA_MAPS = {
+    **dict.fromkeys(
+        (
+            *BUILTIN_SURFACES,
+            "PavingStones153",
+            "Concrete049",
+            "Bricks101",
+            "Asphalt031",
+            "Asphalt033",
+            "Concrete031",
+            "Concrete047A",
+            "Plaster007",
+            "Tiles107",
+            "Tiles138",
+            "Bricks104",
+            "Bricks105",
+        ),
+        ("occlusion",),
+    ),
+    "Concrete042A": ("occlusion", "metalness"),
+    "Concrete048": ("occlusion", "metalness"),
+}
+
 # Each entry identifies a surface generator, the reference maps it provides,
 # and the strength used to convert height gradients to tangent normals.
 DIRECT_REFERENCES = {
@@ -103,6 +126,11 @@ DIRECT_REFERENCES = {
     "AsphaltShingles": (-50, ("occlusion",), 0.0025),
     "GalvanizedZinc": (-51, ("metalness",), 0.0015),
     "EngineeredQuartz": (-52, (), 0.00045),
+    "Rubber001": (-53, (), 0.00175),
+    "Bricks113A": (-54, ("occlusion",), 0.0044),
+    "Metal064": (-55, ("metalness",), 0.00023),
+    "RoofingTiles013A": (-56, ("occlusion", "opacity"), 0.015),
+    "Leather037": (-57, (), 0.00037),
 }
 
 LEVELS = 3

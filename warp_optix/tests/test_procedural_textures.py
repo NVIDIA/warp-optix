@@ -4,6 +4,7 @@
 import numpy as np
 import pytest
 import warp as wp
+from warp_optix._src.procedural_materials import bake as material_bake
 from warp_optix.pathtracing import Scene
 
 from warp_optix import procedural_textures as textures
@@ -40,6 +41,29 @@ def test_reference_normals_have_unit_length():
     normals = textures.bake("Bricks113A", (64, 96), map_type="normal", device="cpu").numpy()
     np.testing.assert_allclose(np.linalg.norm(2.0 * normals - 1.0, axis=-1), 1.0, atol=1.0e-5)
     assert np.std(normals[..., 0]) > 0.01
+
+
+@pytest.mark.parametrize(
+    "material, extra_maps",
+    [
+        ("Bricks113A", ("occlusion",)),
+        ("Leather037", ()),
+        ("Metal064", ("metalness",)),
+        ("RoofingTiles013A", ("occlusion", "opacity")),
+        ("Rubber001", ()),
+    ],
+)
+def test_default_materials_bake_without_fitted_data(monkeypatch, material, extra_maps):
+    monkeypatch.setattr(material_bake, "INDEX", {})
+    monkeypatch.setattr(material_bake, "DETAIL_INDEX", {})
+    expected = ("color", "normal", "roughness", "displacement", *extra_maps)
+    assert material in textures.reference_ids()
+    assert textures.reference_maps(material) == expected
+    maps = textures.generate(material, (91, 128), device="cpu", seed=18)
+    assert tuple(maps) == expected
+    assert all(np.isfinite(image.numpy()).all() for image in maps.values())
+    images, _ = textures.generate_gltf(material, (91, 128), device="cpu", seed=18)
+    assert len(images) == 3
 
 
 @pytest.mark.gpu
@@ -158,12 +182,15 @@ def test_material_mask_preserves_endpoints_and_blends_in_between():
     assert not np.array_equal(procedural[0], maps[0])
 
 
-def test_dark_foam_packs_color_with_sub_byte_precision():
+@pytest.mark.parametrize("material", ["AcousticFoam001", "Rubber001"])
+def test_dark_surface_packs_color_with_sub_byte_precision(material):
     shape = (256, 293)
-    images, properties = textures.bake_gltf("AcousticFoam001", shape, device="cpu")
-    actual = images[0][..., :3].astype(np.float32) * (properties["base_color"][0] / 255.0)
-    reference = textures.bake("AcousticFoam001", shape, device="cpu").numpy()
-    np.testing.assert_allclose(actual, reference, atol=0.5 / (8.0 * 255.0) + 1e-7)
+    images, properties = textures.bake_gltf(material, shape, device="cpu")
+    step = properties["base_color"][0] / 255.0
+    actual = images[0][..., :3].astype(np.float32) * step
+    reference = textures.bake(material, shape, device="cpu").numpy()
+    assert step < 1.0 / 255.0
+    np.testing.assert_allclose(actual, reference, atol=0.5 * step + 1e-7)
     assert len(np.unique(images[0][..., 0])) > 3
 
 

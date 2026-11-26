@@ -15,6 +15,7 @@ import numpy as np
 import warp as wp
 
 from .bark_surfaces import bark_surface
+from .brick_and_sheet_metal import ashlar_masonry, rusted_sheet_metal
 from .carbon_fiber import carbon_fiber
 from .chipboard import chipboard
 from .configurable_metals import METAL_MAPS, MetalSurface, bake_metal, pack_metal
@@ -31,11 +32,13 @@ from .plastic_surfaces import PLASTIC_PRESETS, PlasticSurface, plastic_configura
 from .reclaimed_planks import reclaimed_planks
 from .relief import _normal_for_gltf, _normal_from_relief
 from .roof_and_mosaic import roof_or_mosaic
+from .roofing_and_upholstery import dark_roof_tiles, grained_leather
+from .rubber_floor import crumb_rubber
 from .sponge_and_paper import sponge_or_paper
 from .textile_surfaces import textile_surface
 from .texture_coefficients import (
+    ANALYTIC_EXTRA_MAPS,
     ANALYTIC_MATERIALS,
-    BUILTIN_SURFACES,
     DIRECT_REFERENCES,
     SURFACE_PRESETS,
     decode,
@@ -504,8 +507,18 @@ def _surface_maps(
         return sponge_or_paper(uv, seed, resolution, -style - 38)
     elif style >= -47:
         return plastic_surface(uv, seed, resolution, -style - 40, palette, base_roughness)
-    else:
+    elif style >= -52:
         return construction_surface(uv, seed, resolution, -style - 48)
+    elif style == -53:
+        return crumb_rubber(uv, seed, resolution)
+    elif style == -54:
+        return ashlar_masonry(uv, seed, resolution)
+    elif style == -55:
+        return rusted_sheet_metal(uv, seed, resolution)
+    elif style == -56:
+        return dark_roof_tiles(uv, seed, resolution)
+    else:
+        return grained_leather(uv, seed, resolution)
     return color, height, roughness, ao, 0.0, 1.0
 
 
@@ -795,7 +808,7 @@ def _bake_reference(
 
 def reference_ids() -> tuple[str, ...]:
     """List the ambientCG and built-in material IDs."""
-    return tuple(dict.fromkeys((*INDEX, *BUILTIN_SURFACES, *DIRECT_REFERENCES, *PLASTIC_PRESETS)))
+    return tuple(dict.fromkeys((*INDEX, *ANALYTIC_MATERIALS, *DIRECT_REFERENCES, *PLASTIC_PRESETS)))
 
 
 def reference_maps(material: str | MetalSurface | PlasticSurface) -> tuple[str, ...]:
@@ -806,8 +819,8 @@ def reference_maps(material: str | MetalSurface | PlasticSurface) -> tuple[str, 
         return _SURFACE_CHANNELS[:4]
     if material in DIRECT_REFERENCES:
         return (*_SURFACE_CHANNELS[:4], *DIRECT_REFERENCES[material][1])
-    if material in BUILTIN_SURFACES:
-        return _SURFACE_CHANNELS[:5]
+    if material in ANALYTIC_MATERIALS:
+        return (*_SURFACE_CHANNELS[:4], *ANALYTIC_EXTRA_MAPS.get(material, ()))
     return tuple(INDEX[material])
 
 
@@ -1070,9 +1083,13 @@ def bake_gltf(
     A seed generates a consistent variant across all maps. Packed normals
     use the mesh UV frame, where positive green points along increasing V.
     """
-    # Dark foam occupies only a handful of linear RGBA8 levels. Store its
+    # Dark surfaces occupy only a handful of linear RGBA8 levels. Store their
     # albedo at a higher scale and compensate with the glTF color factor.
-    color_gain = 8.0 if material == "AcousticFoam001" else 1.0
+    color_gain = 1.0
+    if material == "AcousticFoam001":
+        color_gain = 8.0
+    elif material == "Rubber001":
+        color_gain = 6.0
     packed = _bake_gltf_arrays(material, shape, device, seed, color_gain=color_gain)
     maps = reference_maps(material)
     kwargs = _gltf_properties(first_texture_index, "occlusion" in maps, "opacity" in maps)

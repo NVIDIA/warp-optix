@@ -151,7 +151,8 @@ def test_material_gallery_renders_and_wraps_pages(monkeypatch):
         home = controls.View(gallery.home_position, 180.0, -example.CAMERA_PITCH, gallery.home_fov)
         camera = controls.FreeCameraController(viewer, api, home, use_arrows=False)
         name = gallery.visible_ids[0]
-        label_x = {caption: x for caption, x, _ in gallery.annotations()}[name]
+        label = example.PLASTICS.get(name, name)
+        label_x = {caption: x for caption, x, _ in gallery.annotations()}[label]
         camera.keys_down = {keys.RIGHT}
         camera.update(0.1)
         np.testing.assert_allclose(api.viewer.camera.position, home.position)
@@ -159,7 +160,7 @@ def test_material_gallery_renders_and_wraps_pages(monkeypatch):
         camera.update(0.1)
         x, y, z = api.viewer.camera.position
         assert x > 0 and y > home.position[1] and z < home.position[2]
-        assert {caption: x for caption, x, _ in gallery.annotations()}[name] < label_x
+        assert {caption: x for caption, x, _ in gallery.annotations()}[label] < label_x
         gallery.resize(100, 64, reframe=False)
         np.testing.assert_allclose(api.viewer.camera.position, (x, y, z))
         camera.set_view(home)

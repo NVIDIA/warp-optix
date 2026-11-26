@@ -24,20 +24,6 @@ from warp_optix._src.procedural_materials.texture_coefficients import (
 MAPS = ("color", "normal", "roughness", "displacement", "occlusion", "metalness", "opacity")
 REQUIRED = MAPS[:4]
 SHARD_PAYLOAD = 80_000
-STARTER_IDS = {
-    "Bricks113A",
-    "Concrete049",
-    "Fabric004",
-    "Leather037",
-    "Marble012",
-    "Metal064",
-    "PavingStones153",
-    "RoofingTiles013A",
-    "Rubber001",
-    "Tiles107",
-    "Wood099",
-    "WoodFloor071",
-}
 
 
 def _lift_axis(values, axis):
@@ -160,38 +146,32 @@ def allocate(candidates, budget):
 
 
 def write_coefficients(assets, output):
-    """Write small NumPy archives, including a separate starter group for wheels."""
+    """Write the fitted catalog as small indexed NumPy archives."""
     output.mkdir(parents=True, exist_ok=True)
     index = {asset: {} for asset in assets}
 
-    def flush(prefix, shard, payload):
-        np.savez_compressed(output / f"{prefix}-{shard:03}.npz", payload=np.frombuffer(payload, dtype=np.uint8))
+    def flush(shard, payload):
+        np.savez_compressed(output / f"full-{shard:03}.npz", payload=np.frombuffer(payload, dtype=np.uint8))
 
-    for is_starter, prefix in ((True, "starter"), (False, "full")):
-        shard = 0
-        payload = bytearray()
-
-        for asset, maps in assets.items():
-            if (asset in STARTER_IDS) != is_starter:
-                continue
-            for kind, encoded in maps.items():
-                spans = []
-                offset = 0
-                while offset < len(encoded):
-                    if SHARD_PAYLOAD - len(payload) < 1_024:
-                        flush(prefix, shard, payload)
-                        shard += 1
-                        payload = bytearray()
-                    count = min(len(encoded) - offset, SHARD_PAYLOAD - len(payload))
-                    spans.append((f"{prefix}-{shard:03}.npz", len(payload), count))
-                    payload.extend(encoded[offset : offset + count])
-                    offset += count
-                index[asset][kind] = spans
-        if payload:
-            flush(prefix, shard, payload)
-    starter = {asset: maps for asset, maps in index.items() if asset in STARTER_IDS}
-    for name, entries in (("index.json", index), ("starter-index.json", starter)):
-        (output / name).write_text(json.dumps(entries, separators=(",", ":")) + "\n", encoding="utf-8")
+    shard = 0
+    payload = bytearray()
+    for asset, maps in assets.items():
+        for kind, encoded in maps.items():
+            spans = []
+            offset = 0
+            while offset < len(encoded):
+                if SHARD_PAYLOAD - len(payload) < 1_024:
+                    flush(shard, payload)
+                    shard += 1
+                    payload = bytearray()
+                count = min(len(encoded) - offset, SHARD_PAYLOAD - len(payload))
+                spans.append((f"full-{shard:03}.npz", len(payload), count))
+                payload.extend(encoded[offset : offset + count])
+                offset += count
+            index[asset][kind] = spans
+    if payload:
+        flush(shard, payload)
+    (output / "index.json").write_text(json.dumps(index, separators=(",", ":")) + "\n", encoding="utf-8")
 
 
 def main():
