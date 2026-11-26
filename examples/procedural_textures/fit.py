@@ -13,7 +13,13 @@ from zlib import compress
 
 import numpy as np
 from PIL import Image
-from warp_optix._src.procedural_materials.texture_coefficients import ANALYTIC_MATERIALS, DIRECT_REFERENCES, LEVELS, decode, quantize_bands
+from warp_optix._src.procedural_materials.texture_coefficients import (
+    ANALYTIC_MATERIALS,
+    DIRECT_REFERENCES,
+    LEVELS,
+    decode,
+    quantize_bands,
+)
 
 MAPS = ("color", "normal", "roughness", "displacement", "occlusion", "metalness", "opacity")
 REQUIRED = MAPS[:4]
@@ -215,7 +221,12 @@ def main():
     with ThreadPoolExecutor(max_workers=8) as pool:
         options = dict(zip(ids, pool.map(fit_material, ids), strict=True))
     fitted = allocate(
-        {(asset, kind): models for asset, maps in options.items() for kind, models in maps.items() if models is not None},
+        {
+            (asset, kind): models
+            for asset, maps in options.items()
+            for kind, models in maps.items()
+            if models is not None
+        },
         int(args.budget_mib * 1024**2),
     )
     assets = {asset: {kind: fitted.get((asset, kind), b"") for kind in maps} for asset, maps in options.items()}

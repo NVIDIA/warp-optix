@@ -106,7 +106,9 @@ def chipboard(uv: wp.vec2, seed: int, resolution: float):
         split = small_split * small_face
         dominant = small_face * small_h
     if medium_h > 0.0:
-        medium_color, medium_relief, medium_split = _wood_chip(medium_uv, seed + 41, medium_id, 53, resolution, medium_tone)
+        medium_color, medium_relief, medium_split = _wood_chip(
+            medium_uv, seed + 41, medium_id, 53, resolution, medium_tone
+        )
         overlay = medium_face * wp.smoothstep(-0.3, 0.11, medium_h - 0.74 * dominant)
         height = wp.lerp(height, 0.447 + 0.233 * medium_h + medium_relief, overlay)
         color = wp.lerp(color, medium_color, overlay)

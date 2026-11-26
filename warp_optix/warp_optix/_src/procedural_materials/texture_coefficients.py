@@ -46,7 +46,14 @@ SURFACE_PRESETS = {
     "Bricks105": ((0.66, 0.53, 0.35), 0.21, 0.69, 0.5, 10, 16),
 }
 ANALYTIC_MATERIALS = (
-    "Wood097", "Wood098", "Wood099", "PavingStones153", "Concrete049", "WoodFloor071", "Bricks101", *SURFACE_PRESETS
+    "Wood097",
+    "Wood098",
+    "Wood099",
+    "PavingStones153",
+    "Concrete049",
+    "WoodFloor071",
+    "Bricks101",
+    *SURFACE_PRESETS,
 )
 
 # Each entry identifies a surface generator, the reference maps it provides,

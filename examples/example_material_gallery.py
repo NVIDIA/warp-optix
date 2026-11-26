@@ -10,12 +10,11 @@ from time import perf_counter
 
 import numpy as np
 import warp as wp
+from scenes.shader_ball import add_shader_ball
+from scenes.style import add_checker_ground
 from warp_optix.pathtracing import PathTracer
 
 from warp_optix import procedural_textures as textures
-
-from scenes.shader_ball import add_shader_ball
-from scenes.style import add_checker_ground
 
 COLUMNS = 9
 ROWS = 5
@@ -34,21 +33,59 @@ PREVIEW_RELIEF = {
     "Concrete041D": (0.050, 0.88),
 }
 
-CONTROLS = "WASD: move   Q/E: down/up   Drag: look   Home: reset   Arrows: browse   V/R: variation/reference   L: labels"
+CONTROLS = (
+    "WASD: move   Q/E: down/up   Drag: look   Home: reset   Arrows: browse   V/R: variation/reference   L: labels"
+)
 
 
 # Give overview slots to different construction and surface features.
 # Named searches and --all-materials can still browse every reference ID.
 OVERVIEW = (
-    "Bark014", "PlasticGlossABS", "Planks037A", "Fabric004", "Grass005",
-    "PlasticPebbledTrim", "Leather035A", "Onyx015", "Marble012", "Concrete008",
-    "PaintedDrywall", "Concrete036", "Concrete041D", "Asphalt033", "RoofingTiles008",
-    "AsphaltShingles", "Foil001", "Rust005", "Fence001", "MetalWalkway010",
-    "Rope003", "Carpet009", "Moss001", "Fabric084", "Ground111",
-    "Wood096", "WoodFloor071", "PavingStones153", "EngineeredQuartz", "Bricks101",
-    "SheetMetal002", "TactilePaving004", "MetalPlates001", "AcousticFoam001", "Wicker010A",
-    "Concrete015", "WhiteSubwayTile", "Wood087", "Cardboard001", "Tiles071",
-    "PlasticCommercialVinyl", "DiamondPlate009", "GalvanizedZinc", "Chipboard002", "Ice003",
+    "Bark014",
+    "PlasticGlossABS",
+    "Planks037A",
+    "Fabric004",
+    "Grass005",
+    "PlasticPebbledTrim",
+    "Leather035A",
+    "Onyx015",
+    "Marble012",
+    "Concrete008",
+    "PaintedDrywall",
+    "Concrete036",
+    "Concrete041D",
+    "Asphalt033",
+    "RoofingTiles008",
+    "AsphaltShingles",
+    "Foil001",
+    "Rust005",
+    "Fence001",
+    "MetalWalkway010",
+    "Rope003",
+    "Carpet009",
+    "Moss001",
+    "Fabric084",
+    "Ground111",
+    "Wood096",
+    "WoodFloor071",
+    "PavingStones153",
+    "EngineeredQuartz",
+    "Bricks101",
+    "SheetMetal002",
+    "TactilePaving004",
+    "MetalPlates001",
+    "AcousticFoam001",
+    "Wicker010A",
+    "Concrete015",
+    "WhiteSubwayTile",
+    "Wood087",
+    "Cardboard001",
+    "Tiles071",
+    "PlasticCommercialVinyl",
+    "DiamondPlate009",
+    "GalvanizedZinc",
+    "Chipboard002",
+    "Ice003",
 )
 
 PLASTICS = {
@@ -113,8 +150,13 @@ class Gallery:
         api.tonemap_exposure = 0.75
         api.set_use_procedural_sky(True)
         api.set_sky_parameters(
-            (-0.61, 0.60, 0.42), grayscale=1.0, multiplier=0.85, haze=0.18,
-            sun_disk_intensity=0.62, sun_disk_scale=2.3, sun_glow_intensity=0.32,
+            (-0.61, 0.60, 0.42),
+            grayscale=1.0,
+            multiplier=0.85,
+            haze=0.18,
+            sun_disk_intensity=0.62,
+            sun_disk_scale=2.3,
+            sun_glow_intensity=0.32,
             ground_color=(0.30, 0.30, 0.30),
         )
         self.resize(api.width, api.height)
@@ -134,8 +176,7 @@ class Gallery:
         horizontal = vertical = 0.0
         for slot in range(self.page_size):
             x, z = self.slot_center(slot)
-            points = ((0.0, 0.82, 0.0), (1.62, -0.72, 0.72), (1.62, 0.72, 0.72),
-                      (0.0, 0.60, 0.60), (0.0, -0.60, 0.60))
+            points = ((0.0, 0.82, 0.0), (1.62, -0.72, 0.72), (1.62, 0.72, 0.72), (0.0, 0.60, 0.60), (0.0, -0.60, 0.60))
             for y, dz, radius in points:
                 relative_y = y - CAMERA_TARGET_Y
                 depth = distance - sine * relative_y - cosine * (z + dz)
@@ -164,7 +205,7 @@ class Gallery:
         images = []
         materials = []
         for asset in ids:
-            maps, kwargs = textures.bake_gltf(
+            maps, kwargs = textures.generate_gltf(
                 asset, (self.texture_size, self.texture_size), device="cuda", first_texture_index=len(images), seed=seed
             )
             images.extend(maps)
@@ -191,8 +232,15 @@ class Gallery:
             # of the scanned surfaces, so each woven tow stays in proportion.
             texture_repeats = 2 if asset == "Fabric004" else 1
             add_shader_ball(
-                self.api, x, z, material, graphite, trim,
-                height=height, height_scale=height_scale, texture_repeats=texture_repeats,
+                self.api,
+                x,
+                z,
+                material,
+                graphite,
+                trim,
+                height=height,
+                height_scale=height_scale,
+                texture_repeats=texture_repeats,
             )
         scene.add_light_sphere((-4, 6, 5), 1.25, (1.0, 1.0, 1.0), 11.0)
         scene.add_light_sphere((5, 4, -3), 1.4, (1.0, 1.0, 1.0), 8.0)
@@ -229,7 +277,9 @@ class Gallery:
         if show_labels:
             draw = ImageDraw.Draw(image)
             for caption, x, y in self.annotations():
-                draw.text((x, image.height - y), caption, anchor="mm", fill="white", stroke_width=1, stroke_fill="black")
+                draw.text(
+                    (x, image.height - y), caption, anchor="mm", fill="white", stroke_width=1, stroke_fill="black"
+                )
         path.parent.mkdir(parents=True, exist_ok=True)
         image.save(path)
 
@@ -278,7 +328,11 @@ def _show(gallery, *, show_labels=True):
     label_batch = viewer.pyglet.graphics.Batch()
     labels = [
         viewer.pyglet.text.Label(
-            font_size=10, anchor_x="center", anchor_y="center", color=(255, 255, 255, 255), batch=label_batch,
+            font_size=10,
+            anchor_x="center",
+            anchor_y="center",
+            color=(255, 255, 255, 255),
+            batch=label_batch,
         )
         for _ in range(gallery.page_size + 2)
     ]
@@ -349,9 +403,13 @@ def main():
     parser.add_argument("--single", action="store_true", help="Inspect one material per page at a larger scale.")
     parser.add_argument("--materials", nargs="+", metavar="ID", help="Present these materials in the given order.")
     families = parser.add_mutually_exclusive_group()
-    families.add_argument("--metal", choices=textures.metal_names(), help="Preview a configurable metal in single view.")
+    families.add_argument(
+        "--metal", choices=textures.metal_names(), help="Preview a configurable metal in single view."
+    )
     families.add_argument("--metals", action="store_true", help="Compare every metal in three rows of finishes.")
-    families.add_argument("--plastics", action="store_true", help="Compare eight molded, worn, and sheet polymer finishes.")
+    families.add_argument(
+        "--plastics", action="store_true", help="Compare eight molded, worn, and sheet polymer finishes."
+    )
     parser.add_argument("--finish", choices=("polished", "brushed", "scratched"), default="brushed")
     parser.add_argument("--scratches", type=float, help="Scratch amount from 0 to 1 for --metal.")
     parser.add_argument("--roughness", type=float, help="Perceptual roughness from 0 to 1 for --metal.")
@@ -380,10 +438,15 @@ def main():
         parser.error(f"materials unavailable in this installation: {', '.join(sorted(unknown))}")
     if args.metal:
         try:
-            ids = [textures.MetalSurface(
-                args.metal, finish=args.finish, scratches=args.scratches,
-                roughness=args.roughness, direction=args.direction,
-            )]
+            ids = [
+                textures.MetalSurface(
+                    args.metal,
+                    finish=args.finish,
+                    scratches=args.scratches,
+                    roughness=args.roughness,
+                    direction=args.direction,
+                )
+            ]
         except ValueError as exc:
             parser.error(str(exc))
     elif args.metals:

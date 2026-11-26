@@ -6,10 +6,47 @@ lists, lifetime rules, and every device builtin family. The path tracer has its 
 
 ## Procedural material textures
 
-The `warp_optix.procedural_textures` module provides tileable linear RGB base
-color kernels for wood grain, marble, and staggered brick. Launch them with
-`wp.launch` on a CPU or CUDA device. Use an output array of shape
-`(height, width)` and dtype `wp.vec3`, and launch over the full array:
+Use the same material ID for discovery, raw Warp maps, and packed path tracer
+textures. The installed catalog includes ambientCG reference IDs, descriptive
+recipe IDs, and configurable IDs such as `metal/copper` and `plastic/pebbled`.
+
+```python
+from warp_optix import procedural_textures as textures
+
+families = textures.material_families()
+matches = textures.list_materials(family="plastic", query="automotive")
+info = textures.describe_material("plastic/pebbled")
+
+maps = textures.generate(
+    "plastic/pebbled", (1024, 1024),
+    maps=("color", "normal", "roughness"),
+    parameters={"color": [0.21, 0.22, 0.24], "roughness": 0.58},
+    seed=17, device="cuda",
+)
+images, material_kwargs = textures.generate_gltf(
+    "metal/copper", (1024, 1024),
+    parameters={"finish": "brushed", "direction": 25},
+    seed=17, device="cuda",
+)
+```
+
+`list_materials()` returns IDs, labels, and families. `describe_material()`
+returns the available maps and a JSON Schema for the optional `parameters`
+argument. Both results can be serialized with `json.dumps()`, and discovery
+works without a GPU. A fixed recipe exposes an empty parameter schema and
+still accepts a seed. `generate()` returns all supported maps when `maps`
+is omitted. Shapes are `(height, width)`. Use `generate_gltf()` for the
+packed RGBA8 maps and properties consumed by the path tracer.
+
+The material generators produce repeating UV tiles. Use repeat texture
+addressing. For layered materials, the built-in mask is periodic. A custom
+mask must also repeat cleanly to preserve a seamless result.
+
+### Direct kernel launches
+
+The module also exposes tileable linear RGB base color kernels for wood grain,
+marble, and staggered brick. Launch them with `wp.launch` over a CPU or CUDA
+array of shape `(height, width)` and dtype `wp.vec3`.
 
 ```python
 import warp as wp
@@ -35,9 +72,9 @@ Wood grain runs along the image rows. Brick uses two rows per row pair so the
 staggered pattern repeats vertically. Its mortar fraction is measured relative
 to the width or height of a brick cell on each axis.
 
-The `textures.reference_ids()` function lists materials in the current installation.
-Default wheels include eight built-in materials and 49 based on ambientCG references.
-The source checkout and full-catalog wheel include 266 materials, including 138 from the first batch of the
+The `textures.reference_ids()` function lists fixed recipe and reference IDs in
+the current installation. Default wheels ship a starter set alongside the
+procedural recipes. The checkout and full-catalog wheel include the first batch of the
 [ambientCG popularity listing](https://ambientcg.com/list?type=material%2Cdecal%2Catlas&sort=popular),
 plus 22 selected surfaces such as leather, carbon fiber, diamond plate, cork,
 bamboo, and ice, and every material in the

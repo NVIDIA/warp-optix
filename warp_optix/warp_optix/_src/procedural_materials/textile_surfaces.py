@@ -8,9 +8,7 @@ import warp as wp
 
 @wp.func
 def _fiber_noise(uv: wp.vec2, seed: int, across: int, along: int) -> float:
-    return wp.pnoise(
-        wp.rand_init(seed), wp.cw_mul(uv, wp.vec2(float(across), float(along))), across, along
-    )
+    return wp.pnoise(wp.rand_init(seed), wp.cw_mul(uv, wp.vec2(float(across), float(along))), across, along)
 
 
 @wp.func

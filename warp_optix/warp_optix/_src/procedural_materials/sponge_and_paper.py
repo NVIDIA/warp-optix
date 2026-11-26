@@ -71,9 +71,7 @@ def _sponge(uv: wp.vec2, seed: int, resolution: float):
     small_depth, small = _pore_layer(uv, seed + 25, 79, resolution)
     pinhole = _pinholes(uv, seed + 31, resolution)
     opening = wp.max(0.89 * major, small)
-    color = wp.vec3(0.720, 0.561, 0.148) + wp.vec3(
-        0.058 * flatness + 0.051 * skin + 0.031 * grain
-    )
+    color = wp.vec3(0.720, 0.561, 0.148) + wp.vec3(0.058 * flatness + 0.051 * skin + 0.031 * grain)
     color -= wp.vec3(0.085, 0.093, 0.022) * (0.55 * major_depth + 0.53 * small_depth + 0.23 * pinhole)
     color += wp.vec3(0.028, 0.026, 0.034) * wp.max(0.0, opening - 0.90 * (major_depth + small_depth))
     height = 0.674 + 0.11 * flatness - 0.38 * major_depth - 0.19 * small_depth - 0.16 * pinhole

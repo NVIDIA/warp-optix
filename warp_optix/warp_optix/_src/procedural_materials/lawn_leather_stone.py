@@ -16,7 +16,11 @@ def _noise(uv: wp.vec2, seed: int, nx: int, ny: int):
 
 @wp.func
 def _blade_layer(
-    uv: wp.vec2, seed: int, count: int, aa: float, direction: float,
+    uv: wp.vec2,
+    seed: int,
+    count: int,
+    aa: float,
+    direction: float,
 ):
     grid = uv * float(count) - wp.vec2(0.5)
     col, row = int(wp.floor(grid[0])), int(wp.floor(grid[1]))
@@ -127,13 +131,15 @@ def fractured_marble(uv: wp.vec2, seed: int, resolution: float):
     branch, unused = _soil_cell(q, seed + 20, 17)
     fracture = 1.0 - wp.smoothstep(0.008, 0.037 + 3.0 / resolution, boundary + 0.044 * border)
     fracture *= wp.smoothstep(-0.25, 0.22, haze + 0.23 * border)
-    thread = (1.0 - wp.smoothstep(0.004, 0.038 + 5.0 / resolution, branch + 0.088 * border))
+    thread = 1.0 - wp.smoothstep(0.004, 0.038 + 5.0 / resolution, branch + 0.088 * border)
     thread *= wp.smoothstep(-0.10, 0.27, border + haze)
     weather = wp.smoothstep(0.02, 0.34, border + 0.63 * _noise(uv, seed + 9, 166, 141))
     weather *= 1.0 - wp.smoothstep(0.026, 0.19, boundary + 0.09 * haze)
     partial = wp.min(0.76, 0.66 * fracture + 0.43 * thread + 0.67 * weather)
     fleck = _noise(uv, seed + 6, 391, 382) * wp.smoothstep(350.0, 1150.0, resolution)
-    matrix = wp.vec3(0.683, 0.685, 0.715) + wp.vec3(0.085 * haze + 0.016 * tone * fracture + 0.064 * border + 0.061 * fleck)
+    matrix = wp.vec3(0.683, 0.685, 0.715) + wp.vec3(
+        0.085 * haze + 0.016 * tone * fracture + 0.064 * border + 0.061 * fleck
+    )
     color = wp.lerp(matrix, wp.vec3(0.408, 0.409, 0.443), partial)
     height = 0.57 + 0.019 * haze - 0.027 * partial + 0.006 * fleck
     return color, height, 0.31 + 0.084 * partial + 0.048 * haze, 1.0, 0.0, 1.0
@@ -146,8 +152,8 @@ def lake_ice(uv: wp.vec2, seed: int, resolution: float):
     warped = uv + 0.062 * drift + 0.013 * shear
     boundary, unused_tone = _soil_cell(warped, seed + 9, 10)
     chipped = _noise(uv, seed + 11, 83, 71)
-    inner = (1.0 - wp.smoothstep(0.004, 0.029 + 5.5 / resolution, boundary + 0.013 * chipped))
-    mist = (1.0 - wp.smoothstep(0.016, 0.18, boundary + 0.079 * chipped))
+    inner = 1.0 - wp.smoothstep(0.004, 0.029 + 5.5 / resolution, boundary + 0.013 * chipped)
+    mist = 1.0 - wp.smoothstep(0.016, 0.18, boundary + 0.079 * chipped)
     surge = _noise(uv, seed + 13, 14, 12)
     vein = inner * wp.smoothstep(-0.34, 0.27, surge + 0.37 * chipped)
     cloud = mist * wp.smoothstep(-0.14, 0.25, surge + 0.30 * chipped)

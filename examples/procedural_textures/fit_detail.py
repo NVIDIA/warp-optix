@@ -12,7 +12,13 @@ from zlib import compress
 import numpy as np
 from fit import _resize, write_coefficients
 from PIL import Image
-from warp_optix._src.procedural_materials.texture_coefficients import ANALYTIC_MATERIALS, DIRECT_REFERENCES, decode, read_index, read_record
+from warp_optix._src.procedural_materials.texture_coefficients import (
+    ANALYTIC_MATERIALS,
+    DIRECT_REFERENCES,
+    decode,
+    read_index,
+    read_record,
+)
 
 DETAIL_MAPS = ("color", "normal", "roughness", "displacement")
 PATCH = 16
@@ -173,8 +179,9 @@ def main():
         index = read_index(args.existing_detail)
         assets = {
             asset: (
-                {} if asset in ANALYTIC_MATERIALS or asset in DIRECT_REFERENCES else
-                {kind: read_record(args.existing_detail, shards) for kind, shards in index[asset].items()}
+                {}
+                if asset in ANALYTIC_MATERIALS or asset in DIRECT_REFERENCES
+                else {kind: read_record(args.existing_detail, shards) for kind, shards in index[asset].items()}
             )
             for asset in ids
         }

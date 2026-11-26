@@ -1,6 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+# Warp array annotations use calls such as wp.array2d(dtype=float).
+# pyright: reportInvalidTypeForm=false
+
 """Tileable material textures generated with standard Warp launches."""
 
 from functools import lru_cache
@@ -194,7 +197,7 @@ def _wood_surface(uv: wp.vec2, seed: int, style: int, resolution: float):
     # break the smooth bands where the cut exposes vessel openings.
     strand = 0.5 + 0.5 * wp.cos(2.0 * wp.PI * (annual * 7.0 + 0.84 * _surface_noise(seed + 8, p, 9, 91)))
     cut = wp.smoothstep(0.26, 0.57, _surface_noise(seed + 9, p, 141, 811))
-    micro = (0.042 * strand ** 5.0 + 0.072 * cut) * wp.smoothstep(300.0, 1300.0, resolution)
+    micro = (0.042 * strand**5.0 + 0.072 * cut) * wp.smoothstep(300.0, 1300.0, resolution)
     tone -= micro
     tone += 0.038 * _surface_noise(seed + 10, p, 3, 29)
     relief = 0.53 - 0.30 * micro - 0.032 * latewood + 0.023 * fiber + 0.015 * pores - 0.10 * knot + 0.02 * knot_ring
@@ -299,7 +302,12 @@ def _parquet_surface(uv: wp.vec2, seed: int, resolution: float):
     across = local[1] * 7.0 - float(strip)
     edge = wp.min(wp.min(across, 1.0 - across), 7.0 * wp.min(local[0], 1.0 - local[0]))
     bevel = wp.smoothstep(0.0, wp.max(0.034, 35.0 / resolution), edge)
-    return (color + wp.vec3(shade + 0.113, shade + 0.035, shade + 0.023)) * (0.76 + 0.24 * bevel), relief - 0.09 * (1.0 - bevel), 0.32 + 0.36 * (rough - 0.80) - 0.13 * shade, ao
+    return (
+        (color + wp.vec3(shade + 0.113, shade + 0.035, shade + 0.023)) * (0.76 + 0.24 * bevel),
+        relief - 0.09 * (1.0 - bevel),
+        0.32 + 0.36 * (rough - 0.80) - 0.13 * shade,
+        ao,
+    )
 
 
 @wp.func
@@ -321,8 +329,12 @@ def _brick_wall_surface(uv: wp.vec2, seed: int, resolution: float):
     inclusions = wp.smoothstep(0.25, 0.60, grade + 0.72 * sand)
     clay += wp.vec3(0.12, 0.083, 0.052) * scorch - wp.vec3(0.13) * inclusions
     color = wp.lerp(wp.vec3(0.68, 0.63, 0.55), clay, face) + wp.vec3(0.087 * sand)
-    return color, 0.45 + 0.22 * bevel + 0.04 * grade + 0.027 * sand, 0.77 - 0.17 * face + 0.06 * sand, 0.79 + 0.2 * bevel
-
+    return (
+        color,
+        0.45 + 0.22 * bevel + 0.04 * grade + 0.027 * sand,
+        0.77 - 0.17 * face + 0.06 * sand,
+        0.79 + 0.2 * bevel,
+    )
 
 
 @wp.func
@@ -335,8 +347,9 @@ def _mineral_finish(uv: wp.vec2, seed: int, resolution: float):
 
 
 @wp.func
-def _finish_surface(uv: wp.vec2, seed: int, resolution: float, palette: wp.vec3, contrast: float,
-                    base_roughness: float, formwork: float):
+def _finish_surface(
+    uv: wp.vec2, seed: int, resolution: float, palette: wp.vec3, contrast: float, base_roughness: float, formwork: float
+):
     cloud, stipple, micro, pore = _mineral_finish(uv, seed, resolution)
     cast = _surface_noise(seed + 23, uv, 90, 8) + 0.45 * _surface_noise(seed + 9, uv, 210, 28)
     if formwork < 0.0:
@@ -352,8 +365,17 @@ def _finish_surface(uv: wp.vec2, seed: int, resolution: float, palette: wp.vec3,
 
 
 @wp.func
-def _tile_surface(uv: wp.vec2, seed: int, resolution: float, palette: wp.vec3, contrast: float,
-                  base_roughness: float, columns: int, rows: int, stagger: float):
+def _tile_surface(
+    uv: wp.vec2,
+    seed: int,
+    resolution: float,
+    palette: wp.vec3,
+    contrast: float,
+    base_roughness: float,
+    columns: int,
+    rows: int,
+    stagger: float,
+):
     cloud, stipple, micro, pore = _mineral_finish(uv, seed, resolution)
     grid_y = uv[1] * float(rows)
     row = int(wp.floor(grid_y))
@@ -379,8 +401,12 @@ def _tile_surface(uv: wp.vec2, seed: int, resolution: float, palette: wp.vec3, c
     grout_color += wp.vec3(0.08 * stipple)
     relief = wp.lerp(0.43, 0.66 + 0.04 * wp.sin(wp.PI * x) * wp.sin(wp.PI * y), bevel)
     relief += contrast * (0.16 * stipple + 0.065 * micro - 0.35 * pore) * face
-    return wp.lerp(grout_color, tile_color, face), relief, wp.lerp(0.85, base_roughness + 0.11 * pore, face), 0.76 + 0.24 * bevel
-
+    return (
+        wp.lerp(grout_color, tile_color, face),
+        relief,
+        wp.lerp(0.85, base_roughness + 0.11 * pore, face),
+        0.76 + 0.24 * bevel,
+    )
 
 
 @wp.func
@@ -398,8 +424,16 @@ def _analytic_surface(uv: wp.vec2, seed: int, style: int, resolution: float):
 
 @wp.func
 def _surface_maps(
-    uv: wp.vec2, resolution: float, style: int, seed: int, palette: wp.vec3,
-    contrast: float, base_roughness: float, pattern: float, columns: int, rows: int,
+    uv: wp.vec2,
+    resolution: float,
+    style: int,
+    seed: int,
+    palette: wp.vec3,
+    contrast: float,
+    base_roughness: float,
+    pattern: float,
+    columns: int,
+    rows: int,
 ):
     # Some generators warp UVs beyond the unit square. Start from a canonical
     # tile phase so offsets by whole tiles reproduce exactly the same surface.
@@ -486,14 +520,31 @@ def _linear_color(color: wp.vec3) -> wp.vec3:
 
 @wp.kernel(enable_backward=False)
 def _bake_surface(
-    style: int, seed: int, palette: wp.vec3, contrast: float, base_roughness: float, pattern: float,
-    columns: int, rows: int, channel: int, image: wp.array2d(dtype=wp.vec3), relief: wp.array2d(dtype=float),
+    style: int,
+    seed: int,
+    palette: wp.vec3,
+    contrast: float,
+    base_roughness: float,
+    pattern: float,
+    columns: int,
+    rows: int,
+    channel: int,
+    image: wp.array2d(dtype=wp.vec3),
+    relief: wp.array2d(dtype=float),
 ):
     row, col = wp.tid()
     h, w = wp.max(image.shape[0], relief.shape[0]), wp.max(image.shape[1], relief.shape[1])
     color, height, roughness, ao, metal, alpha = _surface_maps(
-        _texel_uv(row, col, h, w), float(wp.min(h, w)), style, seed,
-        palette, contrast, base_roughness, pattern, columns, rows,
+        _texel_uv(row, col, h, w),
+        float(wp.min(h, w)),
+        style,
+        seed,
+        palette,
+        contrast,
+        base_roughness,
+        pattern,
+        columns,
+        rows,
     )
     if channel == 1:
         relief[row, col] = wp.clamp(height, 0.0, 1.0)
@@ -509,8 +560,9 @@ def _bake_surface(
         result = wp.vec3(metal)
     elif channel == 6:
         result = wp.vec3(alpha)
-    image[row, col] = wp.vec3(wp.clamp(result[0], 0.0, 1.0), wp.clamp(result[1], 0.0, 1.0), wp.clamp(result[2], 0.0, 1.0))
-
+    image[row, col] = wp.vec3(
+        wp.clamp(result[0], 0.0, 1.0), wp.clamp(result[1], 0.0, 1.0), wp.clamp(result[2], 0.0, 1.0)
+    )
 
 
 @wp.kernel(enable_backward=False)
@@ -815,11 +867,12 @@ def _layout_field(material, map_type):
     return values, mode
 
 
-def _surface_configuration(material, seed):
+def _surface_configuration(material: str | PlasticSurface, seed):
     state = 173 if seed is None else int(np.random.default_rng(seed).integers(1, 1 << 30))
-    plastic = material if isinstance(material, PlasticSurface) else PLASTIC_PRESETS.get(material)
-    if plastic is not None:
-        style, palette, roughness, strength = plastic_configuration(plastic)
+    if isinstance(material, str) and material in PLASTIC_PRESETS:
+        material = PLASTIC_PRESETS[material]
+    if isinstance(material, PlasticSurface):
+        style, palette, roughness, strength = plastic_configuration(material)
         return [style, state, wp.vec3(*palette), 0.0, roughness, 0.0, 0, 0], strength
     preset = SURFACE_PRESETS.get(material, ((0.0, 0.0, 0.0), 0.0, 0.0, 0.0))
     palette, contrast, roughness, pattern, *grid = preset
@@ -835,13 +888,8 @@ def _surface_configuration(material, seed):
     return [style, state, wp.vec3(*palette), contrast, roughness, pattern, columns, rows], strength
 
 
-def _uses_surface_kernel(material):
-    return (
-        isinstance(material, PlasticSurface)
-        or material in PLASTIC_PRESETS
-        or material in ANALYTIC_MATERIALS
-        or material in DIRECT_REFERENCES
-    )
+def _uses_surface_kernel(material: str):
+    return material in PLASTIC_PRESETS or material in ANALYTIC_MATERIALS or material in DIRECT_REFERENCES
 
 
 def bake(
@@ -864,7 +912,7 @@ def bake(
         raise ValueError("Texture dimensions must be positive.")
     if isinstance(material, MetalSurface):
         return bake_metal(material, shape, map_type, device, seed)
-    if _uses_surface_kernel(material):
+    if isinstance(material, PlasticSurface) or _uses_surface_kernel(material):
         if map_type not in reference_maps(material):
             raise KeyError(map_type)
         channel = _SURFACE_CHANNELS.index(map_type)
@@ -873,7 +921,9 @@ def bake(
         if channel == 1:
             relief = wp.empty(shape, dtype=float, device=image.device)
             unused = wp.empty((0, 0), dtype=wp.vec3, device=image.device)
-            wp.launch(_bake_surface, dim=shape, inputs=[*params, channel], outputs=[unused, relief], device=image.device)
+            wp.launch(
+                _bake_surface, dim=shape, inputs=[*params, channel], outputs=[unused, relief], device=image.device
+            )
             wp.launch(_height_normals, dim=shape, inputs=[relief, strength], outputs=[image], device=image.device)
         else:
             unused = wp.empty((0, 0), dtype=float, device=image.device)
@@ -959,15 +1009,32 @@ def _pack_gltf(
 
 @wp.kernel(enable_backward=False)
 def _bake_packed_surface(
-    style: int, seed: int, palette: wp.vec3, contrast: float, base_roughness: float, pattern: float,
-    columns: int, rows: int, has_occlusion: bool, color_gain: float,
-    relief: wp.array2d(dtype=float), packed: wp.array3d(dtype=wp.vec4ub),
+    style: int,
+    seed: int,
+    palette: wp.vec3,
+    contrast: float,
+    base_roughness: float,
+    pattern: float,
+    columns: int,
+    rows: int,
+    has_occlusion: bool,
+    color_gain: float,
+    relief: wp.array2d(dtype=float),
+    packed: wp.array3d(dtype=wp.vec4ub),
 ):
     row, col = wp.tid()
     h, w = relief.shape[0], relief.shape[1]
     color, height, roughness, ao, metal, alpha = _surface_maps(
-        _texel_uv(row, col, h, w), float(wp.min(h, w)), style, seed,
-        palette, contrast, base_roughness, pattern, columns, rows,
+        _texel_uv(row, col, h, w),
+        float(wp.min(h, w)),
+        style,
+        seed,
+        palette,
+        contrast,
+        base_roughness,
+        pattern,
+        columns,
+        rows,
     )
     if not has_occlusion:
         ao = 1.0
@@ -978,7 +1045,9 @@ def _bake_packed_surface(
 
 @wp.kernel(enable_backward=False)
 def _pack_relief_normals(
-    relief: wp.array2d(dtype=float), strength: float, packed: wp.array3d(dtype=wp.vec4ub),
+    relief: wp.array2d(dtype=float),
+    strength: float,
+    packed: wp.array3d(dtype=wp.vec4ub),
 ):
     row, col = wp.tid()
     normal = _normal_from_relief(relief, row, col, strength)
@@ -1025,15 +1094,18 @@ def _bake_gltf_arrays(material, shape, device, seed, *, color_gain=1.0):
     has_occlusion = "occlusion" in maps
     has_metal = "metalness" in maps
     has_opacity = "opacity" in maps
-    if _uses_surface_kernel(material):
+    if isinstance(material, PlasticSurface) or _uses_surface_kernel(material):
         if min(shape) < 1:
             raise ValueError("Texture dimensions must be positive.")
         packed = wp.empty((3, *shape), dtype=wp.vec4ub, device=device)
         relief = wp.empty(shape, dtype=float, device=packed.device)
         params, strength = _surface_configuration(material, seed)
         wp.launch(
-            _bake_packed_surface, dim=shape, inputs=[*params, has_occlusion, color_gain],
-            outputs=[relief, packed], device=packed.device,
+            _bake_packed_surface,
+            dim=shape,
+            inputs=[*params, has_occlusion, color_gain],
+            outputs=[relief, packed],
+            device=packed.device,
         )
         wp.launch(_pack_relief_normals, dim=shape, inputs=[relief, strength], outputs=[packed], device=packed.device)
     else:
@@ -1062,7 +1134,7 @@ def _bake_gltf_arrays(material, shape, device, seed, *, color_gain=1.0):
 
 
 def _gltf_properties(first_texture_index, has_occlusion, has_opacity):
-    kwargs: dict[str, dict[str, int] | str] = {
+    kwargs: dict[str, dict[str, int] | str | tuple[float, ...]] = {
         "base_color_texture": {"index": first_texture_index},
         "normal_texture": {"index": first_texture_index + 1},
         "metallic_roughness_texture": {"index": first_texture_index + 2},
@@ -1072,6 +1144,7 @@ def _gltf_properties(first_texture_index, has_occlusion, has_opacity):
     if has_opacity:
         kwargs["alpha_mode"] = "MASK"
     return kwargs
+
 
 def bake_layered_gltf(
     base: str | MetalSurface | PlasticSurface,
@@ -1129,8 +1202,16 @@ def bake_layered_gltf(
         blend_materials,
         dim=shape,
         inputs=[
-            base_data, overlay_data, weights, base_height, overlay_height,
-            mask_seed, frequency, threshold, softness, height_blend,
+            base_data,
+            overlay_data,
+            weights,
+            base_height,
+            overlay_height,
+            mask_seed,
+            frequency,
+            threshold,
+            softness,
+            height_blend,
         ],
         outputs=[output],
         device=device,

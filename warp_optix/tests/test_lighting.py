@@ -451,6 +451,7 @@ def test_backface_keeps_faceforward_frame_and_selects_volume_medium():
     np.testing.assert_allclose((normal[3], geometric[3]), (1.5, 1.0), atol=1.0e-7)
     np.testing.assert_allclose(thin_iors[:2], (1.0, 1.5), atol=1.0e-7)
 
+
 @wp.kernel
 def _test_reflection_frames(output: wp.array(dtype=wp.vec3)):
     i = wp.tid()

@@ -21,6 +21,7 @@ _FINISHES = {
     "rubber": (0.78, 0.0017, (0.205, 0.22, 0.23)),
 }
 
+
 @dataclass(frozen=True, slots=True)
 class PlasticSurface:
     """Configure an opaque polymer finish with a custom sRGB color and roughness.
@@ -59,9 +60,12 @@ PLASTIC_PRESETS = {
 def plastic_configuration(surface):
     roughness, strength, color = _FINISHES[surface.finish]
     style = -40 - tuple(_FINISHES).index(surface.finish)
-    return style, surface.color if surface.color is not None else color, (
-        surface.roughness if surface.roughness is not None else roughness
-    ), strength
+    return (
+        style,
+        surface.color if surface.color is not None else color,
+        (surface.roughness if surface.roughness is not None else roughness),
+        strength,
+    )
 
 
 @wp.func
@@ -109,8 +113,9 @@ def plastic_surface(uv: wp.vec2, seed: int, resolution: float, style: int, color
         rough += 0.045 * tool
     elif style == 2 or style == 3:
         count = 69 if style == 2 else 36
-        warp = wp.vec2(_plastic_noise(seed + 3, uv, 15, 17, resolution),
-                       _plastic_noise(seed + 4, uv, 19, 15, resolution))
+        warp = wp.vec2(
+            _plastic_noise(seed + 3, uv, 15, 17, resolution), _plastic_noise(seed + 4, uv, 19, 15, resolution)
+        )
         cell = _plastic_cells(uv + (0.76 / float(count)) * warp, count, seed + 5)
         grain = 1.0 - wp.smoothstep(0.13, 0.85, cell[0])
         if style == 3:

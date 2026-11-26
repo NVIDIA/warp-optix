@@ -1,6 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+# Warp array annotations use calls such as wp.array2d(dtype=float).
+# pyright: reportInvalidTypeForm=false
+
 """Configurable, tileable metallic surfaces."""
 
 import math
@@ -54,7 +57,9 @@ class MetalSurface:
 
     def __post_init__(self):
         if self.reflectance is None and self.metal not in _METAL_SRGB:
-            raise ValueError(f"Unknown metal {self.metal!r}. Choose from {', '.join(metal_names())} or supply reflectance.")
+            raise ValueError(
+                f"Unknown metal {self.metal!r}. Choose from {', '.join(metal_names())} or supply reflectance."
+            )
         if self.reflectance is not None:
             if len(self.reflectance) != 3 or not all(0.0 <= x <= 1.0 for x in self.reflectance):
                 raise ValueError("Metal reflectance must contain three linear RGB values in [0, 1].")
@@ -89,15 +94,26 @@ def _parameters(surface, seed):
     wave = wp.vec2(*(round(108 * x) for x in perpendicular))
     state = 173 if seed is None else int(np.random.default_rng(seed).integers(1, 1 << 30))
     return [
-        wp.vec3(*reflectance), default_roughness if surface.roughness is None else surface.roughness,
-        brushing, default_scratches if surface.scratches is None else surface.scratches,
-        surface.scratch_density, angle, wave, state,
+        wp.vec3(*reflectance),
+        default_roughness if surface.roughness is None else surface.roughness,
+        brushing,
+        default_scratches if surface.scratches is None else surface.scratches,
+        surface.scratch_density,
+        angle,
+        wave,
+        state,
     ]
 
 
 @wp.func
 def _scratch_field(
-    uv: wp.vec2, seed: int, count: int, angle: float, amount: float, resolution: float, coarse: bool,
+    uv: wp.vec2,
+    seed: int,
+    count: int,
+    angle: float,
+    amount: float,
+    resolution: float,
+    coarse: bool,
 ):
     grid = uv * float(count) - wp.vec2(0.5)
     x, y = int(wp.floor(grid[0])), int(wp.floor(grid[1]))
@@ -147,8 +163,16 @@ def _scratch_field(
 
 @wp.func
 def _metal_maps(
-    uv: wp.vec2, resolution: float, reflectance: wp.vec3, roughness: float, brushing: float,
-    scratches: float, density: int, direction: float, wave: wp.vec2, seed: int,
+    uv: wp.vec2,
+    resolution: float,
+    reflectance: wp.vec3,
+    roughness: float,
+    brushing: float,
+    scratches: float,
+    density: int,
+    direction: float,
+    wave: wp.vec2,
+    seed: int,
 ):
     brush = float(0.0)
     if brushing > 0.0:
@@ -156,7 +180,7 @@ def _metal_maps(
         phase += 0.76 * wp.pnoise(wp.rand_init(seed), 19.0 * uv, 19, 19)
         grooves = 0.5 + 0.5 * wp.cos(2.0 * wp.pi * phase)
         filament = 0.5 + 0.5 * wp.cos(4.0 * wp.pi * phase + 0.28 * wp.pnoise(wp.rand_init(seed + 2), 31.0 * uv, 31, 31))
-        brush = (0.74 * grooves * grooves + 0.26 * filament * filament)
+        brush = 0.74 * grooves * grooves + 0.26 * filament * filament
         brush *= wp.smoothstep(160.0, 680.0, resolution) * brushing
     marks = wp.vec3(0.0)
     if scratches > 0.0:
@@ -174,9 +198,18 @@ def _metal_maps(
 
 @wp.kernel(enable_backward=False)
 def _generate_metal(
-    reflectance: wp.vec3, roughness: float, brushing: float, scratches: float, density: int,
-    direction: float, wave: wp.vec2, seed: int, channel: int,
-    image: wp.array2d(dtype=wp.vec3), relief: wp.array2d(dtype=float), packed: wp.array3d(dtype=wp.vec4ub),
+    reflectance: wp.vec3,
+    roughness: float,
+    brushing: float,
+    scratches: float,
+    density: int,
+    direction: float,
+    wave: wp.vec2,
+    seed: int,
+    channel: int,
+    image: wp.array2d(dtype=wp.vec3),
+    relief: wp.array2d(dtype=float),
+    packed: wp.array3d(dtype=wp.vec4ub),
 ):
     row, col = wp.tid()
     h = wp.max(image.shape[0], relief.shape[0])
@@ -189,8 +222,10 @@ def _generate_metal(
         relief[row, col] = height
     if packed.shape[0] > 0:
         packed[0, row, col] = wp.vec4ub(
-            wp.uint8(255.0 * color[0] + 0.5), wp.uint8(255.0 * color[1] + 0.5),
-            wp.uint8(255.0 * color[2] + 0.5), wp.uint8(255),
+            wp.uint8(255.0 * color[0] + 0.5),
+            wp.uint8(255.0 * color[1] + 0.5),
+            wp.uint8(255.0 * color[2] + 0.5),
+            wp.uint8(255),
         )
         packed[2, row, col] = wp.vec4ub(wp.uint8(255), wp.uint8(255.0 * rough + 0.5), wp.uint8(255), wp.uint8(255))
     elif image.shape[0] > 0:
@@ -203,14 +238,18 @@ def _generate_metal(
 
 
 @wp.kernel(enable_backward=False)
-def _metal_normals(relief: wp.array2d(dtype=float), image: wp.array2d(dtype=wp.vec3), packed: wp.array3d(dtype=wp.vec4ub)):
+def _metal_normals(
+    relief: wp.array2d(dtype=float), image: wp.array2d(dtype=wp.vec3), packed: wp.array3d(dtype=wp.vec4ub)
+):
     row, col = wp.tid()
     n = _normal_from_relief(relief, row, col, 0.0035)
     if packed.shape[0] > 0:
         n = _normal_for_gltf(n)
         packed[1, row, col] = wp.vec4ub(
-            wp.uint8(255.0 * n[0] + 0.5), wp.uint8(255.0 * n[1] + 0.5),
-            wp.uint8(255.0 * n[2] + 0.5), wp.uint8(255),
+            wp.uint8(255.0 * n[0] + 0.5),
+            wp.uint8(255.0 * n[1] + 0.5),
+            wp.uint8(255.0 * n[2] + 0.5),
+            wp.uint8(255),
         )
     else:
         image[row, col] = n
@@ -227,8 +266,13 @@ def bake_metal(surface, shape, map_type, device, seed):
     target = wp.empty((0, 0), dtype=wp.vec3, device=device) if channel == 1 else image
     relief = wp.empty(shape if channel == 1 else (0, 0), dtype=float, device=device)
     unused = wp.empty((0, 0, 0), dtype=wp.vec4ub, device=device)
-    wp.launch(_generate_metal, dim=shape, inputs=[*_parameters(surface, seed), channel],
-              outputs=[target, relief, unused], device=device)
+    wp.launch(
+        _generate_metal,
+        dim=shape,
+        inputs=[*_parameters(surface, seed), channel],
+        outputs=[target, relief, unused],
+        device=device,
+    )
     if channel == 1:
         wp.launch(_metal_normals, dim=shape, inputs=[relief], outputs=[image, unused], device=device)
     return image
@@ -239,7 +283,12 @@ def pack_metal(surface, shape, device, seed):
     device = packed.device
     relief = wp.empty(shape, dtype=float, device=device)
     unused = wp.empty((0, 0), dtype=wp.vec3, device=device)
-    wp.launch(_generate_metal, dim=shape, inputs=[*_parameters(surface, seed), 0],
-              outputs=[unused, relief, packed], device=device)
+    wp.launch(
+        _generate_metal,
+        dim=shape,
+        inputs=[*_parameters(surface, seed), 0],
+        outputs=[unused, relief, packed],
+        device=device,
+    )
     wp.launch(_metal_normals, dim=shape, inputs=[relief], outputs=[unused, packed], device=device)
     return packed

@@ -92,14 +92,19 @@ def tactile_paving(uv: wp.vec2, seed: int, resolution: float):
     tile = wp.smoothstep(0.009 - 2.0 / resolution, 0.027 + 2.0 / resolution, edge)
     bar = p[1] * 12.0
     across = wp.abs(bar - wp.floor(bar) - 0.5)
-    rib = (1.0 - wp.smoothstep(0.20, 0.37 + 20.0 / resolution, across))
+    rib = 1.0 - wp.smoothstep(0.20, 0.37 + 20.0 / resolution, across)
     rib *= wp.smoothstep(0.03, 0.065, wp.min(p[0], 1.0 - p[0])) * tile
     mineral = _noise(uv, seed + 1, 184, 171)
     grit = _noise(uv, seed + 2, 570, 560) * wp.smoothstep(320.0, 1140.0, resolution)
     dirt = wp.smoothstep(0.09, 0.50, _noise(uv, seed + 3, 33, 38) + 0.33 * mineral)
     tone = 0.07 * mineral + 0.052 * grit - (0.035 + 0.05 * dirt) * (1.0 - rib)
     color = wp.lerp(wp.vec3(0.39, 0.36, 0.32), wp.vec3(0.655, 0.622, 0.574), tile) + wp.vec3(tone)
-    return color, 0.28 + tile * 0.25 + 0.29 * rib + 0.019 * grit, 0.43 + 0.26 * dirt - 0.14 * rib, 0.76 + 0.18 * tile + 0.06 * rib
+    return (
+        color,
+        0.28 + tile * 0.25 + 0.29 * rib + 0.019 * grit,
+        0.43 + 0.26 * dirt - 0.14 * rib,
+        0.76 + 0.18 * tile + 0.06 * rib,
+    )
 
 
 @wp.func

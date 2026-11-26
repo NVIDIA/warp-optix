@@ -13,9 +13,21 @@ def test_new_material_families_provide_aligned_maps():
     ids = textures.reference_ids()
     assert len(ids) == len(set(ids))
     assert {
-        "LimewashWall", "WhiteSubwayTile", "GraphiteConcrete", "Wood087", "PaintedDrywall",
-        "AsphaltShingles", "GalvanizedZinc", "EngineeredQuartz", "PlasticGlossABS",
-        "WoodFloor071", "Fabric004", "Leather037", "Metal064", "Bricks113A", "RoofingTiles013A",
+        "LimewashWall",
+        "WhiteSubwayTile",
+        "GraphiteConcrete",
+        "Wood087",
+        "PaintedDrywall",
+        "AsphaltShingles",
+        "GalvanizedZinc",
+        "EngineeredQuartz",
+        "PlasticGlossABS",
+        "WoodFloor071",
+        "Fabric004",
+        "Leather037",
+        "Metal064",
+        "Bricks113A",
+        "RoofingTiles013A",
     } <= set(ids)
     if "Cork004" not in ids:
         return
@@ -79,7 +91,8 @@ def test_seeded_variants_repeat_and_keep_maps_aligned():
 
 
 @pytest.mark.parametrize(
-    "material", ["PavingStones153", "Concrete049", "Wood099", "WoodFloor071", "Bricks101", "WhiteSubwayTile", "LimewashWall"]
+    "material",
+    ["PavingStones153", "Concrete049", "Wood099", "WoodFloor071", "Bricks101", "WhiteSubwayTile", "LimewashWall"],
 )
 def test_analytic_normals_follow_seeded_height(material):
     if material not in textures.reference_ids():
@@ -94,15 +107,21 @@ def test_analytic_normals_follow_seeded_height(material):
 
 
 @pytest.mark.parametrize(
-    "material", ["SheetMetal002", "Fabric084", "Ground111", "Bark014", "Wicker010A",
-                 "Planks037A", "Fence001", "MetalWalkway010"]
+    "material",
+    ["SheetMetal002", "Fabric084", "Ground111", "Bark014", "Wicker010A", "Planks037A", "Fence001", "MetalWalkway010"],
 )
 def test_analytic_packed_maps_match_individual_bakes(material):
     shape = (81, 112)
     seed = 71
     maps, properties = textures.bake_gltf(material, shape, device="cpu", seed=seed)
-    channels = {"color": (0, slice(0, 3)), "normal": (1, slice(0, 3)), "roughness": (2, 1),
-                "occlusion": (2, 0), "metalness": (2, 2), "opacity": (0, 3)}
+    channels = {
+        "color": (0, slice(0, 3)),
+        "normal": (1, slice(0, 3)),
+        "roughness": (2, 1),
+        "occlusion": (2, 0),
+        "metalness": (2, 2),
+        "opacity": (0, 3),
+    }
     for name in textures.reference_maps(material):
         if name == "displacement":
             continue
@@ -164,9 +183,7 @@ def test_configurable_metal_uses_the_same_bake_api():
     np.testing.assert_array_equal(maps[1][..., :3], (255.0 * gltf_normal + 0.5).astype(np.uint8))
     assert kwargs["metallic_roughness_texture"] == {"index": 2}
     assert (maps[2][..., 2] == 255).all()
-    assert not np.array_equal(
-        normal, textures.bake(worn, shape, map_type="normal", device="cpu", seed=8).numpy()
-    )
+    assert not np.array_equal(normal, textures.bake(worn, shape, map_type="normal", device="cpu", seed=8).numpy())
     layered, _ = textures.bake_layered_gltf(polished, worn, shape, mask=np.ones(shape), device="cpu", seed=7)
     np.testing.assert_array_equal(layered, maps)
     with pytest.raises(ValueError, match="roughness"):

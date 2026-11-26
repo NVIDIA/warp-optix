@@ -9,9 +9,7 @@ import warp as wp
 @wp.func
 def _grain_noise(uv: wp.vec2, seed: int, across: int, along: int):
     wrapped = uv - wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
-    return wp.pnoise(
-        wp.rand_init(seed), wp.vec2(float(across) * wrapped[0], float(along) * wrapped[1]), across, along
-    )
+    return wp.pnoise(wp.rand_init(seed), wp.vec2(float(across) * wrapped[0], float(along) * wrapped[1]), across, along)
 
 
 @wp.func

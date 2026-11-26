@@ -1,6 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
+# Warp array annotations use calls such as wp.array2d(dtype=float).
+# pyright: reportInvalidTypeForm=false
+
 """Composite a continuous material mask into glTF texture maps."""
 
 import warp as wp

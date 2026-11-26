@@ -57,7 +57,9 @@ def reclaimed_planks(uv: wp.vec2, seed: int, resolution: float):
     specks = _grain_noise(wp.rand_init(seed + 31), uv, 227, 171)
     soot = wp.smoothstep(0.10, 0.55, stain + 0.40 * specks + 0.23 * curl)
     grain_tone = 0.040 * curl + 0.044 * strands - 0.073 * line - 0.094 * knot - 0.10 * check
-    color = wp.vec3(0.351, 0.272, 0.194) + wp.vec3(tone + grain_tone, 0.78 * (tone + grain_tone), 0.64 * (tone + grain_tone))
+    color = wp.vec3(0.351, 0.272, 0.194) + wp.vec3(
+        tone + grain_tone, 0.78 * (tone + grain_tone), 0.64 * (tone + grain_tone)
+    )
     color = wp.lerp(color, wp.vec3(0.152, 0.151, 0.143), 0.68 * soot)
 
     along_end = wp.min(position[0], 1.0 - position[0])

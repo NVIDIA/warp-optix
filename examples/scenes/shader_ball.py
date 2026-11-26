@@ -66,18 +66,46 @@ def _lathe(profile, planar_uv=False, shell_tiles=0, segments=96):
 
 
 # Slightly convex material face, stepped bezel, then a round shell.
-_FACE = ((0, .575), (.09, .574), (.20, .568), (.30, .556), (.37, .543), (.405, .531), (.417, .519))
+_FACE = ((0, 0.575), (0.09, 0.574), (0.20, 0.568), (0.30, 0.556), (0.37, 0.543), (0.405, 0.531), (0.417, 0.519))
 _BEZEL = (
-    (.417, .519), (.423, .505), (.425, .474), (.450, .466), (.463, .472), (.466, .517),
-    (.476, .529), (.489, .529), (.501, .515), (.504, .476), (.519, .453), (.542, .452),
-    (.556, .430), (.560, .401), (.569, .384), (.581, .382), (.598, .363),
+    (0.417, 0.519),
+    (0.423, 0.505),
+    (0.425, 0.474),
+    (0.450, 0.466),
+    (0.463, 0.472),
+    (0.466, 0.517),
+    (0.476, 0.529),
+    (0.489, 0.529),
+    (0.501, 0.515),
+    (0.504, 0.476),
+    (0.519, 0.453),
+    (0.542, 0.452),
+    (0.556, 0.430),
+    (0.560, 0.401),
+    (0.569, 0.384),
+    (0.581, 0.382),
+    (0.598, 0.363),
 )
-_SHELL = tuple((.700 * math.sin(angle), .700 * math.cos(angle))
-               for angle in np.linspace(math.radians(59), math.pi, 56)[:-1]) + ((0, -.700),)
+_SHELL = tuple(
+    (0.700 * math.sin(angle), 0.700 * math.cos(angle)) for angle in np.linspace(math.radians(59), math.pi, 56)[:-1]
+) + ((0, -0.700),)
 _PEDESTAL = (
-    (0, .27), (.14, .27), (.19, .261), (.22, .234), (.235, .184), (.30, .137),
-    (.44, .123), (.545, .118), (.568, .099), (.574, .073), (.587, .068),
-    (.593, .050), (.585, .025), (.564, .009), (.536, 0), (0, 0),
+    (0, 0.27),
+    (0.14, 0.27),
+    (0.19, 0.261),
+    (0.22, 0.234),
+    (0.235, 0.184),
+    (0.30, 0.137),
+    (0.44, 0.123),
+    (0.545, 0.118),
+    (0.568, 0.099),
+    (0.574, 0.073),
+    (0.587, 0.068),
+    (0.593, 0.050),
+    (0.585, 0.025),
+    (0.564, 0.009),
+    (0.536, 0),
+    (0, 0),
 )
 
 
@@ -121,7 +149,7 @@ def _displaced_normals(positions, indices, base_normals, segments):
 
 def add_shader_ball(api, x, z, material, graphite, trim, *, height=None, height_scale=0.10, texture_repeats=1):
     """Create the sample face, shell and a neutral metal plinth."""
-    axis = np.array((-.27, .23, 1.0))
+    axis = np.array((-0.27, 0.23, 1.0))
     axis /= np.linalg.norm(axis)
     right = np.cross((0, 1, 0), axis)
     right /= np.linalg.norm(right)
@@ -133,12 +161,35 @@ def add_shader_ball(api, x, z, material, graphite, trim, *, height=None, height_
         face = _refine_profile(face, 0.008)
         shell = _refine_profile(shell, 0.012)
     parts = (
-        (face, True, 0, rotation, (x, .91, z), (material,) * (len(face) - 1)),
-        (_BEZEL + shell, False, 2, rotation, (x, .91, z),
-         (material, graphite, graphite, trim, trim, trim, trim, trim, graphite, graphite,
-          material, material, graphite, graphite, trim, trim, material) + (material,) * (len(shell) - 1)),
-        (_PEDESTAL, False, 0, base_rotation, (x, 0, z),
-         (graphite,) * 8 + (trim,) * 3 + (graphite,) * 4),
+        (face, True, 0, rotation, (x, 0.91, z), (material,) * (len(face) - 1)),
+        (
+            _BEZEL + shell,
+            False,
+            2,
+            rotation,
+            (x, 0.91, z),
+            (
+                material,
+                graphite,
+                graphite,
+                trim,
+                trim,
+                trim,
+                trim,
+                trim,
+                graphite,
+                graphite,
+                material,
+                material,
+                graphite,
+                graphite,
+                trim,
+                trim,
+                material,
+            )
+            + (material,) * (len(shell) - 1),
+        ),
+        (_PEDESTAL, False, 0, base_rotation, (x, 0, z), (graphite,) * 8 + (trim,) * 3 + (graphite,) * 4),
     )
     for profile, planar, shell_tiles, basis, origin, materials in parts:
         displaced = height is not None and (planar or shell_tiles > 0)
@@ -159,7 +210,11 @@ def add_shader_ball(api, x, z, material, graphite, trim, *, height=None, height_
             positions = positions + normals * offset[:, None]
             normals = _displaced_normals(positions, indices, normals, segments)
         mesh = api.create_mesh(
-            positions @ basis + origin, indices, normals=normals @ basis, uvs=uvs,
-            material_id=material, material_ids=np.asarray(materials, dtype=np.int32)[bands],
+            positions @ basis + origin,
+            indices,
+            normals=normals @ basis,
+            uvs=uvs,
+            material_id=material,
+            material_ids=np.asarray(materials, dtype=np.int32)[bands],
         )
         api.create_instance(mesh)
