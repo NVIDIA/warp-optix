@@ -45,6 +45,30 @@ Image credits and rendering details are in [docs/images/README.md](../docs/image
 Common options: `--width`, `--height`, `--denoiser {auto,optix,none}`, `--exposure`,
 `--max-frames N`, `--screenshot out.png`. Run with `--help` for per-scene options.
 
+### Procedural material gallery
+
+[`example_material_gallery.py`](example_material_gallery.py) shows 45
+representative materials on procedural shader balls over a checkerboard floor.
+The path tracer uses neutral sky and directional lighting so you can compare
+the highlights and surface detail.
+
+```bash
+uv run --extra pathtracing python examples/example_material_gallery.py
+uv run --extra pathtracing python examples/example_material_gallery.py --all-materials --page 2 --output materials.png
+uv run --extra pathtracing python examples/example_material_gallery.py --plastics
+```
+
+Press **Left** or **Right** to browse the full library, **V** for a new seeded
+variation, and **R** to return to the default variation. Use `--page` and `--seed`
+to start at a particular page or variation. Add `--single` to inspect one
+material at a time at a larger scale. Use **WASD** to fly, **Q/E** to move down
+or up, left-drag to look, the mouse wheel to zoom, and **Home** to reset the view.
+The grid bakes at 1024×1024 and single-material view at 2048×2048 by default.
+For a 4K close-up, try `--single --texture-size 4096 --filter WoodFloor071`.
+Use `--filter WoodFloor` to browse all wood flooring materials together.
+The wheel and source checkout expose the same procedural recipes. Each recipe
+generates its maps locally using Warp.
+
 ## Ray tracing with the core API
 
 These write a BMP image (`--output`); `example_raytracing.py --live` opens a viewer.

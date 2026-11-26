@@ -74,20 +74,27 @@ def _pack_display_rgba8(src: wp.array2d(dtype=wp.vec4), dst: wp.array(dtype=wp.u
 class FreeCameraController:
     """Left-drag to look, WASD/arrows to move, Q/E down/up, Shift faster, wheel to zoom, 1-9 debug views."""
 
-    def __init__(self, viewer, api: PathTracer, view: View):
+    def __init__(self, viewer, api: PathTracer, view: View, *, use_arrows: bool = True, on_change=None):
         self.pyglet = viewer.pyglet
         self.api = api
+        self.use_arrows = use_arrows
+        self.on_change = on_change
+        self.keys_down: set[int] = set()
+        self.set_view(view)
+        viewer.window.push_handlers(self)
+
+    def set_view(self, view: View):
         self.position = np.array(view.position, dtype=np.float32)
         self.yaw = float(view.yaw)
         self.pitch = float(view.pitch)
         self.fov = float(view.fov)
         self.speed = max(0.0, float(view.speed))
-        self.keys_down: set[int] = set()
         self._apply()
-        viewer.window.push_handlers(self)
 
     def _apply(self):
         self.api.set_camera_angles(self.position, self.yaw, self.pitch, self.fov)
+        if self.on_change is not None:
+            self.on_change()
 
     def update(self, dt: float):
         key = self.pyglet.window.key
@@ -104,10 +111,10 @@ class FreeCameraController:
 
         move = np.zeros(3, dtype=np.float32)
         for symbols, direction in (
-            ((key.W, key.UP), forward),
-            ((key.S, key.DOWN), -forward),
-            ((key.A, key.LEFT), -right),
-            ((key.D, key.RIGHT), right),
+            ((key.W, key.UP) if self.use_arrows else (key.W,), forward),
+            ((key.S, key.DOWN) if self.use_arrows else (key.S,), -forward),
+            ((key.A, key.LEFT) if self.use_arrows else (key.A,), -right),
+            ((key.D, key.RIGHT) if self.use_arrows else (key.D,), right),
             ((key.Q,), -up),
             ((key.E,), up),
         ):
@@ -125,6 +132,8 @@ class FreeCameraController:
         debug_keys = (key._1, key._2, key._3, key._4, key._5, key._6, key._7, key._8, key._9)
         if symbol in debug_keys:
             self.api.set_debug_buffer_mode(debug_keys.index(symbol))
+            if self.on_change is not None:
+                self.on_change()
         self.keys_down.add(symbol)
 
     def on_key_release(self, symbol, _modifiers):

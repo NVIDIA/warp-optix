@@ -52,6 +52,7 @@ class GLInteropViewer:
         render_stream: wp.Stream | None = None,
         show_fps: bool = True,
         fps_update_interval: float = 0.5,
+        should_render: Callable[[float], bool] | None = None,
     ):
         import pyglet
         from pyglet import gl
@@ -74,9 +75,11 @@ class GLInteropViewer:
         self._update_scheduled = False
         self._update_interval = None if fps <= 0 else 1.0 / float(fps)
         self._render_callback: Callable[[wp.array, int, float], None] | None = None
+        self._should_render = should_render
         self._on_resize_callback = on_resize
         self._on_draw_overlay = on_draw_overlay
         self._dispatching_events = False
+        self._pending_size = None
         self._fallback_to_copy = bool(fallback_to_copy)
 
         self.window = pyglet.window.Window(width=width, height=height, caption=title, vsync=bool(vsync), resizable=True)
@@ -87,6 +90,7 @@ class GLInteropViewer:
         # Recreate texture + PBO + CUDA interop for current resolution.
         gl = self.gl
 
+        self._upload_pending = False
         self.cuda_gl = None
         if hasattr(self, "pbo") and self.pbo is not None:
             gl.glDeleteBuffers(1, self.pbo)
@@ -158,11 +162,22 @@ class GLInteropViewer:
     def _render_frame(self):
         if self._render_callback is None:
             return
+        if self._pending_size is not None:
+            size, self._pending_size = self._pending_size, None
+            if size != (self.width, self.height):
+                self.width, self.height = size
+                self._recreate_gl_resources()
+                if self._on_resize_callback is not None:
+                    self._on_resize_callback(*size)
+            else:
+                self.sprite.scale_x = self.sprite.scale_y = 1.0
+        elapsed = time.perf_counter() - self.start_time
+        if self._should_render is not None and not self._should_render(elapsed):
+            return
         with wp.ScopedDevice(self.device):
             with wp.ScopedStream(self.render_stream, sync_enter=False, sync_exit=False):
                 mapped = self.cuda_gl.map(dtype=wp.uint32, shape=(self.width * self.height,))
                 try:
-                    elapsed = time.perf_counter() - self.start_time
                     self._render_callback(mapped, self.frame_index, elapsed)
                 finally:
                     self.cuda_gl.unmap()
@@ -173,6 +188,7 @@ class GLInteropViewer:
         # Drive presentation explicitly each update so rendering does not depend
         # on backend-specific on_draw invalidation behavior.
         self.window.switch_to()
+        self._upload_pending = True
         self._on_draw()
         self.window.flip()
 
@@ -195,21 +211,23 @@ class GLInteropViewer:
     def _on_draw(self):
         gl = self.gl
         self.window.clear()
-        gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, self.pbo)
-        gl.glBindTexture(self.texture.target, self.texture.id)
-        gl.glTexSubImage2D(
-            self.texture.target,
-            0,
-            0,
-            0,
-            self.width,
-            self.height,
-            gl.GL_RGBA,
-            gl.GL_UNSIGNED_BYTE,
-            ctypes.c_void_p(0),
-        )
-        gl.glBindTexture(self.texture.target, 0)
-        gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, 0)
+        if self._upload_pending:
+            gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, self.pbo)
+            gl.glBindTexture(self.texture.target, self.texture.id)
+            gl.glTexSubImage2D(
+                self.texture.target,
+                0,
+                0,
+                0,
+                self.width,
+                self.height,
+                gl.GL_RGBA,
+                gl.GL_UNSIGNED_BYTE,
+                ctypes.c_void_p(0),
+            )
+            gl.glBindTexture(self.texture.target, 0)
+            gl.glBindBuffer(gl.GL_PIXEL_UNPACK_BUFFER, 0)
+            self._upload_pending = False
         self.sprite.draw()
         if self._on_draw_overlay is not None and not self._dispatching_events:
             self._on_draw_overlay()
@@ -243,9 +261,12 @@ class GLInteropViewer:
         if width <= 0 or height <= 0:
             return
 
-        self.width = int(width)
-        self.height = int(height)
-        self._recreate_gl_resources()
-
-        if self._on_resize_callback is not None:
-            self._on_resize_callback(self.width, self.height)
+        self._pending_size = int(width), int(height)
+        # The Windows sizing loop can delay scheduled CUDA frames. Present the
+        # last completed texture until rendering resumes at the final size.
+        if self.frame_index and not self.closed:
+            self.sprite.scale_x = width / self.width
+            self.sprite.scale_y = height / self.height
+            self.window.clear()
+            self.sprite.draw()
+            self.window.flip()

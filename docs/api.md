@@ -4,6 +4,212 @@ The [README](../README.md) walks through warp-optix by example. This page has th
 lists, lifetime rules, and every device builtin family. The path tracer has its own
 [guide](pathtracing.md).
 
+## Procedural material textures
+
+Use the same material ID for discovery, raw Warp maps, and packed path tracer
+textures. The installed catalog includes ambientCG reference IDs, descriptive
+recipe IDs, and configurable IDs such as `metal/copper` and `plastic/pebbled`.
+
+```python
+from warp_optix import procedural_textures as textures
+
+families = textures.material_families()
+matches = textures.list_materials(family="plastic", query="automotive")
+info = textures.describe_material("plastic/pebbled")
+
+maps = textures.generate(
+    "plastic/pebbled",
+    (1024, 1024),
+    maps=("color", "normal", "roughness"),
+    parameters={"color": [0.21, 0.22, 0.24], "roughness": 0.58},
+    seed=17,
+    device="cuda",
+)
+images, material_kwargs = textures.generate_gltf(
+    "metal/copper",
+    (1024, 1024),
+    parameters={"finish": "brushed", "direction": 25},
+    seed=17,
+    device="cuda",
+)
+```
+
+`list_materials()` returns IDs, labels, and families. `describe_material()`
+returns the available maps and a JSON Schema for the optional `parameters`
+argument. Both results can be serialized with `json.dumps()`, and discovery
+works without a GPU. A fixed recipe exposes an empty parameter schema and
+still accepts a seed. `generate()` returns all supported maps when `maps`
+is omitted. Shapes are `(height, width)`. Use `generate_gltf()` for the
+packed RGBA8 maps and properties consumed by the path tracer.
+
+The material generators produce repeating UV tiles. Use repeat texture
+addressing. For layered materials, the built-in mask is periodic. A custom
+mask must also repeat cleanly to preserve a seamless result.
+
+The `textures.reference_ids()` function lists the named recipes.
+Wheels and source checkouts expose the same catalog of 100 named recipes
+and 18 configurable presets. The recipes generate textures at the requested
+resolution and use ambientCG's
+[CC0 references](https://docs.ambientcg.com/license/) for calibration.
+
+```python
+wood = textures.generate("Wood096", (512, 512), device="cuda:0")
+marble = textures.generate("Marble012", (512, 512), device="cuda:0")
+brick = textures.generate("Bricks113A", (512, 512), device="cuda:0")
+```
+
+All reference materials provide `color`, `normal`, `roughness`, and
+`displacement`. Use `textures.reference_maps(asset)` to check for
+`occlusion`, `metalness`, and `opacity`. Color is linear RGB, normals use
+the OpenGL tangent-space convention, and scalar maps repeat their value in
+all three channels. Displacement is available separately for callers that
+use height data.
+
+For a new path tracer scene, bake and register the maps together:
+
+```python
+images, material_kwargs = textures.bake_gltf("Bricks113A", (512, 512), device="cuda:0")
+scene.set_gltf_textures(images)
+material_id = scene.materials.add_gltf_material(**material_kwargs)
+```
+
+The helper packs linear color and opacity, tangent-space normals, and glTF's
+occlusion, roughness, and metalness channels into three RGBA8 images. It does
+one readback for all three. Dark foam uses a matching base-color factor
+to preserve albedo detail within RGBA8. Apply the returned material properties
+when displaying its maps. For an existing scene, pass
+`first_texture_index` equal to the current texture count and use
+`scene.set_gltf_textures(images, append=True)`.
+
+Standalone `bake(..., map_type="normal")` returns OpenGL normal maps with
+positive green toward the top of the image. `bake_gltf()` and
+`bake_layered_gltf()` encode positive green along the mesh's increasing V so
+the path tracer shades grooves and raised details in the correct direction.
+
+Pass a non-negative integer `seed` to either bake call to vary the tile's
+layout and fine detail. Use the same seed for all maps of a material. Omit
+it for the closest match to the reference.
+
+The analytical materials generate their surfaces directly from UV coordinates and a seed.
+Wood097, Wood098 and Wood099 use growth rings, knots and pores. WoodFloor071
+orients that grain independently on each parquet strip. PavingStones153 and
+Bricks101 evaluate stone or brick boundaries and recess the joints. Concrete049
+embeds three sizes of mineral aggregate in a cement binder. For these materials
+the same surface features drive color, roughness, displacement and available
+occlusion. Normals come from periodic central differences of the baked height.
+The catalog also includes concrete, asphalt, plaster, and ceramic and stone
+tiles. Built-in recipes include WhiteSubwayTile and BoardFormedConcrete.
+The ambientCG-inspired generators also
+cover woven fabric, microfiber, wicker, acoustic foam, terrazzo, tactile paving,
+perforated sheet and riveted metal, and two styles of bark. Cutout coverage and
+beveled relief come from the same geometry for perforated sheet, wicker, and
+open-weave fabric. The glTF baker evaluates each direct surface once per texel,
+packs the color and material properties immediately, and derives normals from
+one scalar relief buffer. At preview resolutions the gradient blends nearby
+rows and columns to reduce stair-step artifacts on diagonal features. Additional generators cover rope fibers, corrosion,
+exposed reinforcement, chain-link fence, slotted walkway, tufted carpet,
+crumpled foil, moss, grass, stitched leather, layered onyx, and fractured marble.
+The fence and walkway bake opacity from their wire or slot geometry.
+`bake(..., map_type="displacement")` exposes relief separately for callers that
+want to displace geometry, as the gallery does for bark.
+
+For new families, compare the physical feature sizes and palette with the CC0
+reference, then inspect a native-resolution crop and a lit sphere or tile.
+Inspect at least one alternate seed under the same lighting. Check that pores,
+joints and chips appear at the same UVs in every map and that the texture tiles
+at both boundaries.
+
+The public API is `warp_optix.procedural_textures`. Material family generators,
+preset parameters, and map packing are in
+[`warp_optix/_src/procedural_materials`](../warp_optix/warp_optix/_src/procedural_materials).
+
+The material gallery shows 45 representative shader balls. Press **L** to
+hide or show the overlay. Use `--no-labels` to start with a clear view or save
+a PNG without annotations.
+
+### Configurable metals
+
+A `MetalSurface` can be passed wherever the bakers accept a material ID.
+`metal_names()` lists the conductor presets. To represent an unlisted alloy,
+supply its normal-incidence reflectance as a linear RGB tuple.
+
+```python
+surface = textures.MetalSurface(
+    "copper",
+    finish="brushed",
+    roughness=0.29,
+    scratches=0.24,
+    scratch_density=14,
+    direction=25,
+)
+height = textures.bake(surface, (2048, 2048), map_type="displacement", seed=12, device="cuda")
+images, gltf = textures.bake_gltf(surface, (2048, 2048), seed=12, device="cuda")
+```
+
+Finishes are `polished`, `brushed`, and `scratched`. Optional controls override
+the finish defaults. Scratches vary in length, width, and depth. Grooves and
+raised edges appear in both displacement and tangent-space normals.
+Brushing uses directional grooves in the baked maps. The
+roughness channel remains scalar for glTF compatibility. Preview a finish with
+`example_material_gallery.py --metal copper --finish brushed --scratches 0.24 --direction 25`.
+Use `--metals` to compare all ten metals in polished, brushed, and scratched rows.
+
+### Configurable plastics
+
+`PlasticSurface` works with the same bake and layering functions. The eight
+finishes are `gloss`, `satin`, `pebbled`, `grained`, `scuffed`, `recycled`,
+`vinyl`, and `rubber`. Override the mold color in sRGB or supply a perceptual
+roughness. Each finish provides color, roughness, normal, and displacement maps.
+Use the same seed across maps to keep molded grain, pigment chips, and wear aligned.
+These presets represent opaque surfaces.
+The satin and scuffed recipes were calibrated against the CC0 ambientCG
+references [Plastic013A](https://ambientcg.com/view?id=Plastic013A) and
+[Plastic012B](https://ambientcg.com/view?id=Plastic012B).
+
+```python
+trim = textures.PlasticSurface("pebbled", color=(0.18, 0.19, 0.21), roughness=0.58)
+images, gltf = textures.bake_gltf(trim, (2048, 2048), seed=12, device="cuda")
+```
+
+Use `example_material_gallery.py --plastics` for a side-by-side comparison.
+
+### Construction and fabrication
+
+The catalog includes asphalt, masonry, concrete, plaster, wood and flooring,
+ceramic tile, sheet metal, and roofing. Use `reference_ids()` for the full list.
+The following recipes model specific products and are available in default wheels.
+
+| Material ID | Surface |
+| --- | --- |
+| `Wood087` | Alternating veneer layers, glue lines, and checks on a plywood edge |
+| `PaintedDrywall` | Painted gypsum board with a fine roller stipple |
+| `AsphaltShingles` | Overlapping asphalt roofing tabs with mineral granules |
+| `GalvanizedZinc` | Flat sheet metal with zinc spangles |
+| `EngineeredQuartz` | Polished countertop composite with embedded mineral grains |
+
+### Layered materials
+
+Use `bake_layered_gltf` to combine two catalog materials into a single glTF
+texture set. The default mask is periodic noise with a soft transition. Supply
+a NumPy float array or Warp float32 array of shape `(height, width)` to control
+the weights directly. Weight zero selects the base material, and weight one
+selects the overlay. For seamless tiling, supply a periodic mask. Optional
+`height_blend` biases the transition toward the higher local displacement.
+
+```python
+images, gltf = textures.bake_layered_gltf(
+    "Concrete008",
+    "Ground094C",
+    (2048, 2048),
+    seed=8,
+    frequency=6,
+    threshold=0.57,
+    softness=0.17,
+    height_blend=0.5,
+    device="cuda",
+)
+```
+
 ## Devices, contexts, and lifetime
 
 Like Warp's CUDA context, the OptiX device context is implicit: each CUDA device gets one, created

@@ -2477,6 +2477,43 @@ def _make_invalid_shaded_hit() -> ShadedHitData:
 
 
 @wp.func
+def _correct_metal_reflection(hit: ShadedHitData, incident: wp.vec3) -> ShadedHitData:
+    """Keep near-mirror reflections from escaping through the geometric surface."""
+    if hit.metallic < 0.95 or hit.roughness > 0.05 or hit.transmission > 0.0:
+        return hit
+    ng = hit.Ng
+    view = -incident
+    geometric_cosine = wp.dot(ng, view)
+    if geometric_cosine <= 0.0:
+        return hit
+    n = hit.normal
+    margin = wp.min(0.07, 0.65 * geometric_cosine)
+    outgoing_cosine = 2.0 * wp.dot(n, view) * wp.dot(n, ng) - geometric_cosine
+    if outgoing_cosine >= margin:
+        return hit
+
+    # The geometric normal is a valid endpoint. Retain as much of the mapped
+    # tilt as possible while keeping the GGX lobe centered above the surface.
+    low = float(0.0)
+    high = float(1.0)
+    for _ in range(6):
+        weight = 0.5 * (low + high)
+        candidate = wp.normalize(wp.lerp(ng, n, weight))
+        reflected = 2.0 * wp.dot(candidate, view) * wp.dot(candidate, ng) - geometric_cosine
+        if reflected >= margin:
+            low = weight
+        else:
+            high = weight
+    corrected = wp.normalize(wp.lerp(ng, n, low))
+    handedness = wp.sign(wp.dot(hit.B, wp.cross(n, hit.T)))
+    tangent = wp.normalize(hit.T - corrected * wp.dot(corrected, hit.T))
+    hit.normal = corrected
+    hit.T = tangent
+    hit.B = wp.cross(corrected, tangent) * handedness
+    return hit
+
+
+@wp.func
 def _set_incident_medium_for_hit(hit: ShadedHitData, front_face: wp.uint32) -> ShadedHitData:
     """Select the incident medium after geometry has face-forwarded its frame."""
     if hit.valid != wp.uint32(0) and front_face == wp.uint32(0) and hit.is_thin_walled == 0:
@@ -2873,6 +2910,7 @@ def primary_raygen(params: PathtraceLaunchParams):
             hit_barycentrics[0],
         )
         pbr = _set_incident_medium_for_hit(pbr, _payload_get_front_face(payload))
+        pbr = _correct_metal_reflection(pbr, direction)
 
         # C++ line 253: origin = offsetRay(hitPos, pbrMat.Ng) — use geometric normal
         origin = _offset_ray(hit_pos, pbr.Ng)
@@ -3291,6 +3329,7 @@ def primary_raygen(params: PathtraceLaunchParams):
             _payload_get_barycentrics(sec_payload)[0],
         )
         sec_pbr = _set_incident_medium_for_hit(sec_pbr, _payload_get_front_face(sec_payload))
+        sec_pbr = _correct_metal_reflection(sec_pbr, sec_direction)
 
         # C++ secondary_rchit.h lines 278-283: path regularization
         if use_path_reg:
