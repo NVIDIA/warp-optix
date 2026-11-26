@@ -33,16 +33,15 @@ class _MaterialInfo(_MaterialSummary):
 
 
 _FAMILIES = {
-    "wood": ("Bamboo", "Bark", "Chipboard", "Cork", "PaintedWood", "Planks", "Wicker", "Wood"),
+    "wood": ("Bamboo", "Bark", "Chipboard", "Cork", "Planks", "Wicker", "Wood"),
     "flooring": ("Carpet", "WoodFloor"),
     "masonry": ("Bricks", "CharcoalBrick", "Concrete", "BoardFormedConcrete", "GraphiteConcrete", "PavingStones"),
-    "stone": ("EngineeredQuartz", "Marble", "Onyx", "Rock", "Terrazzo", "Travertine"),
-    "ceramic": ("BlueCeramicTile", "Clay", "SageCeramicTile", "SandstoneFloorTile", "Tiles", "WhiteSubwayTile"),
-    "wall": ("LimewashWall", "PaintedDrywall", "PaintedPlaster", "Plaster", "Wallpaper"),
+    "stone": ("EngineeredQuartz", "Marble", "Onyx", "Terrazzo"),
+    "ceramic": ("BlueCeramicTile", "SageCeramicTile", "SandstoneFloorTile", "Tiles", "WhiteSubwayTile"),
+    "wall": ("LimewashWall", "PaintedDrywall", "PaintedPlaster", "Plaster"),
     "roofing": ("AsphaltShingles", "RoofingTiles"),
-    "pavement": ("Asphalt", "Road", "TactilePaving"),
+    "pavement": ("Asphalt", "TactilePaving"),
     "metal": (
-        "CorrugatedSteel",
         "DiamondPlate",
         "Fence",
         "Foil",
@@ -50,14 +49,13 @@ _FAMILIES = {
         "Metal",
         "MetalPlates",
         "MetalWalkway",
-        "PaintedMetal",
         "Rust",
         "SheetMetal",
     ),
     "plastic": ("Plastic", "Rubber", "AcousticFoam", "Sponge"),
     "textile": ("Fabric", "Rope"),
     "leather": ("Leather",),
-    "ground": ("Grass", "Gravel", "Ground", "Ice", "Moss", "ScatteredLeaves", "Snow"),
+    "ground": ("Grass", "Ground", "Ice", "Moss"),
     "paper": ("Cardboard", "Paper"),
 }
 _FAMILY_BY_STEM = {stem: family for family, stems in _FAMILIES.items() for stem in stems}

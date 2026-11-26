@@ -28,7 +28,27 @@ def _normal_from_relief(relief: wp.array2d(dtype=float), row: int, col: int, str
 
 
 @wp.func
-def _normal_for_gltf(normal: wp.vec3) -> wp.vec3:
-    # Floating-point OpenGL maps encode green toward decreasing image row.
-    # glTF meshes use increasing V, which follows increasing texture row.
-    return wp.vec3(normal[0], 1.0 - normal[1], normal[2])
+def _rgba8(rgb: wp.vec3, alpha: float) -> wp.vec4ub:
+    return wp.vec4ub(
+        wp.uint8(rgb[0] * 255.0 + 0.5),
+        wp.uint8(rgb[1] * 255.0 + 0.5),
+        wp.uint8(rgb[2] * 255.0 + 0.5),
+        wp.uint8(alpha * 255.0 + 0.5),
+    )
+
+
+@wp.kernel(enable_backward=False)
+def _write_normals(
+    relief: wp.array2d(dtype=float),
+    strength: float,
+    image: wp.array2d(dtype=wp.vec3),
+    packed: wp.array3d(dtype=wp.vec4ub),
+):
+    row, col = wp.tid()
+    normal = _normal_from_relief(relief, row, col, strength)
+    if packed.shape[0] > 0:
+        # Standalone OpenGL maps point green toward decreasing image row.
+        # glTF uses the mesh's increasing V, toward increasing texture row.
+        packed[1, row, col] = _rgba8(wp.vec3(normal[0], 1.0 - normal[1], normal[2]), 1.0)
+    else:
+        image[row, col] = normal

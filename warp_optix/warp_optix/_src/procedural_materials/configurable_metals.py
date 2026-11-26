@@ -12,7 +12,8 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
-from .relief import _normal_for_gltf, _normal_from_relief
+from .relief import _rgba8, _write_normals
+from .sampling import texel_uv
 
 # Normal-incidence sRGB reflectance for clean conductors from Filament's material
 # reference. Stainless steel and chromium use representative neutral values.
@@ -214,20 +215,15 @@ def _generate_metal(
     row, col = wp.tid()
     h = wp.max(image.shape[0], relief.shape[0])
     w = wp.max(image.shape[1], relief.shape[1])
-    uv = wp.vec2((float(col) + 0.5) / float(w), (float(row) + 0.5) / float(h))
+    uv = texel_uv(row, col, h, w)
     color, height, rough = _metal_maps(
         uv, float(wp.min(h, w)), reflectance, roughness, brushing, scratches, density, direction, wave, seed
     )
     if relief.shape[0] > 0:
         relief[row, col] = height
     if packed.shape[0] > 0:
-        packed[0, row, col] = wp.vec4ub(
-            wp.uint8(255.0 * color[0] + 0.5),
-            wp.uint8(255.0 * color[1] + 0.5),
-            wp.uint8(255.0 * color[2] + 0.5),
-            wp.uint8(255),
-        )
-        packed[2, row, col] = wp.vec4ub(wp.uint8(255), wp.uint8(255.0 * rough + 0.5), wp.uint8(255), wp.uint8(255))
+        packed[0, row, col] = _rgba8(color, 1.0)
+        packed[2, row, col] = _rgba8(wp.vec3(1.0, rough, 1.0), 1.0)
     elif image.shape[0] > 0:
         result = color
         if channel == 2:
@@ -235,24 +231,6 @@ def _generate_metal(
         elif channel == 3:
             result = wp.vec3(height)
         image[row, col] = result
-
-
-@wp.kernel(enable_backward=False)
-def _metal_normals(
-    relief: wp.array2d(dtype=float), image: wp.array2d(dtype=wp.vec3), packed: wp.array3d(dtype=wp.vec4ub)
-):
-    row, col = wp.tid()
-    n = _normal_from_relief(relief, row, col, 0.0035)
-    if packed.shape[0] > 0:
-        n = _normal_for_gltf(n)
-        packed[1, row, col] = wp.vec4ub(
-            wp.uint8(255.0 * n[0] + 0.5),
-            wp.uint8(255.0 * n[1] + 0.5),
-            wp.uint8(255.0 * n[2] + 0.5),
-            wp.uint8(255),
-        )
-    else:
-        image[row, col] = n
 
 
 def bake_metal(surface, shape, map_type, device, seed):
@@ -274,7 +252,7 @@ def bake_metal(surface, shape, map_type, device, seed):
         device=device,
     )
     if channel == 1:
-        wp.launch(_metal_normals, dim=shape, inputs=[relief], outputs=[image, unused], device=device)
+        wp.launch(_write_normals, dim=shape, inputs=[relief, 0.0035], outputs=[image, unused], device=device)
     return image
 
 
@@ -290,5 +268,5 @@ def pack_metal(surface, shape, device, seed):
         outputs=[unused, relief, packed],
         device=device,
     )
-    wp.launch(_metal_normals, dim=shape, inputs=[relief], outputs=[unused, packed], device=device)
-    return packed
+    wp.launch(_write_normals, dim=shape, inputs=[relief, 0.0035], outputs=[unused, packed], device=device)
+    return packed, relief

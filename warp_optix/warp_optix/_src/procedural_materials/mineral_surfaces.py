@@ -5,10 +5,7 @@
 
 import warp as wp
 
-
-@wp.func
-def _noise(uv: wp.vec2, seed: int, nx: int, ny: int) -> float:
-    return wp.pnoise(wp.rand_init(seed), wp.cw_mul(uv, wp.vec2(float(nx), float(ny))), nx, ny)
+from .sampling import periodic_noise as _noise
 
 
 @wp.func

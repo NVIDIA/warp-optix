@@ -5,7 +5,7 @@
 
 import warp as wp
 
-from .roof_and_mosaic import _noise
+from .sampling import periodic_noise as _noise
 from .weathered_surfaces import _soil_cell
 
 
@@ -13,39 +13,42 @@ from .weathered_surfaces import _soil_cell
 def dark_roof_tiles(uv: wp.vec2, seed: int, resolution: float):
     uv = uv - wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
     count = 13
-    mottling = _noise(uv, seed, 17, 19)
-    clay = _noise(uv, seed + 3, 95, 109)
-    grit = _noise(uv, seed + 4, 355, 379) * wp.smoothstep(240.0, 1300.0, resolution)
-    position = float(count) * uv + wp.vec2(
-        0.081 + 0.040 * _noise(uv, seed + 11, 13, 19),
-        0.635 + 0.044 * _noise(uv, seed + 13, 19, 11),
-    )
-    col, row = int(wp.floor(position[0])), int(wp.floor(position[1]))
-    x, y = position[0] - float(col), position[1] - float(row)
-    tile = (col % count + count) % count + count * ((row % count + count) % count)
+    weather = _noise(uv, seed, 16, 22)
+    clay = _noise(uv, seed + 3, 85, 103)
+    grit = _noise(uv, seed + 4, 393, 437) * wp.smoothstep(240.0, 1300.0, resolution)
+    u = float(count) * uv[0] + 0.081 + 0.047 * _noise(uv, seed + 11, 9, 15)
+    x = u - wp.floor(u)
+    col = (int(wp.floor(u)) % count + count) % count
+    column = wp.rand_init(seed + 13, col)
+    # Separate courses seat at slightly different heights and bow at the nose.
+    v = float(count) * uv[1] + 0.635 + wp.randf(column, -0.052, 0.052)
+    v += 0.029 * _noise(uv, seed + 17, 19, 13) + 0.017 * wp.cos(2.0 * wp.pi * x)
+    y = v - wp.floor(v)
+    tile = col + count * ((int(wp.floor(v)) % count + count) % count)
     state = wp.rand_init(seed + 19, tile)
-    dye = wp.randf(state, -0.018, 0.018)
-    depth = wp.randf(state, 0.292, 0.310)
-    toe = wp.randf(state, 0.033, 0.048)
+    dye = wp.randf(state, -0.012, 0.012)
 
-    # The reference shows a broad flat pan, a rounded right-hand flange,
-    # and a steep slip into the neighboring pan.
-    aa = wp.clamp(0.70 * float(count) / resolution, 0.0, 0.11)
-    flange = wp.smoothstep(0.40, 0.86, x) - wp.smoothstep(0.88 - aa, 1.0, x)
-    flange *= 0.384
-    joint = wp.smoothstep(1.0 - toe - aa, 1.0, y)
-    lap = depth * (y - joint)
-    pan_edge = 1.0 - wp.smoothstep(0.0, 0.140, x)
-    seam = (1.0 - wp.smoothstep(0.012, 0.128, y)) * (1.0 - 0.26 * pan_edge)
-    edge = wp.smoothstep(0.69, 0.84, x) * (1.0 - wp.smoothstep(0.94, 1.0, x))
-    grain = 0.031 * mottling + 0.020 * clay + 0.010 * grit
-    pore = wp.smoothstep(0.17, 0.64, -clay + 0.55 * grit)
-    deposit = wp.smoothstep(0.39, 0.80, 0.53 * mottling + 0.62 * clay + 0.56 * grit)
-    height = 0.309 + flange + lap + 0.006 * (clay + grit) - 0.008 * pore
-    color = wp.vec3(0.196, 0.193, 0.212) + wp.vec3(dye + grain - 0.025 * seam - 0.010 * pan_edge)
-    color += wp.vec3(0.066, 0.056, 0.027) * deposit
-    roughness = 0.485 + 0.085 * edge - 0.053 * seam + 0.118 * mottling + 0.095 * clay + 0.030 * pore
-    ao = (0.847 - 0.279 * pan_edge + 0.098 * edge) * (1.0 - 0.280 * seam - 0.081 * joint)
+    # Continue the rounded flange through the join into the pan of the adjacent
+    # tile. As with the vertical overlap, its profile agrees at both endpoints.
+    aa = wp.min(0.68 * float(count) / resolution, 0.105)
+    shoulder = 1.0 - wp.smoothstep(-aa, 0.190 + aa, x)
+    crown = wp.pow(wp.smoothstep(0.428, 0.973, x), 1.48)
+    flange = crown + shoulder - wp.smoothstep(1.0 - aa, 1.190 + aa, x)
+    toe = 0.033 + 0.010 * clay + aa
+    lap = y + 1.0 - wp.smoothstep(-toe, toe, y) - wp.smoothstep(1.0 - toe, 1.0 + toe, y)
+    underlap = wp.smoothstep(0.015, 0.050, y) * (1.0 - wp.smoothstep(0.055, 0.188, y))
+    recess = wp.smoothstep(0.060, 0.145, x) * (1.0 - wp.smoothstep(0.149, 0.283, x))
+    pore = wp.smoothstep(0.19, 0.68, -clay + 0.72 * grit)
+    deposit = wp.smoothstep(0.32, 0.69, 0.68 * weather + 0.58 * clay + 0.29 * grit + 0.17 * underlap)
+
+    height = 0.291 + 0.386 * flange + 0.295 * lap + 0.014 * weather + 0.011 * grit - 0.013 * pore
+    color = wp.vec3(0.195, 0.191, 0.211) + wp.vec3(
+        dye + 0.031 * weather + 0.025 * clay + 0.018 * grit + 0.009 * flange - 0.014 * underlap - 0.014 * pore
+    )
+    color += wp.vec3(0.064, 0.054, 0.022) * deposit
+    roughness = 0.453 + 0.104 * flange + 0.068 * lap + 0.134 * weather + 0.098 * clay
+    roughness += 0.047 * pore + 0.053 * deposit
+    ao = wp.clamp(0.77 + 0.136 * lap + 0.117 * flange - 0.199 * recess - 0.185 * underlap, 0.0, 1.0)
 
     # The reference represents a continuous field of overlapping tiles.
     return color, height, roughness, ao, 0.0, 1.0

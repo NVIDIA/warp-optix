@@ -122,7 +122,7 @@ DIRECT_REFERENCES = {
     "Rubber001": (-53, (), 0.00175),
     "Bricks113A": (-54, ("occlusion",), 0.0044),
     "Metal064": (-55, ("metalness",), 0.00023),
-    "RoofingTiles013A": (-56, ("occlusion", "opacity"), 0.015),
+    "RoofingTiles013A": (-56, ("occlusion", "opacity"), 0.013),
     "Leather037": (-57, (), 0.00037),
     "DiamondPlate009": (-58, ("occlusion", "metalness"), 0.0012),
     "WoodFloor007": (-59, ("occlusion",), 0.00175),

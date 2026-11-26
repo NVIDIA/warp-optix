@@ -8,6 +8,8 @@
 
 import warp as wp
 
+from .sampling import periodic_noise, texel_uv
+
 
 @wp.func
 def _unpack(pixel: wp.vec4ub) -> wp.vec4:
@@ -25,8 +27,8 @@ def blend_materials(
     base: wp.array3d(dtype=wp.vec4ub),
     overlay: wp.array3d(dtype=wp.vec4ub),
     mask: wp.array2d(dtype=float),
-    base_height: wp.array2d(dtype=wp.vec3),
-    overlay_height: wp.array2d(dtype=wp.vec3),
+    base_height: wp.array2d(dtype=float),
+    overlay_height: wp.array2d(dtype=float),
     mask_seed: int,
     frequency: int,
     threshold: float,
@@ -39,17 +41,13 @@ def blend_materials(
     if mask.shape[0] > 0:
         weight = wp.clamp(mask[row, col], 0.0, 1.0)
     else:
-        uv = wp.vec2(
-            (float(col) + 0.5) / float(output.shape[2]),
-            (float(row) + 0.5) / float(output.shape[1]),
-        )
-        seed = wp.rand_init(mask_seed)
-        low = wp.pnoise(seed, uv * float(frequency), frequency, frequency)
-        fine = wp.pnoise(seed, uv * float(3 * frequency), 3 * frequency, 3 * frequency)
+        uv = texel_uv(row, col, output.shape[1], output.shape[2])
+        low = periodic_noise(uv, mask_seed, frequency, frequency)
+        fine = periodic_noise(uv, mask_seed, 3 * frequency, 3 * frequency)
         value = 0.5 + 0.36 * low + 0.14 * fine
         weight = wp.smoothstep(threshold - 0.5 * softness, threshold + 0.5 * softness, value)
     if height_blend > 0.0:
-        depth = overlay_height[row, col][0] - base_height[row, col][0]
+        depth = overlay_height[row, col] - base_height[row, col]
         weight = wp.clamp(weight + 4.0 * weight * (1.0 - weight) * height_blend * depth, 0.0, 1.0)
 
     if weight <= 0.0 or weight >= 1.0:

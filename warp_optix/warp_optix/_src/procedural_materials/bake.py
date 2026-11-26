@@ -27,10 +27,12 @@ from .natural_and_foil import natural_or_foil
 from .organic_surfaces import organic_surface
 from .plastic_surfaces import PLASTIC_PRESETS, PlasticSurface, plastic_configuration, plastic_surface
 from .reclaimed_planks import reclaimed_planks
-from .relief import _normal_for_gltf, _normal_from_relief
+from .relief import _rgba8, _write_normals
 from .roof_and_mosaic import roof_or_mosaic
 from .roofing_and_upholstery import dark_roof_tiles, grained_leather
 from .rubber_floor import crumb_rubber
+from .sampling import periodic_noise as _noise
+from .sampling import texel_uv
 from .sponge_and_paper import sponge_or_paper
 from .surface_presets import (
     ANALYTIC_EXTRA_MAPS,
@@ -46,11 +48,6 @@ from .wood_floor_layouts import wood_floor_layout
 __all__ = ["bake", "bake_gltf", "bake_layered_gltf", "brick", "marble", "reference_ids", "reference_maps", "wood"]
 
 _SURFACE_CHANNELS = ("color", "normal", "roughness", "displacement", "occlusion", "metalness", "opacity")
-
-
-@wp.func
-def _texel_uv(row: int, col: int, height: int, width: int) -> wp.vec2:
-    return wp.vec2((float(col) + 0.5) / float(width), (float(row) + 0.5) / float(height))
 
 
 @wp.func
@@ -79,7 +76,7 @@ def wood(
 ):
     """Bake long wood grain along the row axis. Use a positive grain count."""
     row, col = wp.tid()
-    uv = _texel_uv(row, col, image.shape[0], image.shape[1])
+    uv = texel_uv(row, col, image.shape[0], image.shape[1])
     state = wp.rand_init(seed)
     bend = _tile_noise(state, uv, wp.vec2(2.0, 0.6))
     fiber = _tile_noise(state, uv, wp.vec2(20.0, 1.5))
@@ -98,7 +95,7 @@ def marble(
 ):
     """Bake warped diagonal marble veins. Use a positive vein count."""
     row, col = wp.tid()
-    uv = _texel_uv(row, col, image.shape[0], image.shape[1])
+    uv = texel_uv(row, col, image.shape[0], image.shape[1])
     state = wp.rand_init(seed)
     bend = _tile_noise(state, uv, wp.vec2(1.0, 1.0))
     detail = _tile_noise(state, uv, wp.vec2(3.0, 3.0))
@@ -119,7 +116,7 @@ def brick(
 ):
     """Bake staggered brick. Use positive counts and a mortar fraction in [0, 1)."""
     row, col = wp.tid()
-    uv = _texel_uv(row, col, image.shape[0], image.shape[1])
+    uv = texel_uv(row, col, image.shape[0], image.shape[1])
     rows = 2.0 * float(row_pairs)
     y = uv[1] * rows
     course = wp.floor(y)
@@ -147,15 +144,10 @@ def _srgb_to_linear(value: float) -> float:
 
 
 @wp.func
-def _surface_noise(seed: int, uv: wp.vec2, nx: int, ny: int):
-    return wp.pnoise(wp.rand_init(seed), wp.vec2(uv[0] * float(nx), uv[1] * float(ny)), nx, ny)
-
-
-@wp.func
 def _wood_surface(uv: wp.vec2, seed: int, style: int, resolution: float):
     # A longitudinal cut through growth rings. Elliptical knots bend the
     # surrounding fibers, and expose end grain near their centers.
-    warp_y = 0.014 * _surface_noise(seed, uv, 3, 5)
+    warp_y = 0.014 * _noise(uv, seed, 3, 5)
     if style == 2:
         warp_y *= 3.0
     p = wp.vec2(uv[0], uv[1] + warp_y)
@@ -170,26 +162,26 @@ def _wood_surface(uv: wp.vec2, seed: int, style: int, resolution: float):
     if style == 0:
         influence *= 0.23
     p += wp.vec2(0.0, 0.09 * delta[1] * influence)
-    annual = 42.0 * p[1] + 0.72 * _surface_noise(seed + 2, p, 3, 17)
+    annual = 42.0 * p[1] + 0.72 * _noise(p, seed + 2, 3, 17)
     if style == 2:
         # Flatsawn cuts cross a curved ring surface and expose nested arches.
         u = wp.sin(wp.PI * (p[0] + 0.15))
         v = wp.sin(2.0 * wp.PI * (p[1] + 0.08))
-        annual = 23.0 * wp.sqrt(0.014 + v * v + 0.44 * u * u) + 2.4 * _surface_noise(seed + 3, p, 3, 4)
+        annual = 23.0 * wp.sqrt(0.014 + v * v + 0.44 * u * u) + 2.4 * _noise(p, seed + 3, 3, 4)
     band = 0.5 + 0.5 * wp.cos(2.0 * wp.PI * annual)
     latewood = band * band * band * band
-    fiber = _surface_noise(seed + 5, p, 21, 360) * wp.smoothstep(180.0, 720.0, resolution)
-    pores = _surface_noise(seed + 6, p, 97, 970) * wp.smoothstep(485.0, 1940.0, resolution)
+    fiber = _noise(p, seed + 5, 21, 360) * wp.smoothstep(180.0, 720.0, resolution)
+    pores = _noise(p, seed + 6, 97, 970) * wp.smoothstep(485.0, 1940.0, resolution)
     knot = influence * (1.0 - wp.smoothstep(0.11, 0.31, radius))
     knot_ring = wp.sin(78.0 * radius + 2.1 * fiber) * knot
     tone = 0.029 - 0.075 * latewood + 0.048 * fiber + 0.036 * pores - 0.24 * knot + 0.057 * knot_ring
     # Split earlywood into thin uneven fiber bundles; elongated open pores
     # break the smooth bands where the cut exposes vessel openings.
-    strand = 0.5 + 0.5 * wp.cos(2.0 * wp.PI * (annual * 7.0 + 0.84 * _surface_noise(seed + 8, p, 9, 91)))
-    cut = wp.smoothstep(0.26, 0.57, _surface_noise(seed + 9, p, 141, 811))
+    strand = 0.5 + 0.5 * wp.cos(2.0 * wp.PI * (annual * 7.0 + 0.84 * _noise(p, seed + 8, 9, 91)))
+    cut = wp.smoothstep(0.26, 0.57, _noise(p, seed + 9, 141, 811))
     micro = (0.042 * strand**5.0 + 0.072 * cut) * wp.smoothstep(300.0, 1300.0, resolution)
     tone -= micro
-    tone += 0.038 * _surface_noise(seed + 10, p, 3, 29)
+    tone += 0.038 * _noise(p, seed + 10, 3, 29)
     relief = 0.53 - 0.30 * micro - 0.032 * latewood + 0.023 * fiber + 0.015 * pores - 0.10 * knot + 0.02 * knot_ring
     base = wp.vec3(0.65, 0.52, 0.37)
     if style == 1:
@@ -203,15 +195,15 @@ def _wood_surface(uv: wp.vec2, seed: int, style: int, resolution: float):
 def _paver_surface(uv: wp.vec2, seed: int, resolution: float):
     # Distort a staggered grid before evaluating the signed stone boundary.
     # Its chipped rim stays continuous across all five maps.
-    bend = _surface_noise(seed, uv, 5, 5)
-    chip = _surface_noise(seed + 7, uv, 84, 62)
-    fine = _surface_noise(seed + 8, uv, 360, 210) * wp.smoothstep(180.0, 720.0, resolution)
-    grit = _surface_noise(seed + 9, uv, 950, 650) * wp.smoothstep(475.0, 1900.0, resolution)
-    y = 15.0 * uv[1] + 0.57 * bend + 0.16 * _surface_noise(seed + 2, uv, 26, 13)
+    bend = _noise(uv, seed, 5, 5)
+    chip = _noise(uv, seed + 7, 84, 62)
+    fine = _noise(uv, seed + 8, 360, 210) * wp.smoothstep(180.0, 720.0, resolution)
+    grit = _noise(uv, seed + 9, 950, 650) * wp.smoothstep(475.0, 1900.0, resolution)
+    y = 15.0 * uv[1] + 0.57 * bend + 0.16 * _noise(uv, seed + 2, 26, 13)
     row = int(wp.floor(y))
     r = wp.rand_init(seed + 19, (row % 15 + 15) % 15)
-    x = 20.0 * uv[0] + wp.randf(r) + 0.64 * _surface_noise(seed + 1, uv, 8, 7)
-    x += 0.29 * _surface_noise(seed + 3, uv, 17, 6)
+    x = 20.0 * uv[0] + wp.randf(r) + 0.64 * _noise(uv, seed + 1, 8, 7)
+    x += 0.29 * _noise(uv, seed + 3, 17, 6)
     col = int(wp.floor(x))
     stone = wp.rand_init(seed + 31, ((col % 20 + 20) % 20) + 20 * ((row % 15 + 15) % 15))
     tint = wp.randf(stone, -0.062, 0.062)
@@ -221,8 +213,8 @@ def _paver_surface(uv: wp.vec2, seed: int, resolution: float):
     inside += 0.081 * chip + 0.031 * fine
     bevel = wp.smoothstep(-0.035, 0.108, inside)
     face = wp.smoothstep(-0.015, 0.034, inside)
-    mineral = _surface_noise(seed + 4, uv, 51, 42)
-    patina = _surface_noise(seed + 5, uv, 12, 11)
+    mineral = _noise(uv, seed + 4, 51, 42)
+    patina = _noise(uv, seed + 5, 12, 11)
     moss = wp.smoothstep(-0.12, 0.42, patina + 0.30 * fine)
     soil = wp.lerp(wp.vec3(0.225, 0.187, 0.131), wp.vec3(0.315, 0.327, 0.135), moss)
     rock = wp.vec3(0.548, 0.506, 0.391) + wp.vec3(tint + 0.118 * mineral + 0.06 * patina)
@@ -258,14 +250,14 @@ def _concrete_chip(uv: wp.vec2, seed: int, frequency: int, aa: float):
 
 @wp.func
 def _concrete_surface(uv: wp.vec2, seed: int, resolution: float):
-    fleck = _surface_noise(seed, uv, 640, 640) * wp.smoothstep(320.0, 1280.0, resolution)
-    grade = _surface_noise(seed + 18, uv, 86, 99)
-    binder = 0.085 * _surface_noise(seed + 11, uv, 43, 43) + 0.13 * fleck
+    fleck = _noise(uv, seed, 640, 640) * wp.smoothstep(320.0, 1280.0, resolution)
+    grade = _noise(uv, seed + 18, 86, 99)
+    binder = 0.085 * _noise(uv, seed + 11, 43, 43) + 0.13 * fleck
     color = wp.vec3(0.355, 0.333, 0.315) + wp.vec3(binder)
     relief = 0.48 + 0.10 * fleck
-    p = uv + 0.0016 * wp.vec2(_surface_noise(seed + 2, uv, 73, 71), _surface_noise(seed + 3, uv, 71, 73))
-    p += 0.0007 * wp.vec2(fleck, _surface_noise(seed + 26, uv, 280, 280))
-    fracture = wp.abs(_surface_noise(seed + 16, uv, 126, 114))
+    p = uv + 0.0016 * wp.vec2(_noise(uv, seed + 2, 73, 71), _noise(uv, seed + 3, 71, 73))
+    p += 0.0007 * wp.vec2(fleck, _noise(uv, seed + 26, 280, 280))
+    fracture = wp.abs(_noise(uv, seed + 16, 126, 114))
     coverage = float(0.0)
     for scale in range(3):
         freq = 184 >> scale
@@ -302,8 +294,8 @@ def _parquet_surface(uv: wp.vec2, seed: int, resolution: float):
 
 @wp.func
 def _brick_wall_surface(uv: wp.vec2, seed: int, resolution: float):
-    grade = _surface_noise(seed + 3, uv, 50, 57)
-    sand = _surface_noise(seed + 5, uv, 622, 650) * wp.smoothstep(310.0, 1240.0, resolution)
+    grade = _noise(uv, seed + 3, 50, 57)
+    sand = _noise(uv, seed + 5, 622, 650) * wp.smoothstep(310.0, 1240.0, resolution)
     y = uv[1] * 24.0 + 0.037 * grade
     row = int(wp.floor(y))
     x = uv[0] * 8.0 + 0.5 * float(row & 1) + 0.027 * grade
@@ -315,7 +307,7 @@ def _brick_wall_surface(uv: wp.vec2, seed: int, resolution: float):
     bevel = wp.smoothstep(0.04, 0.12, joint)
     pigment = wp.randf(rng, -0.085, 0.085) + 0.091 * grade
     clay = wp.vec3(0.58, 0.305, 0.212) + wp.vec3(pigment, 0.76 * pigment, 0.55 * pigment)
-    scorch = _surface_noise(seed + 18, uv, 22, 47) + 0.40 * grade
+    scorch = _noise(uv, seed + 18, 22, 47) + 0.40 * grade
     inclusions = wp.smoothstep(0.25, 0.60, grade + 0.72 * sand)
     clay += wp.vec3(0.12, 0.083, 0.052) * scorch - wp.vec3(0.13) * inclusions
     color = wp.lerp(wp.vec3(0.68, 0.63, 0.55), clay, face) + wp.vec3(0.087 * sand)
@@ -329,9 +321,9 @@ def _brick_wall_surface(uv: wp.vec2, seed: int, resolution: float):
 
 @wp.func
 def _mineral_finish(uv: wp.vec2, seed: int, resolution: float):
-    cloud = _surface_noise(seed, uv, 5, 7) + 0.45 * _surface_noise(seed + 3, uv, 17, 19)
-    stipple = _surface_noise(seed + 4, uv, 211, 201) * wp.smoothstep(110.0, 420.0, resolution)
-    micro = _surface_noise(seed + 5, uv, 670, 700) * wp.smoothstep(350.0, 1400.0, resolution)
+    cloud = _noise(uv, seed, 5, 7) + 0.45 * _noise(uv, seed + 3, 17, 19)
+    stipple = _noise(uv, seed + 4, 211, 201) * wp.smoothstep(110.0, 420.0, resolution)
+    micro = _noise(uv, seed + 5, 670, 700) * wp.smoothstep(350.0, 1400.0, resolution)
     pore = wp.smoothstep(0.27, 0.55, stipple + 0.33 * micro)
     return cloud, stipple, micro, pore
 
@@ -341,7 +333,7 @@ def _finish_surface(
     uv: wp.vec2, seed: int, resolution: float, palette: wp.vec3, contrast: float, base_roughness: float, formwork: float
 ):
     cloud, stipple, micro, pore = _mineral_finish(uv, seed, resolution)
-    cast = _surface_noise(seed + 23, uv, 90, 8) + 0.45 * _surface_noise(seed + 9, uv, 210, 28)
+    cast = _noise(uv, seed + 23, 90, 8) + 0.45 * _noise(uv, seed + 9, 210, 28)
     if formwork < 0.0:
         grain_uv = uv + 0.0007 * wp.vec2(stipple, micro)
         coverage, stone = _concrete_chip(grain_uv, seed + 29, 154, 105.0 / resolution)
@@ -537,13 +529,16 @@ def _bake_surface(
     columns: int,
     rows: int,
     channel: int,
+    has_occlusion: bool,
+    color_gain: float,
     image: wp.array2d(dtype=wp.vec3),
     relief: wp.array2d(dtype=float),
+    packed: wp.array3d(dtype=wp.vec4ub),
 ):
     row, col = wp.tid()
     h, w = wp.max(image.shape[0], relief.shape[0]), wp.max(image.shape[1], relief.shape[1])
     color, height, roughness, ao, metal, alpha = _surface_maps(
-        _texel_uv(row, col, h, w),
+        texel_uv(row, col, h, w),
         float(wp.min(h, w)),
         style,
         seed,
@@ -554,8 +549,14 @@ def _bake_surface(
         columns,
         rows,
     )
-    if channel == 1:
+    if relief.shape[0] > 0:
         relief[row, col] = wp.clamp(height, 0.0, 1.0)
+    if packed.shape[0] > 0:
+        occlusion = wp.clamp(ao, 0.0, 1.0) if has_occlusion else 1.0
+        packed[0, row, col] = _rgba8(color_gain * _linear_color(color), wp.clamp(alpha, 0.0, 1.0))
+        packed[2, row, col] = _rgba8(wp.vec3(occlusion, wp.clamp(roughness, 0.0, 1.0), metal), 1.0)
+        return
+    if channel == 1:
         return
     result = wp.vec3(height)
     if channel == 0:
@@ -571,12 +572,6 @@ def _bake_surface(
     image[row, col] = wp.vec3(
         wp.clamp(result[0], 0.0, 1.0), wp.clamp(result[1], 0.0, 1.0), wp.clamp(result[2], 0.0, 1.0)
     )
-
-
-@wp.kernel(enable_backward=False)
-def _height_normals(relief: wp.array2d(dtype=float), strength: float, image: wp.array2d(dtype=wp.vec3)):
-    row, col = wp.tid()
-    image[row, col] = _normal_from_relief(relief, row, col, strength)
 
 
 def reference_ids() -> tuple[str, ...]:
@@ -642,73 +637,16 @@ def bake(
         raise KeyError(map_type)
     channel = _SURFACE_CHANNELS.index(map_type)
     image = wp.empty(shape, dtype=wp.vec3, device=device)
+    device = image.device
     params, strength = _surface_configuration(material, seed)
+    relief = wp.empty(shape if channel == 1 else (0, 0), dtype=float, device=device)
+    unused = wp.empty((0, 0, 0), dtype=wp.vec4ub, device=device)
+    wp.launch(
+        _bake_surface, dim=shape, inputs=[*params, channel, False, 1.0], outputs=[image, relief, unused], device=device
+    )
     if channel == 1:
-        relief = wp.empty(shape, dtype=float, device=image.device)
-        unused = wp.empty((0, 0), dtype=wp.vec3, device=image.device)
-        wp.launch(_bake_surface, dim=shape, inputs=[*params, channel], outputs=[unused, relief], device=image.device)
-        wp.launch(_height_normals, dim=shape, inputs=[relief, strength], outputs=[image], device=image.device)
-    else:
-        unused = wp.empty((0, 0), dtype=float, device=image.device)
-        wp.launch(_bake_surface, dim=shape, inputs=[*params, channel], outputs=[image, unused], device=image.device)
+        wp.launch(_write_normals, dim=shape, inputs=[relief, strength], outputs=[image, unused], device=device)
     return image
-
-
-@wp.func
-def _rgba8(rgb: wp.vec3, alpha: float) -> wp.vec4ub:
-    return wp.vec4ub(
-        wp.uint8(rgb[0] * 255.0 + 0.5),
-        wp.uint8(rgb[1] * 255.0 + 0.5),
-        wp.uint8(rgb[2] * 255.0 + 0.5),
-        wp.uint8(alpha * 255.0 + 0.5),
-    )
-
-
-@wp.kernel(enable_backward=False)
-def _bake_packed_surface(
-    style: int,
-    seed: int,
-    palette: wp.vec3,
-    contrast: float,
-    base_roughness: float,
-    pattern: float,
-    columns: int,
-    rows: int,
-    has_occlusion: bool,
-    color_gain: float,
-    relief: wp.array2d(dtype=float),
-    packed: wp.array3d(dtype=wp.vec4ub),
-):
-    row, col = wp.tid()
-    h, w = relief.shape[0], relief.shape[1]
-    color, height, roughness, ao, metal, alpha = _surface_maps(
-        _texel_uv(row, col, h, w),
-        float(wp.min(h, w)),
-        style,
-        seed,
-        palette,
-        contrast,
-        base_roughness,
-        pattern,
-        columns,
-        rows,
-    )
-    if not has_occlusion:
-        ao = 1.0
-    packed[0, row, col] = _rgba8(color_gain * _linear_color(color), wp.clamp(alpha, 0.0, 1.0))
-    packed[2, row, col] = _rgba8(wp.vec3(wp.clamp(ao, 0.0, 1.0), wp.clamp(roughness, 0.0, 1.0), metal), 1.0)
-    relief[row, col] = wp.clamp(height, 0.0, 1.0)
-
-
-@wp.kernel(enable_backward=False)
-def _pack_relief_normals(
-    relief: wp.array2d(dtype=float),
-    strength: float,
-    packed: wp.array3d(dtype=wp.vec4ub),
-):
-    row, col = wp.tid()
-    normal = _normal_from_relief(relief, row, col, strength)
-    packed[1, row, col] = _rgba8(_normal_for_gltf(normal), 1.0)
 
 
 def bake_gltf(
@@ -732,34 +670,36 @@ def bake_gltf(
     color_gain = 1.0
     if material == "AcousticFoam001":
         color_gain = 8.0
-    elif material == "Rubber001":
+    elif material in ("Rubber001", "RoofingTiles013A"):
         color_gain = 6.0
-    packed = _bake_gltf_arrays(material, shape, device, seed, color_gain=color_gain)
     maps = reference_maps(material)
-    kwargs = _gltf_properties(first_texture_index, "occlusion" in maps, "opacity" in maps)
+    has_occlusion = "occlusion" in maps
+    packed, _ = _bake_gltf_arrays(material, shape, device, seed, has_occlusion, color_gain=color_gain)
+    kwargs = _gltf_properties(first_texture_index, has_occlusion, "opacity" in maps)
     if color_gain != 1.0:
         kwargs["base_color"] = (1.0 / color_gain,) * 3 + (1.0,)
     return list(packed.numpy()), kwargs
 
 
-def _bake_gltf_arrays(material, shape, device, seed, *, color_gain=1.0):
+def _bake_gltf_arrays(material, shape, device, seed, has_occlusion, *, color_gain=1.0):
     if min(shape) < 1:
         raise ValueError("Texture dimensions must be positive.")
     if isinstance(material, MetalSurface):
         return pack_metal(material, shape, device, seed)
-    has_occlusion = "occlusion" in reference_maps(material)
     packed = wp.empty((3, *shape), dtype=wp.vec4ub, device=device)
-    relief = wp.empty(shape, dtype=float, device=packed.device)
+    device = packed.device
+    relief = wp.empty(shape, dtype=float, device=device)
+    unused = wp.empty((0, 0), dtype=wp.vec3, device=device)
     params, strength = _surface_configuration(material, seed)
     wp.launch(
-        _bake_packed_surface,
+        _bake_surface,
         dim=shape,
-        inputs=[*params, has_occlusion, color_gain],
-        outputs=[relief, packed],
-        device=packed.device,
+        inputs=[*params, 1, has_occlusion, color_gain],
+        outputs=[unused, relief, packed],
+        device=device,
     )
-    wp.launch(_pack_relief_normals, dim=shape, inputs=[relief, strength], outputs=[packed], device=packed.device)
-    return packed
+    wp.launch(_write_normals, dim=shape, inputs=[relief, strength], outputs=[unused, packed], device=device)
+    return packed, relief
 
 
 def _gltf_properties(first_texture_index, has_occlusion, has_opacity):
@@ -808,23 +748,19 @@ def bake_layered_gltf(
         raise TypeError("Warp blend masks must have dtype wp.float32.")
 
     base_maps, overlay_maps = reference_maps(base), reference_maps(overlay)
-    if height_blend and ("displacement" not in base_maps or "displacement" not in overlay_maps):
-        raise ValueError("Height blending requires displacement in both materials.")
-
-    base_data = _bake_gltf_arrays(base, shape, device, seed)
+    base_data, base_height = _bake_gltf_arrays(base, shape, device, seed, "occlusion" in base_maps)
     device = base_data.device
-    overlay_data = _bake_gltf_arrays(overlay, shape, device, seed)
+    if not height_blend:
+        base_height = wp.empty((0, 0), dtype=float, device=device)
+    overlay_data, overlay_height = _bake_gltf_arrays(overlay, shape, device, seed, "occlusion" in overlay_maps)
+    if not height_blend:
+        overlay_height = base_height
     if mask is None:
         weights = wp.empty((0, 0), dtype=float, device=device)
     elif isinstance(mask, wp.array):
         weights = mask.to(device)
     else:
         weights = wp.array(mask, dtype=float, device=device)
-    if height_blend:
-        base_height = bake(base, shape, map_type="displacement", device=device, seed=seed)
-        overlay_height = bake(overlay, shape, map_type="displacement", device=device, seed=seed)
-    else:
-        base_height = overlay_height = wp.empty((0, 0), dtype=wp.vec3, device=device)
     mask_seed = 173 if seed is None else int(np.random.default_rng(seed).integers(1, 1 << 30))
     output = wp.empty_like(base_data)
     wp.launch(

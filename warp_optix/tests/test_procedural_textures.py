@@ -186,7 +186,7 @@ def test_material_mask_preserves_endpoints_and_blends_in_between():
     assert not np.array_equal(procedural[0], maps[0])
 
 
-@pytest.mark.parametrize("material", ["AcousticFoam001", "Rubber001"])
+@pytest.mark.parametrize("material", ["AcousticFoam001", "Rubber001", "RoofingTiles013A"])
 def test_dark_surface_packs_color_with_sub_byte_precision(material):
     shape = (256, 293)
     images, properties = textures.bake_gltf(material, shape, device="cpu")

@@ -290,7 +290,6 @@ def _show(gallery, *, show_labels=True):
 
     api = gallery.api
     frames_left = 32
-    pending_size = None
     previous_time = 0.0
     last_camera_change = float("-inf")
     settle_samples = api.samples_per_frame
@@ -301,15 +300,12 @@ def _show(gallery, *, show_labels=True):
         frames_left = 32
 
     def resize(width, height):
-        nonlocal pending_size
-        pending_size = width, height
+        nonlocal frames_left
+        gallery.resize(width, height, reframe=False)
+        frames_left = 32
 
     def prepare(elapsed):
-        nonlocal frames_left, pending_size, previous_time
-        if pending_size is not None:
-            gallery.resize(*pending_size, reframe=False)
-            pending_size = None
-            frames_left = 32
+        nonlocal previous_time
         controller.update(elapsed - previous_time)
         previous_time = elapsed
         return frames_left > 0

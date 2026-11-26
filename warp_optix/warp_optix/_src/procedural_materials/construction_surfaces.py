@@ -5,7 +5,8 @@
 
 import warp as wp
 
-from .mineral_surfaces import _cell_seed, _noise, _stone_chips
+from .mineral_surfaces import _cell_seed, _stone_chips
+from .sampling import periodic_noise as _noise
 
 
 @wp.func
