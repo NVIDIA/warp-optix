@@ -46,35 +46,6 @@ The material generators produce repeating UV tiles. Use repeat texture
 addressing. For layered materials, the built-in mask is periodic. A custom
 mask must also repeat cleanly to preserve a seamless result.
 
-### Direct kernel launches
-
-The module also exposes tileable linear RGB base color kernels for wood grain,
-marble, and staggered brick. Launch them with `wp.launch` over a CPU or CUDA
-array of shape `(height, width)` and dtype `wp.vec3`.
-
-```python
-import warp as wp
-from warp_optix import procedural_textures as textures
-
-image = wp.empty((256, 512), dtype=wp.vec3, device="cpu")
-light = wp.vec3(0.48, 0.24, 0.09)
-dark = wp.vec3(0.12, 0.044, 0.012)
-wp.launch(textures.wood, dim=image.shape, inputs=[light, dark, 16, 42], outputs=[image], device=image.device)
-```
-
-Supply palette colors in linear RGB. The kernels sample at texel centers, so
-use repeat addressing when sampling the baked image across tile boundaries.
-
-| Kernel | Inputs before the output array |
-| --- | --- |
-| `wood` | Light color, dark color, positive grain count, integer seed |
-| `marble` | Stone color, vein color, positive vein count, integer seed |
-| `brick` | Clay color, mortar color, positive column count, positive row pair count, mortar fraction in `[0, 1)` |
-
-Wood grain runs along the image rows. Brick uses two rows per row pair so the
-staggered pattern repeats vertically. Its mortar fraction is measured relative
-to the width or height of a brick cell on each axis.
-
 The `textures.reference_ids()` function lists the named recipes.
 Wheels and source checkouts expose the same catalog of 100 named recipes
 and 18 configurable presets. The recipes generate textures at the requested
@@ -82,9 +53,9 @@ resolution and use ambientCG's
 [CC0 references](https://docs.ambientcg.com/license/) for calibration.
 
 ```python
-asset = "Bricks113A"
-color = textures.bake(asset, (512, 512), device="cuda:0")
-roughness = textures.bake(asset, (512, 512), map_type="roughness", device="cuda:0")
+wood = textures.generate("Wood096", (512, 512), device="cuda:0")
+marble = textures.generate("Marble012", (512, 512), device="cuda:0")
+brick = textures.generate("Bricks113A", (512, 512), device="cuda:0")
 ```
 
 All reference materials provide `color`, `normal`, `roughness`, and

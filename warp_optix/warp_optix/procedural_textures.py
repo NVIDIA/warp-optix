@@ -7,11 +7,8 @@ from warp_optix._src.procedural_materials.bake import (
     bake,
     bake_gltf,
     bake_layered_gltf,
-    brick,
-    marble,
     reference_ids,
     reference_maps,
-    wood,
 )
 from warp_optix._src.procedural_materials.catalog import (
     describe_material,
@@ -29,15 +26,12 @@ __all__ = [
     "bake",
     "bake_gltf",
     "bake_layered_gltf",
-    "brick",
     "describe_material",
     "generate",
     "generate_gltf",
     "list_materials",
-    "marble",
     "material_families",
     "metal_names",
     "reference_ids",
     "reference_maps",
-    "wood",
 ]
