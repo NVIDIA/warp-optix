@@ -4,7 +4,6 @@
 import numpy as np
 import pytest
 import warp as wp
-from warp_optix._src.procedural_materials import bake as material_bake
 from warp_optix.pathtracing import Scene
 
 from warp_optix import procedural_textures as textures
@@ -30,10 +29,7 @@ def test_new_material_families_provide_aligned_maps():
         "Bricks113A",
         "RoofingTiles013A",
     } <= set(ids)
-    if "Cork004" not in ids:
-        return
-    assert sum(asset.startswith("WoodFloor") for asset in ids) == 74
-    for material in ("Leather037", "Fabric004", "DiamondPlate009", "Bamboo001C", "Ice003", "Cork004"):
+    for material in ("Leather037", "Fabric004", "DiamondPlate009", "Ice003", "WoodFloor071"):
         assert {"color", "normal", "roughness", "displacement"} <= set(textures.reference_maps(material))
 
 
@@ -51,11 +47,19 @@ def test_reference_normals_have_unit_length():
         ("Metal064", ("metalness",)),
         ("RoofingTiles013A", ("occlusion", "opacity")),
         ("Rubber001", ()),
+        ("DiamondPlate009", ("occlusion", "metalness")),
+        ("WoodFloor007", ("occlusion",)),
+        ("WoodFloor041", ("occlusion",)),
+        ("WoodFloor052", ("occlusion",)),
+        ("Cork004", ()),
+        ("Bamboo001C", ("occlusion", "opacity")),
     ],
 )
-def test_default_materials_bake_without_fitted_data(monkeypatch, material, extra_maps):
-    monkeypatch.setattr(material_bake, "INDEX", {})
-    monkeypatch.setattr(material_bake, "DETAIL_INDEX", {})
+def test_materials_bake_without_fitted_data(monkeypatch, material, extra_maps):
+    def reject_file_load(*args, **kwargs):
+        pytest.fail("A procedural texture attempted to load a NumPy file.")
+
+    monkeypatch.setattr(np, "load", reject_file_load)
     expected = ("color", "normal", "roughness", "displacement", *extra_maps)
     assert material in textures.reference_ids()
     assert textures.reference_maps(material) == expected

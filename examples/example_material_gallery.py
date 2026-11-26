@@ -249,7 +249,7 @@ class Gallery:
 
     def annotations(self):
         width, height = self.api.width, self.api.height
-        variation = "reference fit" if self.seed is None else f"seed {self.seed}"
+        variation = "default variation" if self.seed is None else f"seed {self.seed}"
         yield f"Material gallery    Page {self.page + 1}/{self.page_count}    {variation}", width / 2, height - 24
         camera = self.api.viewer.camera
         view_projection = camera.get_view_matrix() @ camera.get_projection_matrix()

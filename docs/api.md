@@ -75,15 +75,11 @@ Wood grain runs along the image rows. Brick uses two rows per row pair so the
 staggered pattern repeats vertically. Its mortar fraction is measured relative
 to the width or height of a brick cell on each axis.
 
-The `textures.reference_ids()` function lists fixed recipe and reference IDs in
-the current installation. Default wheels include 112 discoverable IDs generated
-entirely by procedural recipes and ship zero fitted material archives.
-The checkout and full-catalog wheel also include the first batch of the
-[ambientCG popularity listing](https://ambientcg.com/list?type=material%2Cdecal%2Catlas&sort=popular),
-plus 22 selected surfaces such as leather, carbon fiber, diamond plate, cork,
-bamboo, and ice, and every material in the
-[WoodFloor category](https://ambientcg.com/list?category=WoodFloor&type=material&sort=popular)
-on November 25, 2026. The reference textures are [CC0](https://docs.ambientcg.com/license/).
+The `textures.reference_ids()` function lists the named recipes.
+Wheels and source checkouts expose the same catalog of 100 named recipes
+and 18 configurable presets. The recipes generate textures at the requested
+resolution and use ambientCG's
+[CC0 references](https://docs.ambientcg.com/license/) for calibration.
 
 ```python
 asset = "Bricks113A"
@@ -130,10 +126,9 @@ Bricks101 evaluate stone or brick boundaries and recess the joints. Concrete049
 embeds three sizes of mineral aggregate in a cement binder. For these materials
 the same surface features drive color, roughness, displacement and available
 occlusion. Normals come from periodic central differences of the baked height.
-They require no fitted image payload. The catalog also includes analytical
-concrete, asphalt, plaster, and ceramic and stone tiles. Eight original
-presets, including WhiteSubwayTile and BoardFormedConcrete, ship in both
-wheel configurations without fitted data. The direct ambientCG generators also
+The catalog also includes concrete, asphalt, plaster, and ceramic and stone
+tiles. Built-in recipes include WhiteSubwayTile and BoardFormedConcrete.
+The ambientCG-inspired generators also
 cover woven fabric, microfiber, wicker, acoustic foam, terrazzo, tactile paving,
 perforated sheet and riveted metal, and two styles of bark. Cutout coverage and
 beveled relief come from the same geometry for perforated sheet, wicker, and
@@ -153,34 +148,8 @@ Inspect at least one alternate seed under the same lighting. Check that pores,
 joints and chips appear at the same UVs in every map and that the texture tiles
 at both boundaries.
 
-The optional fitted textures combine localized, compressed coefficients with small,
-seamless patches of high-frequency detail sampled from the reference maps.
-Warp applies additional detail bands as the bake resolution goes up, including
-at 2048×2048 and 4096×4096. Sparse corrections retain the positions of hard
-edges such as plank joins and grout. Tileable gradient noise and jittered
-cellular spots vary the finest synthesized bands when a bake exceeds the
-source resolution. All maps use aligned patches and a shared coordinate
-deformation for a seeded variation. The normal follows the deformed surface.
-The coefficients and detail patches are stored in small compressed NumPy
-archives loaded on demand, so the bake needs no external images at runtime.
-Build a wheel with `--config-setting=cmake.define.WARP_OPTIX_FULL_MATERIAL_CATALOG=ON`
-to include the complete collection. The
-[fitting script](../examples/procedural_textures/fit.py) measures the benefit
-of higher resolutions for each map and allocates them within a storage budget.
-It regenerates the coefficients from extracted ambientCG maps and the
-[material list](../examples/procedural_textures/ambientcg-materials.txt).
-The [detail fitting script](../examples/procedural_textures/fit_detail.py)
-extracts and compresses the aligned detail patches. Rename the `NormalGL`,
-`AmbientOcclusion`, and other input files to match the map names above
-(for example, `Bricks113A_normal.jpg`).
-
-```bash
-python examples/procedural_textures/fit.py maps examples/procedural_textures/ambientcg-materials.txt material_catalog/models
-python examples/procedural_textures/fit_detail.py maps examples/procedural_textures/ambientcg-materials.txt material_catalog/detail --models material_catalog/models
-```
-
 The public API is `warp_optix.procedural_textures`. Material family generators,
-map packing, and coefficient decoding are in
+preset parameters, and map packing are in
 [`warp_optix/_src/procedural_materials`](../warp_optix/warp_optix/_src/procedural_materials).
 
 The material gallery shows 45 representative shader balls. Press **L** to

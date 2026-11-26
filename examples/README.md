@@ -59,17 +59,15 @@ uv run --extra pathtracing python examples/example_material_gallery.py --plastic
 ```
 
 Press **Left** or **Right** to browse the full library, **V** for a new seeded
-variation, and **R** to return to the reference fit. Use `--page` and `--seed`
+variation, and **R** to return to the default variation. Use `--page` and `--seed`
 to start at a particular page or variation. Add `--single` to inspect one
 material at a time at a larger scale. Use **WASD** to fly, **Q/E** to move down
 or up, left-drag to look, the mouse wheel to zoom, and **Home** to reset the view.
 The grid bakes at 1024×1024 and single-material view at 2048×2048 by default.
 For a 4K close-up, try `--single --texture-size 4096 --filter WoodFloor071`.
 Use `--filter WoodFloor` to browse all wood flooring materials together.
-Default wheels generate their entire catalog from procedural recipes.
-The checkout also includes the fitted catalog. Build with
-`--config-setting=cmake.define.WARP_OPTIX_FULL_MATERIAL_CATALOG=ON` to bundle it
-in a wheel.
+The wheel and source checkout expose the same procedural recipes. Each recipe
+generates its maps locally using Warp.
 
 ## Ray tracing with the core API
 
