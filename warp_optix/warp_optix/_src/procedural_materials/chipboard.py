@@ -5,11 +5,7 @@
 
 import warp as wp
 
-
-@wp.func
-def _chip_grain(uv: wp.vec2, seed: int, count: int):
-    wrapped = uv - wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
-    return wp.pnoise(wp.rand_init(seed), wrapped * float(count), count, count)
+from .sampling import wrap_uv, wrapped_noise
 
 
 @wp.func
@@ -83,10 +79,10 @@ def _wood_chip(grain: wp.vec2, seed: int, grain_id: int, count: int, resolution:
 @wp.func
 def chipboard(uv: wp.vec2, seed: int, resolution: float):
     """Return sRGB color, height, roughness, occlusion, metalness, and opacity."""
-    uv = uv - wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
-    grit = _chip_grain(uv, seed + 13, 419) * wp.smoothstep(360.0, 1500.0, resolution)
-    torn = _chip_grain(uv, seed + 19, 189) * wp.smoothstep(150.0, 560.0, resolution)
-    sawdust = _chip_grain(uv, seed + 23, 76)
+    uv = wrap_uv(uv)
+    grit = wrapped_noise(uv, seed + 13, 419, 419) * wp.smoothstep(360.0, 1500.0, resolution)
+    torn = wrapped_noise(uv, seed + 19, 189, 189) * wp.smoothstep(150.0, 560.0, resolution)
+    sawdust = wrapped_noise(uv, seed + 23, 76, 76)
     seam = wp.smoothstep(0.04, 0.39, 0.71 * sawdust + 0.48 * torn + 0.42 * grit)
     base = wp.vec3(0.677, 0.509, 0.308) + wp.vec3(0.085 * torn + 0.078 * grit - 0.16 * seam)
     small_h, small_face, small_uv, small_tone, small_id = _strands(uv, seed + 37, 78, resolution, torn)

@@ -6,6 +6,7 @@
 import warp as wp
 
 from .sampling import periodic_noise as _noise
+from .sampling import wrap_uv
 
 
 @wp.func
@@ -110,7 +111,7 @@ def _reinforcement(uv: wp.vec2, seed: int, resolution: float):
 
 @wp.func
 def industrial_surface(uv: wp.vec2, seed: int, resolution: float, style: int):
-    uv -= wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
+    uv = wrap_uv(uv)
     if style == 0:
         return _rope(uv, seed, resolution)
     if style == 1:

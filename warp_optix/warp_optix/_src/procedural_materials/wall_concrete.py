@@ -5,14 +5,13 @@
 
 import warp as wp
 
+from .sampling import cell_index
 from .sampling import periodic_noise as _noise
 
 
 @wp.func
 def _cell_random(seed: int, cell: wp.vec2, sx: int, sy: int):
-    col = (int(cell[0]) % sx + sx) % sx
-    row = (int(cell[1]) % sy + sy) % sy
-    return wp.rand_init(seed, col + sx * row)
+    return wp.rand_init(seed, cell_index(int(cell[0]), int(cell[1]), sx, sy))
 
 
 @wp.func

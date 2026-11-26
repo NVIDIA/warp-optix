@@ -5,7 +5,8 @@
 
 import warp as wp
 
-from .mineral_surfaces import _cell_seed, _stone_chips
+from .mineral_surfaces import _stone_chips
+from .sampling import cell_index, nearest_cells, wrap_index
 from .sampling import periodic_noise as _noise
 
 
@@ -21,15 +22,15 @@ def _plywood_edge(uv: wp.vec2, seed: int, resolution: float):
     along = float(period) * uv[1] + 0.11 * _noise(uv, seed + 1, 4, 11)
     ply = int(wp.floor(along))
     local = along - float(ply)
-    state = _cell_seed(seed, ply, 0, period)
+    state = wp.rand_init(seed, cell_index(ply, 0, period, period))
     tone = wp.randf(state, -0.066, 0.056)
     # Rotary veneer alternates cross sections and longitudinal fibers.
     across_grain = _noise(uv, seed + 4, 234, 67)
     long_grain = _noise(uv, seed + 8, 39, 279)
-    layer = (ply % period + period) % period
+    layer = wrap_index(ply, period)
     grain = wp.lerp(long_grain, across_grain, float(layer & 1))
     fiber = _noise(uv, seed + 7, 153, 441) * wp.smoothstep(500.0, 1450.0, resolution)
-    state = _cell_seed(seed + 15, ply, 0, period)
+    state = wp.rand_init(seed + 15, cell_index(ply, 0, period, period))
     glue = wp.randf(state, 0.036, 0.076)
     aa = wp.min(0.024, 0.35 * float(period) / resolution)
     joint = 1.0 - wp.smoothstep(glue - aa, glue + 0.018 + aa, wp.min(local, 1.0 - local))
@@ -62,7 +63,7 @@ def _painted_drywall(uv: wp.vec2, seed: int, resolution: float):
 def _asphalt_shingles(uv: wp.vec2, seed: int, resolution: float):
     y = 10.0 * uv[1] + 0.015 * _noise(uv, seed + 1, 12, 11)
     row = int(wp.floor(y))
-    row_rng = _cell_seed(seed, row, 0, 10)
+    row_rng = wp.rand_init(seed, cell_index(row, 0, 10, 10))
     stagger = wp.randf(row_rng)
     shoulder = wp.randf(row_rng, 0.43, 0.66)
     row_tone = wp.randf(row_rng, -0.025, 0.028)
@@ -70,7 +71,7 @@ def _asphalt_shingles(uv: wp.vec2, seed: int, resolution: float):
     tab = int(wp.floor(x))
     p = x - float(tab)
     q = y - float(row)
-    tab_rng = wp.rand_init(seed + 5, (tab % 7 + 7) % 7 + 7 * ((row % 10 + 10) % 10))
+    tab_rng = wp.rand_init(seed + 5, cell_index(tab, row, 7, 10))
     pigment = wp.randf(tab_rng, -0.073, 0.063)
     aa = wp.min(0.012, 4.0 / resolution)
     lap = wp.smoothstep(0.015 - aa, 0.053 + aa, wp.min(q, 1.0 - q))
@@ -92,30 +93,10 @@ def _asphalt_shingles(uv: wp.vec2, seed: int, resolution: float):
 
 @wp.func
 def _galvanized_zinc(uv: wp.vec2, seed: int, resolution: float):
-    period = 25
-    grid = uv * float(period)
-    x, y = int(wp.floor(grid[0])), int(wp.floor(grid[1]))
-    nearest = float(100.0)
-    second = float(100.0)
-    delta = wp.vec2(0.0)
-    crystal = float(0.0)
-    next_crystal = float(0.0)
-    angle = float(0.0)
-    for dy in range(-1, 2):
-        for dx in range(-1, 2):
-            rng = _cell_seed(seed, x + dx, y + dy, period)
-            point = wp.vec2(float(x + dx) + wp.randf(rng, 0.14, 0.86), float(y + dy) + wp.randf(rng, 0.14, 0.86))
-            offset = grid - point
-            d = wp.dot(offset, offset)
-            if d < nearest:
-                second, nearest = nearest, d
-                delta = offset
-                next_crystal = crystal
-                crystal = wp.randf(rng)
-                angle = wp.randf(rng, -wp.pi, wp.pi)
-            elif d < second:
-                second = d
-                next_crystal = wp.randf(rng)
+    nearest, second, delta, _, state, next_state = nearest_cells(uv, seed, 25, 0.14, 0.86)
+    crystal = wp.randf(state)
+    next_crystal = wp.randf(next_state)
+    angle = wp.randf(state, -wp.pi, wp.pi)
     # Zinc solidifies as spangles with different reflectances and dendrites
     # along the three hexagonal crystal axes.
     radial = wp.atan2(delta[1], delta[0]) - angle

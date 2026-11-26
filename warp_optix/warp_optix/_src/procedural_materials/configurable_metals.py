@@ -13,7 +13,7 @@ import numpy as np
 import warp as wp
 
 from .relief import _rgba8, _write_normals
-from .sampling import texel_uv
+from .sampling import cell_index, texel_uv
 
 # Normal-incidence sRGB reflectance for clean conductors from Filament's material
 # reference. Stainless steel and chromium use representative neutral values.
@@ -125,7 +125,7 @@ def _scratch_field(
     for row in range(2):
         for col in range(2):
             cx, cy = x + col, y + row
-            index = (cx % count + count) % count + count * ((cy % count + count) % count)
+            index = cell_index(cx, cy, count, count)
             state = wp.rand_init(seed, index)
             pick = wp.randf(state)
             density = amount if not coarse else 0.84 * amount

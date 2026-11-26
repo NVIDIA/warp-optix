@@ -5,13 +5,9 @@
 
 import warp as wp
 
+from .sampling import cell_index
+from .sampling import wrapped_noise as _noise
 from .weathered_surfaces import _soil_cell
-
-
-@wp.func
-def _noise(uv: wp.vec2, seed: int, nx: int, ny: int):
-    uv -= wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
-    return wp.pnoise(wp.rand_init(seed), wp.vec2(float(nx) * uv[0], float(ny) * uv[1]), nx, ny)
 
 
 @wp.func
@@ -32,7 +28,7 @@ def _blade_layer(
     for dy in range(2):
         for dx in range(2):
             x, y = col + dx, row + dy
-            index = (x % count + count) % count + count * ((y % count + count) % count)
+            index = cell_index(x, y, count, count)
             rng = wp.rand_init(seed, index)
             center = wp.vec2(float(x) + wp.randf(rng, -0.16, 0.16), float(y) + wp.randf(rng, -0.16, 0.16))
             q = grid - center

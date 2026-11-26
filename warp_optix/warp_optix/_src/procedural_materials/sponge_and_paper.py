@@ -5,12 +5,8 @@
 
 import warp as wp
 
+from .sampling import cell_index, wrap_uv
 from .sampling import periodic_noise as _noise
-
-
-@wp.func
-def _wrapped_cell(x: int, y: int, count: int) -> int:
-    return (x % count + count) % count + count * ((y % count + count) % count)
 
 
 @wp.func
@@ -25,7 +21,7 @@ def _pore_layer(uv: wp.vec2, seed: int, count: int, resolution: float):
     for dy in range(-1, 2):
         for dx in range(-1, 2):
             x, y = col + dx, row + dy
-            state = wp.rand_init(seed, _wrapped_cell(x, y, count))
+            state = wp.rand_init(seed, cell_index(x, y, count, count))
             mid = wp.vec2(float(x), float(y)) + wp.vec2(wp.randf(state, 0.15, 0.85), wp.randf(state, 0.15, 0.85))
             delta = grid - mid
             if wp.dot(delta, delta) < 0.285:
@@ -48,7 +44,7 @@ def _pore_layer(uv: wp.vec2, seed: int, count: int, resolution: float):
 def _pinholes(uv: wp.vec2, seed: int, resolution: float) -> float:
     grid = uv * 161.0
     cell = wp.vec2(wp.floor(grid[0]), wp.floor(grid[1]))
-    state = wp.rand_init(seed, _wrapped_cell(int(cell[0]), int(cell[1]), 161))
+    state = wp.rand_init(seed, cell_index(int(cell[0]), int(cell[1]), 161, 161))
     center = wp.vec2(wp.randf(state, 0.26, 0.74), wp.randf(state, 0.26, 0.74))
     radius = wp.randf(state, 0.087, 0.192)
     relative = grid - cell - center
@@ -82,7 +78,7 @@ def _sponge(uv: wp.vec2, seed: int, resolution: float):
 def _pressed_fiber(uv: wp.vec2, seed: int, count: int, resolution: float):
     grid = uv * float(count)
     col, row = int(wp.floor(grid[0])), int(wp.floor(grid[1]))
-    state = wp.rand_init(seed, _wrapped_cell(col, row, count))
+    state = wp.rand_init(seed, cell_index(col, row, count, count))
     center = wp.vec2(float(col), float(row)) + wp.vec2(wp.randf(state, 0.35, 0.65), wp.randf(state, 0.35, 0.65))
     relative = grid - center
     angle = wp.randf(state, -0.76, 0.76) + 0.36
@@ -119,7 +115,7 @@ def _paper(uv: wp.vec2, seed: int, resolution: float):
 
 @wp.func
 def sponge_or_paper(uv: wp.vec2, seed: int, resolution: float, style: int):
-    uv -= wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
+    uv = wrap_uv(uv)
     if style == 0:
         return _sponge(uv, seed, resolution)
     return _paper(uv, seed, resolution)

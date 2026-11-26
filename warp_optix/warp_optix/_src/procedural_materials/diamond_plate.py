@@ -5,6 +5,7 @@
 
 import warp as wp
 
+from .sampling import cell_index, wrap_uv
 from .sampling import periodic_noise as _noise
 
 
@@ -22,7 +23,7 @@ def _tread_profile(uv: wp.vec2, seed: int, resolution: float):
         odd = y & 1
         x = grid[0] - 0.5 * float(odd)
         col = int(wp.floor(x))
-        key = (col % cols + cols) % cols + cols * ((y % rows + rows) % rows)
+        key = cell_index(col, y, cols, rows)
         state = wp.rand_init(seed + 31, key)
         px = x - float(col) - 0.5 + wp.randf(state, -0.012, 0.012)
         py = (grid[1] - float(y) - 0.5) * (float(cols) / float(rows)) + wp.randf(state, -0.009, 0.009)
@@ -47,7 +48,7 @@ def _tread_profile(uv: wp.vec2, seed: int, resolution: float):
 
 @wp.func
 def diamond_plate(uv: wp.vec2, seed: int, resolution: float):
-    uv = uv - wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
+    uv = wrap_uv(uv)
     shoulder, crown, rim = _tread_profile(uv, seed, resolution)
     patina = _noise(uv, seed + 3, 11, 13) + 0.60 * _noise(uv, seed + 5, 31, 33)
     grain = _noise(uv, seed + 7, 118, 129)

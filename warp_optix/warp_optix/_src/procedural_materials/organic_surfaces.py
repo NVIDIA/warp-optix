@@ -5,15 +5,12 @@
 
 import warp as wp
 
+from .sampling import cell_index
+
 
 @wp.func
 def _periodic_noise(state: wp.uint32, uv: wp.vec2, nx: int, ny: int):
     return wp.pnoise(state, wp.vec2(uv[0] * float(nx), uv[1] * float(ny)), nx, ny)
-
-
-@wp.func
-def _cell_state(seed: int, x: int, y: int, nx: int, ny: int):
-    return wp.rand_init(seed, (x % nx + nx) % nx + nx * ((y % ny + ny) % ny))
 
 
 @wp.func
@@ -43,7 +40,7 @@ def _fragment(uv: wp.vec2, frequency: int, seed: int, resolution: float):
     """One jittered and rotated faceted fragment per cell, with empty cells allowed."""
     p = uv * float(frequency)
     cell = wp.vec2(wp.floor(p[0]), wp.floor(p[1]))
-    state = _cell_state(seed, int(cell[0]), int(cell[1]), frequency, frequency)
+    state = wp.rand_init(seed, cell_index(int(cell[0]), int(cell[1]), frequency, frequency))
     radius = wp.randf(state, 0.10, 0.40)
     # Keep each fragment away from its cell perimeter. Give small fragments
     # more room to move so the placement does not expose the grid.

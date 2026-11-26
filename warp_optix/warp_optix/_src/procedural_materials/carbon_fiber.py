@@ -5,12 +5,8 @@
 
 import warp as wp
 
-
-@wp.func
-def _fiber_noise(uv: wp.vec2, seed: int, columns: int, rows: int):
-    wrapped = uv - wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
-    grid = wp.vec2(wrapped[0] * float(columns), wrapped[1] * float(rows))
-    return wp.pnoise(wp.rand_init(seed), grid, columns, rows)
+from .sampling import wrap_index, wrap_uv
+from .sampling import wrapped_noise as _fiber_noise
 
 
 @wp.func
@@ -18,7 +14,7 @@ def carbon_fiber(uv: wp.vec2, seed: int, resolution: float):
     """Return sRGB color, height, roughness, occlusion, metalness, and opacity."""
     # The reference tile contains five repeats of a four-yarn twill, with
     # each yarn crossing over two neighbours and then underneath two.
-    uv = uv - wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
+    uv = wrap_uv(uv)
     count = 20
     x_wander = _fiber_noise(uv, seed + 11, 11, 3)
     y_wander = _fiber_noise(uv, seed + 23, 3, 11)
@@ -27,8 +23,8 @@ def carbon_fiber(uv: wp.vec2, seed: int, resolution: float):
     col = int(wp.floor(grid[0]))
     row = int(wp.floor(grid[1]))
     phase = (col + row + 3) & 3
-    wrapped_col = (col % count + count) % count
-    wrapped_row = (row % count + count) % count
+    wrapped_col = wrap_index(col, count)
+    wrapped_row = wrap_index(row, count)
     across = grid[1] - float(row)
     along = 0.5 * (float(phase & 1) + grid[0] - float(col))
     width_id = wrapped_row

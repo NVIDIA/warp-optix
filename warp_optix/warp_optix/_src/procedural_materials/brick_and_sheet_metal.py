@@ -6,11 +6,7 @@
 import warp as wp
 
 from .sampling import periodic_noise as _noise
-
-
-@wp.func
-def _periodic_index(index: int, period: int) -> int:
-    return (index % period + period) % period
+from .sampling import wrap_index, wrap_uv
 
 
 @wp.func
@@ -20,23 +16,23 @@ def _ashlar_course(uv: wp.vec2, seed: int):
     course_uv = 4.0 * uv[1] + 0.095 * _noise(uv, seed + 1, 5, 4)
     course = int(wp.floor(course_uv))
     course_phase = course_uv - float(course)
-    row = _periodic_index(course, 4)
+    row = wrap_index(course, 4)
     row_state = wp.rand_init(seed + 11, row)
     across = 5.0 * uv[0] + wp.randf(row_state, 0.10, 2.10)
     across += 0.081 * _noise(uv, seed + 2, 5, 7)
     column = int(wp.floor(across))
 
     # The adjoining blocks share the same jittered endpoints.
-    left = float(column) + wp.randf(wp.rand_init(seed + 34 + row, _periodic_index(column, 5)), -0.31, 0.31)
+    left = float(column) + wp.randf(wp.rand_init(seed + 34 + row, wrap_index(column, 5)), -0.31, 0.31)
     if across < left:
         column -= 1
-        left = float(column) + wp.randf(wp.rand_init(seed + 34 + row, _periodic_index(column, 5)), -0.31, 0.31)
-    right = float(column + 1) + wp.randf(wp.rand_init(seed + 34 + row, _periodic_index(column + 1, 5)), -0.31, 0.31)
+        left = float(column) + wp.randf(wp.rand_init(seed + 34 + row, wrap_index(column, 5)), -0.31, 0.31)
+    right = float(column + 1) + wp.randf(wp.rand_init(seed + 34 + row, wrap_index(column + 1, 5)), -0.31, 0.31)
     if across > right:
         column += 1
         left = right
-        right = float(column + 1) + wp.randf(wp.rand_init(seed + 34 + row, _periodic_index(column + 1, 5)), -0.31, 0.31)
-    block_id = 5 * row + _periodic_index(column, 5)
+        right = float(column + 1) + wp.randf(wp.rand_init(seed + 34 + row, wrap_index(column + 1, 5)), -0.31, 0.31)
+    block_id = 5 * row + wrap_index(column, 5)
     state = wp.rand_init(seed + 49, block_id)
     split = wp.randf(state, 0.28, 0.72)
     lower = float(0.0)
@@ -66,7 +62,7 @@ def _ashlar_course(uv: wp.vec2, seed: int):
 
 @wp.func
 def ashlar_masonry(uv: wp.vec2, seed: int, resolution: float):
-    uv -= wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
+    uv = wrap_uv(uv)
     distance, local, block_id = _ashlar_course(uv, seed)
     state = wp.rand_init(seed + 57, block_id)
     tint = wp.randf(state, -0.105, 0.081)
@@ -121,7 +117,7 @@ def ashlar_masonry(uv: wp.vec2, seed: int, resolution: float):
 def rusted_sheet_metal(uv: wp.vec2, seed: int, resolution: float):
     # Low frequencies organize oxide into contiguous islands. High-frequency
     # fronts break up their edges and expose small pockets of the steel.
-    uv -= wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
+    uv = wrap_uv(uv)
     warp_x = _noise(uv, seed + 1, 11, 13)
     warp_y = _noise(uv, seed + 2, 13, 11)
     position = uv + 0.018 * wp.vec2(warp_x, warp_y)

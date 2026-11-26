@@ -7,11 +7,12 @@ import warp as wp
 
 from .mineral_surfaces import _stone_chips
 from .sampling import periodic_noise as _noise
+from .sampling import wrap_index, wrap_uv
 
 
 @wp.func
 def cork_surface(uv: wp.vec2, seed: int, resolution: float):
-    uv -= wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
+    uv = wrap_uv(uv)
     warp = 0.0032 * wp.vec2(_noise(uv, seed + 1, 159, 133), _noise(uv, seed + 2, 137, 161))
     chips, tint, _ = _stone_chips(uv + warp, seed + 11, 121, resolution)
     crumb, crumb_tint, _ = _stone_chips(uv - 0.62 * warp, seed + 12, 238, resolution)
@@ -34,7 +35,7 @@ def cork_surface(uv: wp.vec2, seed: int, resolution: float):
 
 @wp.func
 def bamboo_screen(uv: wp.vec2, seed: int, resolution: float):
-    uv -= wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
+    uv = wrap_uv(uv)
     count = 24
     grid = uv[0] * float(count)
     col = int(wp.floor(grid))
@@ -46,7 +47,7 @@ def bamboo_screen(uv: wp.vec2, seed: int, resolution: float):
     weather = _noise(uv, seed + 2, 29, 37)
     for step in range(-1, 2):
         stalk = col + step
-        key = (stalk % count + count) % count
+        key = wrap_index(stalk, count)
         state = wp.rand_init(seed + 3, key)
         shift = wp.randf(state, -0.08, 0.08)
         width = wp.randf(state, 0.434, 0.568)

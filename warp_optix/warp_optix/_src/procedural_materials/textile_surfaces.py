@@ -6,6 +6,7 @@
 import warp as wp
 
 from .sampling import periodic_noise as _noise
+from .sampling import wrap_index, wrap_uv
 
 
 @wp.func
@@ -69,8 +70,8 @@ def _weave(uv: wp.vec2, seed: int, resolution: float, cloth: bool):
     grain_weight = wp.smoothstep(448.0, 1500.0, resolution)
     along_weft = _noise(uv, seed + 11, 43, 713) * grain_weight
     along_warp = _noise(uv, seed + 13, 431, 51) * grain_weight
-    row_seed = wp.rand_init(seed + 5, (row % rows + rows) % rows)
-    post_seed = wp.rand_init(seed + 9, (post % columns + columns) % columns)
+    row_seed = wp.rand_init(seed + 5, wrap_index(row, rows))
+    post_seed = wp.rand_init(seed + 9, wrap_index(post, columns))
     weft_tone = wp.randf(row_seed, -0.047, 0.047) + 0.073 * along_weft
     warp_tone = wp.randf(post_seed, -0.037, 0.037) + 0.054 * along_warp
     if cloth:
@@ -90,7 +91,7 @@ def _weave(uv: wp.vec2, seed: int, resolution: float, cloth: bool):
 
 @wp.func
 def textile_surface(uv: wp.vec2, seed: int, resolution: float, style: int):
-    uv -= wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
+    uv = wrap_uv(uv)
     if style == 0:
         return _foam(uv, seed, resolution)
     return _weave(uv, seed, resolution, style == 2)

@@ -5,6 +5,7 @@
 
 import warp as wp
 
+from .sampling import cell_index, wrap_index, wrap_uv
 from .sampling import periodic_noise as _noise
 
 
@@ -22,7 +23,7 @@ def _roof_course(uv: wp.vec2, seed: int, resolution: float, dark: bool):
     grain = _noise(uv, seed + 13, 591, 643) * wp.smoothstep(300.0, 1260.0, resolution)
     pattern_x = uv[0] * float(columns) + 0.023 * _noise(uv, seed + 2, 11, 17) + 0.007 * patches
     col = int(wp.floor(pattern_x))
-    column_seed = wp.rand_init(seed + 17, (col % columns + columns) % columns)
+    column_seed = wp.rand_init(seed + 17, wrap_index(col, columns))
     x = pattern_x - wp.floor(pattern_x)
     pattern_y = uv[1] * float(courses) + course_phase + wp.randf(column_seed, -0.014, 0.014)
     # Each molded nose sits a little forward at the crown of the tile.
@@ -30,7 +31,7 @@ def _roof_course(uv: wp.vec2, seed: int, resolution: float, dark: bool):
     pattern_y += nose * wp.cos(2.0 * wp.pi * x) + nose * _noise(uv, seed + 7, 13, 19)
     row = int(wp.floor(pattern_y))
     y = pattern_y - wp.floor(pattern_y)
-    tile = (col % columns + columns) % columns + columns * ((row % courses + courses) % courses)
+    tile = cell_index(col, row, columns, courses)
     material_seed = wp.rand_init(seed + 29, tile)
     pigment = wp.randf(material_seed, -0.024, 0.024)
     thickness = wp.randf(material_seed, 0.273, 0.291)
@@ -106,7 +107,7 @@ def _hex_mosaic(uv: wp.vec2, seed: int, resolution: float):
             local = delta
             tile_x, tile_y = col, row
 
-    tile = (tile_x % columns + columns) % columns + columns * ((tile_y % rows + rows) % rows)
+    tile = cell_index(tile_x, tile_y, columns, rows)
     state = wp.rand_init(seed + 19, tile)
     dye = wp.randf(state, -0.070, 0.057)
     tilt = wp.vec2(wp.randf(state, -0.24, 0.24), wp.randf(state, -0.24, 0.24))
@@ -129,7 +130,7 @@ def _hex_mosaic(uv: wp.vec2, seed: int, resolution: float):
 
 @wp.func
 def roof_or_mosaic(uv: wp.vec2, seed: int, resolution: float, style: int):
-    uv -= wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
+    uv = wrap_uv(uv)
     if style == 2:
         return _hex_mosaic(uv, seed, resolution)
     return _roof_course(uv, seed, resolution, style == 0)

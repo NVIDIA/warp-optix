@@ -5,36 +5,15 @@
 
 import warp as wp
 
+from .sampling import cell_index, nearest_cells
 from .sampling import periodic_noise as _noise
 
 
 @wp.func
-def _cell_seed(seed: int, x: int, y: int, n: int):
-    return wp.rand_init(seed, (x % n + n) % n + n * ((y % n + n) % n))
-
-
-@wp.func
 def _stone_chips(uv: wp.vec2, seed: int, n: int, resolution: float):
-    grid = uv * float(n)
-    ix, iy = int(wp.floor(grid[0])), int(wp.floor(grid[1]))
-    nearest = float(100.0)
-    second = float(100.0)
-    mineral = float(0.0)
-    size = float(0.0)
-    for dy in range(-1, 2):
-        for dx in range(-1, 2):
-            rng = _cell_seed(seed, ix + dx, iy + dy, n)
-            center = wp.vec2(float(ix + dx), float(iy + dy))
-            center += wp.vec2(wp.randf(rng, 0.07, 0.93), wp.randf(rng, 0.07, 0.93))
-            delta = grid - center
-            distance = wp.dot(delta, delta)
-            if distance < nearest:
-                second = nearest
-                nearest = distance
-                mineral = wp.randf(rng)
-                size = wp.randf(rng, 0.12, 0.63)
-            elif distance < second:
-                second = distance
+    nearest, second, _offset, _next_offset, state, _next_state = nearest_cells(uv, seed, n, 0.07, 0.93)
+    mineral = wp.randf(state)
+    size = wp.randf(state, 0.12, 0.63)
     # Keep each heterogeneous stone inside its own angular cell.
     dist = wp.min(size - wp.sqrt(nearest), 0.85 * (second - nearest) - 0.025)
     aa = 0.47 * float(n) / resolution
@@ -110,7 +89,7 @@ def riveted_metal(uv: wp.vec2, seed: int, resolution: float):
     row = int(wp.floor(rows))
     columns = uv[0] * 4.0 + 0.5 * float(row & 1)
     col = int(wp.floor(columns))
-    state = _cell_seed(seed, col, row, 12)
+    state = wp.rand_init(seed, cell_index(col, row, 12, 12))
     p = wp.vec2(columns - wp.floor(columns), rows - wp.floor(rows))
     seam = wp.min(wp.min(p[0], 1.0 - p[0]), wp.min(p[1], 1.0 - p[1]))
     panel = wp.smoothstep(0.0, 0.007 + 2.0 / resolution, seam)

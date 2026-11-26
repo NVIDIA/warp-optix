@@ -5,6 +5,7 @@
 
 import warp as wp
 
+from .sampling import nearest_cells
 from .sampling import periodic_noise as _noise
 
 
@@ -30,27 +31,9 @@ def _cardboard(uv: wp.vec2, seed: int, resolution: float):
 
 @wp.func
 def _soil_cell(uv: wp.vec2, seed: int, count: int):
-    p = uv * float(count)
-    x, y = int(wp.floor(p[0])), int(wp.floor(p[1]))
-    nearest, next_nearest = float(10.0), float(10.0)
-    offset = wp.vec2(0.0)
-    next_offset = wp.vec2(0.0)
-    tint = float(0.0)
-    for j in range(-1, 2):
-        for i in range(-1, 2):
-            col, row = x + i, y + j
-            wrapped = (col % count + count) % count + count * ((row % count + count) % count)
-            state = wp.rand_init(seed, wrapped)
-            center = wp.vec2(float(col), float(row)) + wp.vec2(wp.randf(state, 0.10, 0.90), wp.randf(state, 0.10, 0.90))
-            delta = center - p
-            distance = wp.dot(delta, delta)
-            if distance < nearest:
-                next_nearest, next_offset = nearest, offset
-                nearest, offset = distance, delta
-                tint = wp.randf(state, -1.0, 1.0)
-            elif distance < next_nearest:
-                next_nearest, next_offset = distance, delta
-    border = 0.5 * (next_nearest - nearest) / wp.max(0.01, wp.length(next_offset - offset))
+    nearest, second, offset, next_offset, state, _ = nearest_cells(uv, seed, count, 0.10, 0.90)
+    tint = wp.randf(state, -1.0, 1.0)
+    border = 0.5 * (second - nearest) / wp.max(0.01, wp.length(next_offset - offset))
     return border, tint
 
 

@@ -5,10 +5,12 @@
 
 import warp as wp
 
+from .sampling import wrap_uv
+
 
 @wp.func
 def _grain_noise(state: wp.uint32, point: wp.vec2, nx: int, ny: int):
-    wrapped = point - wp.vec2(wp.floor(point[0]), wp.floor(point[1]))
+    wrapped = wrap_uv(point)
     return wp.pnoise(state, wp.vec2(float(nx) * wrapped[0], float(ny) * wrapped[1]), nx, ny)
 
 

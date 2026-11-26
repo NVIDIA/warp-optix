@@ -5,17 +5,13 @@
 
 import warp as wp
 
-
-@wp.func
-def _noise(uv: wp.vec2, seed: int, count: int):
-    wrapped = uv - wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
-    return wp.pnoise(wp.rand_init(seed), wrapped * float(count), count, count)
+from .sampling import wrap_index, wrap_uv, wrapped_noise
 
 
 @wp.func
 def _fold_corner(x: int, y: int, count: int, seed: int):
-    x = (x % count + count) % count
-    y = (y % count + count) % count
+    x = wrap_index(x, count)
+    y = wrap_index(y, count)
     return wp.randf(wp.rand_init(seed, x + count * y), -1.0, 1.0)
 
 
@@ -53,8 +49,8 @@ def _folds(uv: wp.vec2, count: int, seed: int):
 
 @wp.func
 def _foil(uv: wp.vec2, seed: int, resolution: float):
-    sway = wp.vec2(_noise(uv, seed + 17, 6), _noise(uv, seed + 23, 7))
-    wrinkle = wp.vec2(_noise(uv, seed + 29, 17), _noise(uv, seed + 31, 19))
+    sway = wp.vec2(wrapped_noise(uv, seed + 17, 6, 6), wrapped_noise(uv, seed + 23, 7, 7))
+    wrinkle = wp.vec2(wrapped_noise(uv, seed + 29, 17, 17), wrapped_noise(uv, seed + 31, 19, 19))
     bent = uv + 0.073 * sway + 0.024 * wrinkle
     broad, _ = _folds(bent, 9, seed + 37)
     cross = wp.vec2(bent[0] + bent[1], bent[1] - bent[0])
@@ -62,7 +58,7 @@ def _foil(uv: wp.vec2, seed: int, resolution: float):
     small, fine_edge = _folds(bent + 0.012 * wrinkle, 51, seed + 53)
     fine = wp.smoothstep(100.0, 350.0, resolution)
     heights = 0.496 + 0.201 * broad + 0.222 * angular + 0.101 * fine * small
-    brushed = _noise(uv, seed + 59, 193) * wp.smoothstep(230.0, 880.0, resolution)
+    brushed = wrapped_noise(uv, seed + 59, 193, 193) * wp.smoothstep(230.0, 880.0, resolution)
     color = wp.vec3(0.50 + 0.011 * brushed + 0.0045 * angular)
     roughness = 0.111 + 0.017 * brushed + 0.042 * fine_edge + 0.027 * edge
     occlusion = 0.996 - 0.057 * edge * (1.0 - wp.smoothstep(-0.55, 0.15, angular)) - 0.016 * fine_edge
@@ -97,7 +93,7 @@ def _moss_shoots(uv: wp.vec2, seed: int, resolution: float):
                 twist = wp.randf(state, -0.53, 0.57)
                 phase = (theta * float(branches) + twist * r * r) / (2.0 * wp.PI)
                 branch = int(wp.floor(phase + 0.5))
-                branch_id = (branch % branches + branches) % branches
+                branch_id = wrap_index(branch, branches)
                 frond = wp.rand_init(seed + 97, 9 * (col + count * row) + branch_id)
                 length = wp.randf(frond, 0.62, 1.14)
                 width = wp.randf(frond, 0.24, 0.48)
@@ -127,8 +123,8 @@ def _forest_litter(uv: wp.vec2, seed: int, resolution: float):
     grid = uv * float(count)
     x = int(wp.floor(grid[0]))
     y = int(wp.floor(grid[1]))
-    col = (x % count + count) % count
-    row = (y % count + count) % count
+    col = wrap_index(x, count)
+    row = wrap_index(y, count)
     state = wp.rand_init(seed, col + count * row)
     present = wp.randf(state)
     mask = float(0.0)
@@ -153,13 +149,13 @@ def _forest_litter(uv: wp.vec2, seed: int, resolution: float):
 
 @wp.func
 def _moss(uv: wp.vec2, seed: int, resolution: float):
-    patches = _noise(uv, seed + 7, 7) + 0.57 * _noise(uv, seed + 11, 16)
-    deposit = _noise(uv, seed + 13, 39)
-    direction = wp.vec2(_noise(uv, seed + 17, 13), _noise(uv, seed + 19, 11))
+    patches = wrapped_noise(uv, seed + 7, 7, 7) + 0.57 * wrapped_noise(uv, seed + 11, 16, 16)
+    deposit = wrapped_noise(uv, seed + 13, 39, 39)
+    direction = wp.vec2(wrapped_noise(uv, seed + 17, 13, 13), wrapped_noise(uv, seed + 19, 11, 11))
     cover, tint, tips, age = _moss_shoots(uv + 0.009 * direction, seed + 23, resolution)
     soil = wp.vec3(0.263, 0.243, 0.176) + wp.vec3(0.098 * deposit + 0.059 * patches)
-    grit = _noise(uv, seed + 29, 329) * wp.smoothstep(230.0, 730.0, resolution)
-    pores = _noise(uv, seed + 37, 603) * wp.smoothstep(480.0, 1630.0, resolution)
+    grit = wrapped_noise(uv, seed + 29, 329, 329) * wp.smoothstep(230.0, 730.0, resolution)
+    pores = wrapped_noise(uv, seed + 37, 603, 603) * wp.smoothstep(480.0, 1630.0, resolution)
     leaf_micro = 0.13 * grit + 0.11 * pores
     healthy = wp.smoothstep(-0.42, 0.45, patches + 0.80 * tint - 0.42)
     wet = wp.smoothstep(0.02, 0.36, patches + 0.4 * deposit)
@@ -187,7 +183,7 @@ def _moss(uv: wp.vec2, seed: int, resolution: float):
 @wp.func
 def natural_or_foil(uv: wp.vec2, seed: int, resolution: float, style: int):
     """Return sRGB color, height, roughness, occlusion, metalness, and opacity."""
-    uv = uv - wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
+    uv = wrap_uv(uv)
     if style == 0:
         return _foil(uv, seed, resolution)
     return _moss(uv, seed, resolution)

@@ -6,6 +6,7 @@
 import warp as wp
 
 from .sampling import periodic_noise as _noise
+from .sampling import wrap_index, wrap_uv
 
 
 @wp.func
@@ -45,7 +46,7 @@ def _floor_board(local: wp.vec2, state: wp.uint32, seed: int, resolution: float,
 @wp.func
 def wood_floor_layout(uv: wp.vec2, seed: int, resolution: float, variant: int):
     """Return aligned maps for staggered oak, weathered boards, or chevron parquet."""
-    uv -= wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
+    uv = wrap_uv(uv)
     across_distance = float(0.0)
     along_distance = float(0.0)
     local = wp.vec2(0.0)
@@ -77,7 +78,7 @@ def wood_floor_layout(uv: wp.vec2, seed: int, resolution: float, variant: int):
         boards = 3 if knotty else 4
         across_distance = wp.min(local[1], 1.0 - local[1]) / 16.0
         along_distance = wp.min(local[0], 1.0 - local[0]) / float(boards)
-        key = course * boards + (board % boards + boards) % boards
+        key = course * boards + wrap_index(board, boards)
 
     state = wp.rand_init(seed + 61, key)
     board_tone = wp.randf(state, -1.0, 1.0)

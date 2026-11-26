@@ -31,8 +31,8 @@ from .relief import _rgba8, _write_normals
 from .roof_and_mosaic import roof_or_mosaic
 from .roofing_and_upholstery import dark_roof_tiles, grained_leather
 from .rubber_floor import crumb_rubber
+from .sampling import cell_index, texel_uv, wrap_index, wrap_uv
 from .sampling import periodic_noise as _noise
-from .sampling import texel_uv
 from .sponge_and_paper import sponge_or_paper
 from .surface_presets import (
     ANALYTIC_EXTRA_MAPS,
@@ -201,11 +201,11 @@ def _paver_surface(uv: wp.vec2, seed: int, resolution: float):
     grit = _noise(uv, seed + 9, 950, 650) * wp.smoothstep(475.0, 1900.0, resolution)
     y = 15.0 * uv[1] + 0.57 * bend + 0.16 * _noise(uv, seed + 2, 26, 13)
     row = int(wp.floor(y))
-    r = wp.rand_init(seed + 19, (row % 15 + 15) % 15)
+    r = wp.rand_init(seed + 19, wrap_index(row, 15))
     x = 20.0 * uv[0] + wp.randf(r) + 0.64 * _noise(uv, seed + 1, 8, 7)
     x += 0.29 * _noise(uv, seed + 3, 17, 6)
     col = int(wp.floor(x))
-    stone = wp.rand_init(seed + 31, ((col % 20 + 20) % 20) + 20 * ((row % 15 + 15) % 15))
+    stone = wp.rand_init(seed + 31, cell_index(col, row, 20, 15))
     tint = wp.randf(stone, -0.062, 0.062)
     radius = wp.randf(stone, 0.09, 0.21)
     q = wp.vec2(wp.abs(x - wp.floor(x) - 0.5) - 0.47 + radius, wp.abs(y - wp.floor(y) - 0.5) - 0.46 + radius)
@@ -227,8 +227,8 @@ def _paver_surface(uv: wp.vec2, seed: int, resolution: float):
 def _concrete_chip(uv: wp.vec2, seed: int, frequency: int, aa: float):
     grid = uv * float(frequency)
     cell = wp.vec2(wp.floor(grid[0]), wp.floor(grid[1]))
-    ix = (int(cell[0]) % frequency + frequency) % frequency
-    iy = (int(cell[1]) % frequency + frequency) % frequency
+    ix = wrap_index(int(cell[0]), frequency)
+    iy = wrap_index(int(cell[1]), frequency)
     rng = wp.rand_init(seed, ix + frequency * iy)
     radius = wp.randf(rng, 0.08, 0.38)
     jitter = (0.49 - radius) * wp.vec2(wp.randf(rng, -1.0, 1.0), wp.randf(rng, -1.0, 1.0))
@@ -273,7 +273,7 @@ def _parquet_surface(uv: wp.vec2, seed: int, resolution: float):
     grid = uv * 10.0
     cell = wp.vec2(wp.floor(grid[0]), wp.floor(grid[1]))
     local = grid - cell
-    ix, iy = (int(cell[0]) % 10 + 10) % 10, (int(cell[1]) % 10 + 10) % 10
+    ix, iy = wrap_index(int(cell[0]), 10), wrap_index(int(cell[1]), 10)
     if (ix + iy) % 2 == 1:
         local = wp.vec2(local[1], local[0])
     strip = int(wp.floor(local[1] * 7.0))
@@ -300,7 +300,7 @@ def _brick_wall_surface(uv: wp.vec2, seed: int, resolution: float):
     row = int(wp.floor(y))
     x = uv[0] * 8.0 + 0.5 * float(row & 1) + 0.027 * grade
     col = int(wp.floor(x))
-    rng = wp.rand_init(seed, (col % 8 + 8) % 8 + 8 * ((row % 24 + 24) % 24))
+    rng = wp.rand_init(seed, cell_index(col, row, 8, 24))
     fx, fy = x - wp.floor(x), y - wp.floor(y)
     joint = wp.min(3.0 * wp.min(fx, 1.0 - fx), wp.min(fy, 1.0 - fy)) + 0.025 * sand
     face = wp.smoothstep(0.052, 0.052 + wp.max(0.018, 16.0 / resolution), joint)
@@ -363,7 +363,7 @@ def _tile_surface(
     row = int(wp.floor(grid_y))
     grid_x = uv[0] * float(columns) + stagger * float(row & 1)
     col = int(wp.floor(grid_x))
-    cell = (col % columns + columns) % columns + columns * ((row % rows + rows) % rows)
+    cell = cell_index(col, row, columns, rows)
     state = wp.rand_init(seed + 81, cell)
     clay_brick = rows >= 16 and base_roughness >= 0.60
     grout_width = wp.randf(state, 0.009, 0.013)
@@ -419,7 +419,7 @@ def _surface_maps(
 ):
     # Some generators warp UVs beyond the unit square. Start from a canonical
     # tile phase so offsets by whole tiles reproduce exactly the same surface.
-    uv = uv - wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
+    uv = wrap_uv(uv)
     if style >= 0:
         if columns > 0:
             color, height, roughness, ao = _tile_surface(

@@ -6,25 +6,26 @@
 import warp as wp
 
 from .sampling import periodic_noise as _noise
+from .sampling import wrap_index, wrap_uv
 from .weathered_surfaces import _soil_cell
 
 
 @wp.func
 def dark_roof_tiles(uv: wp.vec2, seed: int, resolution: float):
-    uv = uv - wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
+    uv = wrap_uv(uv)
     count = 13
     weather = _noise(uv, seed, 16, 22)
     clay = _noise(uv, seed + 3, 85, 103)
     grit = _noise(uv, seed + 4, 393, 437) * wp.smoothstep(240.0, 1300.0, resolution)
     u = float(count) * uv[0] + 0.081 + 0.047 * _noise(uv, seed + 11, 9, 15)
     x = u - wp.floor(u)
-    col = (int(wp.floor(u)) % count + count) % count
+    col = wrap_index(int(wp.floor(u)), count)
     column = wp.rand_init(seed + 13, col)
     # Separate courses seat at slightly different heights and bow at the nose.
     v = float(count) * uv[1] + 0.635 + wp.randf(column, -0.052, 0.052)
     v += 0.029 * _noise(uv, seed + 17, 19, 13) + 0.017 * wp.cos(2.0 * wp.pi * x)
     y = v - wp.floor(v)
-    tile = col + count * ((int(wp.floor(v)) % count + count) % count)
+    tile = col + count * (wrap_index(int(wp.floor(v)), count))
     state = wp.rand_init(seed + 19, tile)
     dye = wp.randf(state, -0.012, 0.012)
 
@@ -56,7 +57,7 @@ def dark_roof_tiles(uv: wp.vec2, seed: int, resolution: float):
 
 @wp.func
 def grained_leather(uv: wp.vec2, seed: int, resolution: float):
-    uv = uv - wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
+    uv = wrap_uv(uv)
     count = 87
     crease_drift = wp.vec2(_noise(uv, seed + 2, 79, 92), _noise(uv, seed + 3, 95, 81))
     crease_drift += 0.31 * wp.vec2(_noise(uv, seed + 4, 171, 199), _noise(uv, seed + 5, 189, 164))

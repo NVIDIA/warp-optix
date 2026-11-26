@@ -6,6 +6,7 @@
 import warp as wp
 
 from .sampling import periodic_noise as _noise
+from .sampling import wrap_index, wrap_uv
 
 
 @wp.func
@@ -95,8 +96,8 @@ def _carpet_tufts(uv: wp.vec2, seed: int):
     for row in range(-1, 2):
         for col in range(-1, 2):
             cell = base + wp.vec2(float(col), float(row))
-            cx = (int(cell[0]) % density + density) % density
-            cy = (int(cell[1]) % density + density) % density
+            cx = wrap_index(int(cell[0]), density)
+            cy = wrap_index(int(cell[1]), density)
             rng = wp.rand_init(seed + 41, cx + density * cy)
             center = wp.vec2(wp.randf(rng, 0.13, 0.87), wp.randf(rng, 0.15, 0.85))
             delta = knot - cell - center
@@ -131,7 +132,7 @@ def _cut_pile_carpet(uv: wp.vec2, seed: int, resolution: float):
 
 @wp.func
 def functional_surface(uv: wp.vec2, seed: int, resolution: float, style: int):
-    uv -= wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
+    uv = wrap_uv(uv)
     if style == 0:
         return _chain_link(uv, seed, resolution)
     if style == 1:

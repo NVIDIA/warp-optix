@@ -5,16 +5,8 @@
 
 import warp as wp
 
-
-@wp.func
-def _bark_noise(uv: wp.vec2, seed: int, columns: int, rows: int):
-    uv = uv - wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
-    return wp.pnoise(
-        wp.rand_init(seed),
-        wp.vec2(float(columns) * uv[0], float(rows) * uv[1]),
-        columns,
-        rows,
-    )
+from .sampling import wrap_index, wrap_uv
+from .sampling import wrapped_noise as _bark_noise
 
 
 @wp.func
@@ -30,8 +22,8 @@ def _cork_scales(uv: wp.vec2, seed: int, columns: int, rows: int):
     slope = float(0.0)
     for y in range(-1, 2):
         for x in range(-1, 2):
-            i = ((ox + x) % columns + columns) % columns
-            j = ((oy + y) % rows + rows) % rows
+            i = wrap_index((ox + x), columns)
+            j = wrap_index((oy + y), rows)
             state = wp.rand_init(seed, i + columns * j)
             center = wp.vec2(float(x) + wp.randf(state, 0.06, 0.94), float(y) + wp.randf(state, 0.06, 0.94))
             d = local - center
@@ -66,8 +58,8 @@ def _bark_grooves(uv: wp.vec2, seed: int, columns: int, rows: int):
     groove = float(4.0)
     for y in range(-1, 2):
         for x in range(-1, 2):
-            i = ((ox + x) % columns + columns) % columns
-            j = ((oy + y) % rows + rows) % rows
+            i = wrap_index((ox + x), columns)
+            j = wrap_index((oy + y), rows)
             rng = wp.rand_init(seed, i + columns * j)
             cy = float(y) + wp.randf(rng, 0.1, 0.9)
             d = local[1] - cy
@@ -84,7 +76,7 @@ def _bark_grooves(uv: wp.vec2, seed: int, columns: int, rows: int):
 @wp.func
 def bark_surface(uv: wp.vec2, seed: int, resolution: float, style: int):
     """Return sRGB color, height, roughness, and occlusion from one bark profile."""
-    uv = uv - wp.vec2(wp.floor(uv[0]), wp.floor(uv[1]))
+    uv = wrap_uv(uv)
     columns = 48
     rows = 12
     if style == 1:

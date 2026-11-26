@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import warp as wp
 
 from .configurable_metals import _scratch_field
+from .sampling import nearest_cells, periodic_noise
 
 # Perceptual roughness, normal strength, and default sRGB mold color.
 _FINISHES = {
@@ -72,30 +73,13 @@ def plastic_configuration(surface):
 def _plastic_noise(seed: int, uv: wp.vec2, nx: int, ny: int, resolution: float):
     frequency = float(wp.max(nx, ny))
     band = wp.smoothstep(1.8 * frequency, 4.5 * frequency, resolution)
-    return band * wp.pnoise(wp.rand_init(seed), wp.cw_mul(uv, wp.vec2(float(nx), float(ny))), nx, ny)
+    return band * periodic_noise(uv, seed, nx, ny)
 
 
 @wp.func
 def _plastic_cells(uv: wp.vec2, count: int, seed: int):
-    position = uv * float(count)
-    x, y = int(wp.floor(position[0])), int(wp.floor(position[1]))
-    nearest = float(9.0)
-    second = float(9.0)
-    tag = float(0.0)
-    for i in range(-1, 2):
-        for j in range(-1, 2):
-            cx, cy = x + i, y + j
-            key = (cx % count + count) % count + count * ((cy % count + count) % count)
-            state = wp.rand_init(seed, key)
-            center = wp.vec2(float(cx) + wp.randf(state, 0.05, 0.95), float(cy) + wp.randf(state, 0.05, 0.95))
-            delta = position - center
-            distance = wp.dot(delta, delta)
-            if distance < nearest:
-                second = nearest
-                nearest = distance
-                tag = wp.randf(state)
-            elif distance < second:
-                second = distance
+    nearest, second, _offset, _next_offset, state, _next_state = nearest_cells(uv, seed, count, 0.05, 0.95, True)
+    tag = wp.randf(state)
     return wp.vec3(wp.sqrt(nearest), wp.sqrt(second) - wp.sqrt(nearest), tag)
 
 
